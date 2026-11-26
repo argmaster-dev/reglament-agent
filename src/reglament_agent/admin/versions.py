@@ -27,6 +27,10 @@ class VersionError(ValueError):
     """The requested operation is not possible (shown to the expert as is)."""
 
 
+class StaleVersion(VersionError):
+    """The confirmation form was built for another active version: nothing was changed."""
+
+
 # --- diff --------------------------------------------------------------------------------------
 
 def load_points(conn: Connection, version_id: int) -> dict[str, dict]:
@@ -125,25 +129,6 @@ def _linked(doc_id: str) -> tuple:
     return doc_id, Jsonb([{"doc_id": doc_id}])
 
 
-def _reasons(conn: Connection, entry: dict) -> list[str]:
-    """Why an entry cannot stay published, judged against the document state as it is now."""
-    out = []
-    for b in entry["basis"]:
-        doc = conn.execute("SELECT status, title FROM documents WHERE doc_id=%s", (b["doc_id"],)).fetchone()
-        title = (doc[1] if doc else None) or b.get("doc_title") or b["doc_id"]
-        if doc is None or doc[0] != "active":
-            out.append(f"документ «{title}» снят с публикации")
-        elif entry["basis_kind"] == "document":
-            out.append(f"документ «{title}» заменён другой версией")
-        else:
-            state = F.point_state(conn, b)["state"]
-            if state == "removed":
-                out.append(f"пункт {b['number']} удалён из действующей версии")
-            elif state == "changed":
-                out.append(f"текст пункта {b['number']} изменён (или строка таблицы перенесена)")
-    return list(dict.fromkeys(out)) or ["основание записи изменилось"]
-
-
 def _restore_reviewed(conn: Connection, doc_id: str, actor: str) -> list[int]:
     """Entries sent to review only because their version stopped being active come back with it."""
     restored = []
@@ -155,10 +140,11 @@ def _restore_reviewed(conn: Connection, doc_id: str, actor: str) -> list[int]:
     for row in rows:
         verdict, basis = F._check_entry(conn, row)
         if verdict == "ok":
-            conn.execute("UPDATE faq_entries SET status='active', basis=%s, updated_at=now() WHERE id=%s",
-                         (Jsonb(basis), row["id"]))
-            log(conn, row["id"], actor, "auto_restore", {"reason": "версия документа снова действующая"})
-            restored.append(row["id"])
+            changed = conn.execute("UPDATE faq_entries SET status='active', basis=%s, updated_at=now() "
+                                   "WHERE id=%s AND status='review' RETURNING id", (Jsonb(basis), row["id"])).fetchone()
+            if changed:
+                log(conn, row["id"], actor, "auto_restore", {"reason": "версия документа снова действующая"})
+                restored.append(row["id"])
     return restored
 
 
@@ -173,9 +159,7 @@ def _apply(conn: Connection, doc_id: str, actor: str, mutate: Callable[[Connecti
     moved = []
     for r in cur.execute("SELECT id, question, basis_kind, basis FROM faq_entries WHERE id=ANY(%s) "
                          "AND status='review' ORDER BY id", (list(before),)).fetchall():
-        reasons = _reasons(conn, r)
-        log(conn, r["id"], actor, "to_review", {"reasons": reasons})
-        moved.append({"id": r["id"], "question": r["question"], "reasons": reasons})
+        moved.append({"id": r["id"], "question": r["question"], "reasons": F.review_reasons(conn, r)})
     restored_ids = _restore_reviewed(conn, doc_id, actor)
     restored = [{"id": r["id"], "question": r["question"]} for r in cur.execute(
         "SELECT id, question FROM faq_entries WHERE id=ANY(%s) ORDER BY id", (restored_ids,)).fetchall()]
@@ -196,10 +180,13 @@ def _set_active(doc_id: str, version_id: int | None, status: str):
     return mutate
 
 
-def _check_switch(conn: Connection, doc_id: str, version_id: int | None) -> dict:
+def _check_switch(conn: Connection, doc_id: str, version_id: int | None, expected: int | None = None,
+                  check: bool = False) -> dict:
     doc = get_document(conn, doc_id)
     if doc is None:
         raise VersionError("Документ не найден.")
+    if check and doc["active_version_id"] != expected:
+        raise StaleVersion("Версия изменилась, проверьте последствия заново.")
     if version_id is None:
         if doc["status"] != "active":
             raise VersionError("Документ уже снят с публикации.")
@@ -220,18 +207,22 @@ def preview_activate(conn: Connection, doc_id: str, version_id: int) -> dict:
         return _apply(conn, doc_id, "preview", _set_active(doc_id, version_id, "active"))
 
 
-def withdraw(conn: Connection, doc_id: str, actor: str) -> dict:
+def withdraw(conn: Connection, doc_id: str, actor: str, expected_version_id: int | None) -> dict:
     with conn.transaction():
         _lock(conn, doc_id)
-        _check_switch(conn, doc_id, None)
+        _check_switch(conn, doc_id, None, expected_version_id, check=True)
         return _apply(conn, doc_id, actor, _set_active(doc_id, None, "inactive"))
 
 
-def activate_version(conn: Connection, doc_id: str, version_id: int, actor: str) -> dict:
-    """Rollback to an earlier version (or put a withdrawn document back): one transaction."""
+def activate_version(conn: Connection, doc_id: str, version_id: int, actor: str,
+                     expected_version_id: int | None) -> dict:
+    """Rollback to an earlier version (or put a withdrawn document back): one transaction.
+
+    `expected_version_id` is the active version the expert saw on the confirmation page; under the
+    lock it must still be the active one, otherwise nothing changes (StaleVersion)."""
     with conn.transaction():
         _lock(conn, doc_id)
-        _check_switch(conn, doc_id, version_id)
+        _check_switch(conn, doc_id, version_id, expected_version_id, check=True)
         return _apply(conn, doc_id, actor, _set_active(doc_id, version_id, "active"))
 
 
@@ -260,8 +251,7 @@ def preview_replacement(conn: Connection, doc_id: str, parsed, digest: str) -> d
 # --- FAQ review --------------------------------------------------------------------------------
 
 def log(conn: Connection, faq_id: int, actor: str, action: str, detail: dict | None = None) -> None:
-    conn.execute("INSERT INTO faq_reviews (faq_id, actor, action, detail) VALUES (%s,%s,%s,%s)",
-                 (faq_id, actor, action, Jsonb(detail or {})))
+    F.record_review(conn, faq_id, actor, action, detail)
 
 
 def history(conn: Connection, faq_id: int) -> list[dict]:
@@ -271,22 +261,6 @@ def history(conn: Connection, faq_id: int) -> list[dict]:
     for r in rows:
         r["label"] = ACTIONS.get(r["action"], r["action"])
     return rows
-
-
-def _missing_cause(conn: Connection, entry: dict, rows: list[dict]) -> dict | None:
-    """Publishing a replacement keeps no history of its own: derive the cause of the review now."""
-    if entry["status"] != "review" or any(r["action"] == "to_review" and r["created_at"] >= entry["updated_at"]
-                                          for r in rows):
-        return None
-    return {"reasons": _reasons(conn, entry)}
-
-
-def _backfill(conn: Connection, entry: dict) -> None:
-    """Before an expert's decision, persist why the entry was under review."""
-    cause = _missing_cause(conn, entry, history(conn, entry["id"]))
-    if cause:
-        conn.execute("INSERT INTO faq_reviews (faq_id, actor, action, detail, created_at) "
-                     "VALUES (%s,'система','to_review',%s,%s)", (entry["id"], Jsonb(cause), entry["updated_at"]))
 
 
 def review_context(conn: Connection, faq_id: int) -> dict | None:
@@ -315,10 +289,6 @@ def review_context(conn: Connection, faq_id: int) -> dict | None:
     docs = cur.execute("SELECT doc_id, title FROM documents WHERE status='active' AND "
                        "active_version_id IS NOT NULL ORDER BY title").fetchall()
     rows = history(conn, faq_id)
-    cause = _missing_cause(conn, entry, rows)
-    if cause:
-        rows.append({"actor": "система", "action": "to_review", "label": ACTIONS["to_review"],
-                     "created_at": entry["updated_at"], "detail": cause})
     return {"e": entry, "items": items, "history": rows, "docs": docs}
 
 
@@ -328,13 +298,27 @@ def _review_entry(conn: Connection, faq_id: int) -> dict:
         raise VersionError("Запись FAQ не найдена.")
     if row["status"] != "review":
         raise VersionError("Запись не на проверке.")
-    _backfill(conn, row)
     return row
 
 
+def _require_published(conn: Connection, row: dict) -> None:
+    """A document-level entry cannot be confirmed while its document is withdrawn."""
+    if row["basis_kind"] != "document":
+        return
+    for b in row["basis"]:
+        doc = get_document(conn, b["doc_id"])
+        if doc is None or doc["status"] != "active" or doc["active_version_id"] is None:
+            title = (doc or {}).get("title") or b.get("doc_title") or b["doc_id"]
+            raise VersionError(f"Документ «{title}» снят с публикации: верните его в публикацию "
+                               "или удалите запись.")
+
+
+# The four decisions below are the only way an expert changes a FAQ entry's status: every route
+# (review page, plain FAQ card) calls them, and each writes one `faq_reviews` line.
+
 def confirm_entry(conn: Connection, faq_id: int, actor: str) -> None:
     with conn.transaction():
-        _review_entry(conn, faq_id)
+        _require_published(conn, _review_entry(conn, faq_id))
         _call(F.set_faq_status, conn, faq_id, "active")
         log(conn, faq_id, actor, "confirm", {"basis": F.get_faq(conn, faq_id)["basis"]})
 
@@ -345,6 +329,7 @@ def edit_answer(conn: Connection, faq_id: int, actor: str, answer: str) -> None:
         raise VersionError("Ответ не может быть пустым.")
     with conn.transaction():
         row = _review_entry(conn, faq_id)
+        _require_published(conn, row)
         conn.execute("UPDATE faq_entries SET answer=%s WHERE id=%s", (answer, faq_id))
         _call(F.set_faq_status, conn, faq_id, "active")
         log(conn, faq_id, actor, "edit", {"old_answer": row["answer"], "new_answer": answer})
@@ -368,7 +353,6 @@ def delete_entry(conn: Connection, faq_id: int, actor: str) -> None:
         row = F.get_faq(conn, faq_id)
         if row is None or row["status"] == "deleted":
             raise VersionError("Запись FAQ не найдена.")
-        _backfill(conn, row)
         F.set_faq_status(conn, faq_id, "deleted")
         log(conn, faq_id, actor, "delete", {"question": row["question"]})
 

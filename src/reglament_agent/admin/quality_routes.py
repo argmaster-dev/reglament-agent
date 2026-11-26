@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from psycopg.rows import dict_row
 
 from reglament_agent.admin import jobs
+from reglament_agent.admin import versions as V
 from reglament_agent.admin.routes import render
 from reglament_agent.answer import SourceRef
 from reglament_agent.chat import session as S
@@ -164,14 +165,16 @@ def faq_page(request: Request, faq_id: int, error: str = ""):
 
 
 @expert_router.post("/faq/{faq_id}/{action}")
-def faq_action(faq_id: int, action: str):
-    status = {"confirm": "active", "delete": "deleted"}.get(action)
-    if status is None:
+def faq_action(request: Request, faq_id: int, action: str):
+    """Plain-card buttons share the single decision path (and history) of the review page."""
+    decide = {"confirm": V.confirm_entry, "delete": V.delete_entry}.get(action)
+    if decide is None:
         return RedirectResponse(f"/admin/faq/{faq_id}", status_code=303)
+    actor = S.identity_from_headers(request.headers, _import_secret()).email
     with jobs.connect() as conn:
         try:
-            F.set_faq_status(conn, faq_id, status)
-        except F.TicketError as exc:
+            decide(conn, faq_id, actor)
+        except V.VersionError as exc:
             return RedirectResponse(f"/admin/faq/{faq_id}?error={exc}", status_code=303)
     return RedirectResponse(f"/admin/faq/{faq_id}", status_code=303)
 

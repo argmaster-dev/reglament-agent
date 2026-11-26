@@ -13,6 +13,10 @@ from reglament_agent.ingest.parser import parse_docx
 router = APIRouter(prefix="/admin")
 
 
+def _int(value: str) -> int | None:
+    return int(value) if str(value).strip().isdigit() else None
+
+
 def _actor(request: Request) -> str:
     return S.identity_from_headers(request.headers, _secret()).email
 
@@ -52,7 +56,7 @@ def versions_diff(request: Request, doc_id: str, old: int, new: int):
 
 
 @router.get("/documents/{doc_id}/withdraw", response_class=HTMLResponse)
-def withdraw_confirm(request: Request, doc_id: str):
+def withdraw_confirm(request: Request, doc_id: str, notice: str = "", status_code: int = 200):
     with jobs.connect() as conn:
         doc = V.get_document(conn, doc_id)
         if doc is None:
@@ -61,15 +65,24 @@ def withdraw_confirm(request: Request, doc_id: str):
             impact = V.preview_withdraw(conn, doc_id)
         except V.VersionError as exc:
             return _versions_page(request, conn, doc_id, error=str(exc), status_code=400)
-    return render("versions_confirm.html", request, nav="documents", doc=doc, impact=impact, kind="withdraw",
-                  target=None, diff=None)
+    return render("versions_confirm.html", request, status_code, nav="documents", doc=doc, impact=impact,
+                  kind="withdraw", target=None, diff=None, notice=notice)
+
+
+def _stale(request, conn, doc_id, kind, number=None):
+    """Re-render the confirmation with fresh consequences; nothing was changed."""
+    return (withdraw_confirm if kind == "withdraw" else activate_confirm)(request, doc_id, *(
+        [] if number is None else [number]), notice="Версия изменилась, проверьте последствия заново.",
+        status_code=409)
 
 
 @router.post("/documents/{doc_id}/withdraw")
-def withdraw_do(request: Request, doc_id: str):
+def withdraw_do(request: Request, doc_id: str, expected_version_id: str = Form("")):
     with jobs.connect() as conn:
         try:
-            V.withdraw(conn, doc_id, _actor(request))
+            V.withdraw(conn, doc_id, _actor(request), _int(expected_version_id))
+        except V.StaleVersion:
+            return _stale(request, conn, doc_id, "withdraw")
         except V.VersionError as exc:
             return _versions_page(request, conn, doc_id, error=str(exc), status_code=400)
     return RedirectResponse(f"/admin/documents/{doc_id}/versions", status_code=303)
@@ -86,7 +99,7 @@ def _activation(request, conn, doc_id, number):
 
 
 @router.get("/documents/{doc_id}/versions/{number}/activate", response_class=HTMLResponse)
-def activate_confirm(request: Request, doc_id: str, number: int):
+def activate_confirm(request: Request, doc_id: str, number: int, notice: str = "", status_code: int = 200):
     with jobs.connect() as conn:
         doc, vid, failure = _activation(request, conn, doc_id, number)
         if failure is not None:
@@ -98,18 +111,21 @@ def activate_confirm(request: Request, doc_id: str, number: int):
         current = conn.execute("SELECT v.version_number FROM documents d JOIN document_versions v "
                                "ON v.version_id=d.active_version_id WHERE d.doc_id=%s", (doc_id,)).fetchone()
         diff = V.diff_versions(conn, doc_id, current[0], number) if current and current[0] != number else None
-    return render("versions_confirm.html", request, nav="documents", doc=doc, impact=impact, kind="activate",
-                  target=number, current=current[0] if current else None, diff=diff)
+    return render("versions_confirm.html", request, status_code, nav="documents", doc=doc, impact=impact,
+                  kind="activate", target=number, current=current[0] if current else None, diff=diff,
+                  notice=notice)
 
 
 @router.post("/documents/{doc_id}/versions/{number}/activate")
-def activate_do(request: Request, doc_id: str, number: int):
+def activate_do(request: Request, doc_id: str, number: int, expected_version_id: str = Form("")):
     with jobs.connect() as conn:
         doc, vid, failure = _activation(request, conn, doc_id, number)
         if failure is not None:
             return failure
         try:
-            V.activate_version(conn, doc_id, vid, _actor(request))
+            V.activate_version(conn, doc_id, vid, _actor(request), _int(expected_version_id))
+        except V.StaleVersion:
+            return _stale(request, conn, doc_id, "activate", number)
         except V.VersionError as exc:
             return _versions_page(request, conn, doc_id, error=str(exc), status_code=400)
     return RedirectResponse(f"/admin/documents/{doc_id}/versions", status_code=303)

@@ -81,6 +81,10 @@ def faq(conn, question, kind="points", points=(("doc-x", "1.2"),), mid=None):
                          faq_question=question, alt_questions=[], embedder=EMB)["faq_id"]
 
 
+def expected(conn):
+    return {"expected_version_id": conn.execute("SELECT active_version_id FROM documents").fetchone()[0]}
+
+
 def status(conn, faq_id):
     return conn.execute("SELECT status FROM faq_entries WHERE id=%s", (faq_id,)).fetchone()[0]
 
@@ -222,14 +226,14 @@ def test_d09_withdraw_document(env):
     page = c.get("/admin/documents/doc-x/withdraw").text
     assert "Снять с публикации" in page and "Уйдут на проверку и пропадут из поиска: 1" in page and "Кто согласует?" in page
     assert status(env, f) == "active" and env.execute("SELECT status FROM documents").fetchone()[0] == "active"
-    assert c.post("/admin/documents/doc-x/withdraw").status_code == 303
+    assert c.post("/admin/documents/doc-x/withdraw", data=expected(env)).status_code == 303
     assert env.execute("SELECT status FROM documents").fetchone()[0] == "inactive"
     assert hits(env, "Согласование выполняет руководитель отдела") == []
     assert status(env, f) == "review" and found(env, "Кто согласует?") == []
-    assert c.post("/admin/documents/doc-x/withdraw").status_code == 400  # already withdrawn
+    assert c.post("/admin/documents/doc-x/withdraw", data=expected(env)).status_code == 400  # already withdrawn
     # reversible: put it back
     assert "Вернуть в публикацию" in c.get("/admin/documents/doc-x/versions").text
-    assert c.post("/admin/documents/doc-x/versions/1/activate").status_code == 303
+    assert c.post("/admin/documents/doc-x/versions/1/activate", data=expected(env)).status_code == 303
     assert hits(env, "Согласование выполняет руководитель отдела")[0].number == "1.2"
     assert status(env, f) == "active"
 
@@ -247,13 +251,13 @@ def test_d07_rollback_restores_previous_answers(env):
     assert "Откатить к версии 1" in confirm and "Вернутся в поиск автоматически: 1" in confirm
     assert env.execute("SELECT version_number FROM document_versions v JOIN documents d "
                        "ON d.active_version_id=v.version_id").fetchone()[0] == 2  # GET changes nothing
-    assert c.post("/admin/documents/doc-x/versions/1/activate").status_code == 303
+    assert c.post("/admin/documents/doc-x/versions/1/activate", data=expected(env)).status_code == 303
     assert status(env, f) == "active" and found(env, "Кто согласует?") == [f]
     top = hits(env, "Согласование выполняет руководитель отдела")[0]
     assert top.version_no == 1 and "руководитель отдела" in top.text
     assert not any("директор" in h.text for h in hits(env, "Согласование выполняет директор департамента"))
-    assert c.post("/admin/documents/doc-x/versions/1/activate").status_code == 400  # already active
-    assert [h["action"] for h in V.history(env, f)] == ["auto_restore"]  # replacement is published by the job runner, which keeps no history
+    assert c.post("/admin/documents/doc-x/versions/1/activate", data=expected(env)).status_code == 400  # already active
+    assert [h["action"] for h in V.history(env, f)] == ["to_review", "auto_restore"]
 
 
 def test_rollback_recheck_runs_against_restored_version(env):
@@ -264,7 +268,7 @@ def test_rollback_recheck_runs_against_restored_version(env):
     f = faq(env, "Кто согласует?")  # pinned to version 2
     c = client("expert")
     assert "Уйдут на проверку и пропадут из поиска: 1" in c.get("/admin/documents/doc-x/versions/1/activate").text
-    c.post("/admin/documents/doc-x/versions/1/activate")
+    c.post("/admin/documents/doc-x/versions/1/activate", data=expected(env))
     assert status(env, f) == "review" and found(env, "Кто согласует?") == []
 
 
@@ -295,7 +299,7 @@ def test_review_confirm_repins_and_logs(env):
                       "WHERE p.number='1.2'").fetchone()[0]
     assert env.execute("SELECT basis FROM faq_entries").fetchone()[0][0]["sha256"] == sha
     page = c.get(f"/admin/faq/{f}/review").text
-    assert "expert@x.local" in page and "подтверждено" in page and "отправлено на проверку" in page and "изменён" in page
+    assert "expert@x.local" in page and "подтверждено" in page and "отправлено на проверку" in page and "система" in page and "изменён" in page
     assert c.post(f"/admin/faq/{f}/review/confirm").status_code == 400  # no longer under review
 
 
