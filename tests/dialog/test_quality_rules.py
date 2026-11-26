@@ -300,7 +300,7 @@ def test_department_without_basis_gets_an_explicit_note_and_no_ticket(isolated):
     assert result.outcome == Outcome.VARIANTS and not result.ticket
     north, east = result.variants
     assert north.statements and not east.statements
-    assert east.note == "в регламентах этого подразделения нет основания"
+    assert east.note == "в регламентах Склад Восток нет основания"
     assert conn.execute("SELECT count(*) FROM tickets").fetchone()[0] == 0
 
 
@@ -312,3 +312,35 @@ def test_faq_for_a_single_department_still_answers_at_once(isolated):
     route = _two_department_route(dsn, texts, "Склад Север", model)
     result = asyncio.run(route.answer(user(), "Каков срок выдачи пропуска на Складе Север?", status))
     assert result.outcome == Outcome.EXPERT_ANSWER and not model.calls
+
+
+def test_each_department_without_basis_gets_its_own_named_note(isolated):
+    conn, dsn = isolated
+    seed(conn, {"n": ("Склад Север", ["x"]), "e": ("Склад Восток", ["x"])})
+    model = Model()
+    model.result = {"outcome": "no_basis", "claims": []}
+    route = _two_department_route(dsn, ["Выдачей занимается склад.", "Склад работает по графику."], None, model)
+    result = asyncio.run(route.answer(user(), TWO, status))
+    assert result.outcome == Outcome.VARIANTS and not result.ticket
+    assert [v.note for v in result.variants] == [
+        "в регламентах Склад Север нет основания", "в регламентах Склад Восток нет основания"
+    ]
+
+
+def test_faq_variant_keeps_the_expert_attribution(isolated):
+    conn, dsn = isolated
+    seed(conn, {"n": ("Склад Север", ["x"]), "e": ("Склад Восток", ["x"])})
+    texts = ["Срок выдачи пропуска — два дня.", "Срок выдачи пропуска — пять дней."]
+    result = asyncio.run(_two_department_route(dsn, texts, "Склад Север").answer(user(), TWO, status))
+    north, east = result.variants
+    assert north.note == "Ответ службы качества" and east.note is None
+
+
+def test_action_missing_without_actor_is_tolerated_only_when_no_executor_is_asked():
+    items = _two_sentence_point()
+    ok = _assemble(items, [_claim(items, "S1", "", "утверждает")], "Сколько дней на заявку на допуск?")
+    assert ok.outcome == Outcome.ANSWER and ok.statements[0].text == items["S1"].text
+    asked = _assemble(items, [_claim(items, "S1", "", "подписывает")])
+    assert asked.outcome == Outcome.NO_BASIS
+    with_actor = _assemble(items, [_claim(items, "S1", "Архитектор", "подписывает")])
+    assert with_actor.outcome == Outcome.NO_BASIS
