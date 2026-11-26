@@ -1,0 +1,46 @@
+Copyright (c) 2026 argmaster-dev. Все права защищены. All rights reserved.
+
+RU
+
+Исходный код, документация и иные материалы этого репозитория (далее — «Продукт»)
+опубликованы исключительно для ознакомления и оценки в рамках конкурса «ИИкузница»
+в соответствии с его положением. Публикация не является предоставлением лицензии.
+
+Без предварительного письменного разрешения правообладателя запрещается
+использовать, копировать, изменять, объединять с другими продуктами, публиковать,
+распространять, сублицензировать, продавать Продукт или его части, а также
+развёртывать его для эксплуатации. Разрешены просмотр исходного кода и его запуск
+организатором конкурса, экспертами и членами жюри в целях оценки.
+
+Условия использования Продукта, в том числе для пилотирования и внедрения,
+определяются отдельным договором с правообладателем.
+
+Сторонние компоненты, используемые Продуктом, распространяются на условиях их
+собственных лицензий. Их перечень приведён в файле THIRD_PARTY_NOTICES.md.
+
+Учебные документы в каталоге docx/ предоставлены организатором конкурса и
+не являются частью Продукта; права на них принадлежат их правообладателям.
+
+EN
+
+The source code, documentation and other materials in this repository (the
+"Product") are published solely for review and evaluation in the "IIkuznitsa"
+contest under its rules. Publication does not grant any license.
+
+Without prior written permission of the copyright holder, you may not use, copy,
+modify, merge, publish, distribute, sublicense, sell or deploy the Product or any
+part of it. Viewing the source code and running it by the contest organizer,
+experts and jury members for evaluation purposes is permitted.
+
+Terms of use, including for pilots and production deployment, are set by a
+separate agreement with the copyright holder.
+
+Third-party components used by the Product are licensed under their own terms,
+listed in THIRD_PARTY_NOTICES.md.
+
+Sample documents in docx/ are provided by the contest organizer, are not part of
+the Product and remain the property of their respective owners.
+
+THE PRODUCT IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY ARISING FROM THE USE OF THE PRODUCT.
