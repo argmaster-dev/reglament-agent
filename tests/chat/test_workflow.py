@@ -178,3 +178,43 @@ def test_history_http_uses_the_signed_employee_identity(isolated, monkeypatch):
         assert history.status_code == 200 and "Что такое РП?" in history.text
         history = other.get(address, headers={"X-User-Email": identity.email})
         assert history.status_code == 403 and "Что такое РП?" not in history.text
+
+
+def test_scope_action_uses_current_catalog_and_rejects_retired_choice(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("CHAINLIT_APP_ROOT", str(tmp_path))
+    from reglament_agent.chat import app
+
+    departments = AsyncMock(return_value=["Новый отдел"])
+    messages = []
+
+    class Message:
+        def __init__(self, content, actions=None, **kwargs):
+            self.content, self.actions, self.id = content, actions, "user-message"
+
+        async def send(self):
+            messages.append(self)
+
+    run = AsyncMock()
+    monkeypatch.setattr(app, "available_departments", departments)
+    monkeypatch.setattr(app, "current_scope_action", lambda action: True)
+    monkeypatch.setattr(app, "_actions", lambda specs: specs)
+    monkeypatch.setattr(app, "_run", run)
+    monkeypatch.setattr(app.cl, "Message", Message)
+
+    answers = SimpleNamespace(payload={"answer_id": "answer"})
+    asyncio.run(app.change_scope(answers))
+    [choice] = messages[0].actions
+    assert choice.payload == {"department": "Новый отдел", "answer_id": "answer"}
+
+    retired = SimpleNamespace(payload={"department": "ДБРЦТ", "answer_id": "answer"}, remove=AsyncMock())
+    asyncio.run(app.set_department(retired))
+    retired.remove.assert_not_called()
+    run.assert_not_called()
+
+    current = SimpleNamespace(payload=choice.payload, remove=AsyncMock())
+    asyncio.run(app.set_department(current))
+    current.remove.assert_awaited_once()
+    run.assert_awaited_once_with("А в подразделении Новый отдел?", "user-message")

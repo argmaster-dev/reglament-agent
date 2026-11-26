@@ -33,6 +33,38 @@ def test_table_evidence_and_scoped_references(isolated):
         hit.source_ref(column="несуществующая колонка")
 
 
+
+def test_literal_point_precedes_longer_phrase_matches_and_keeps_duplicates(isolated):
+    from io import BytesIO
+    from xml.sax.saxutils import escape
+    from zipfile import ZipFile
+
+    from reglament_agent.ingest.model import DocumentCard
+    from reglament_agent.storage.search import preview
+
+    conn, _ = isolated
+    phrase = "Смета обслуживания."
+    longer = "Смета обслуживания. Смета обслуживания. Порядок повторно согласует комиссия."
+    paragraphs = ["Сервисный регламент", "1. Сметы", "1.1. " + longer, "1.2. " + phrase, "1.3. " + phrase]
+    body = "".join(f"<w:p><w:r><w:t>{escape(text)}</w:t></w:r></w:p>" for text in paragraphs)
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml",
+                         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                         f"<w:body>{body}</w:body></w:document>")
+    card = DocumentCard("maintenance", "Сервисный регламент", "Служба эксплуатации", ("project",), "sample.docx")
+    embedder = FakeEmbedder()
+    publish(conn, card, buffer.getvalue(), embedder, "test")
+
+    query = "  Смета\u00a0обслуживания.  "
+    vector = embedder.embed([longer])[0]
+    assert [hit.number for hit in search(conn, query, vector, limit=3)] == ["1.2", "1.3", "1.1"]
+    assert [hit.number for hit in preview(conn, query, limit=3)] == ["1.2", "1.3", "1.1"]
+    hybrid = search(conn, query, vector, limit=3, literal=False)
+    assert hybrid[0].number == "1.1"
+
+
+
 def test_large_scoped_top_k_matches_brute_force(isolated):
     conn, _ = isolated
     card = CARDS[0]
