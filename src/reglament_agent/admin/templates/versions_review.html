@@ -1,0 +1,23 @@
+{% extends "base.html" %}{% block content %}
+<style>ins{background:#d9f2df;text-decoration:none}del{background:#fbdada}.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.cols{grid-template-columns:1fr}}</style>
+<p><a href="/admin/faq/{{ e.id }}">← Запись FAQ</a></p>
+<h1>Проверка записи FAQ №{{ e.id }} <span class="badge {{ e.status }}">{{ {'active':'опубликовано','review':'на проверке','deleted':'удалено'}[e.status] }}</span></h1>
+{% if error %}<p class="card err">{{ error }}</p>{% endif %}
+<div class="card"><p><b>Вопрос:</b> {{ e.question }}</p><p><b>Ответ:</b><br>{{ e.answer }}</p></div>
+{% for b in items %}<div class="card"><b>{{ b.doc_title or b.doc_id }}{% if b.number %}, п. {{ b.number }}{% endif %}</b>
+{% if b.state == 'renumbered' %}<span class="badge">перенумерован → {{ b.new_number }}</span>{% elif b.state == 'changed' %}<span class="badge bad">текст изменён</span>{% elif b.state == 'removed' %}<span class="badge bad">{{ b.note }}</span>{% endif %}
+{% if b.number %}<div class="cols"><div><span class="muted">Основание при ответе</span><pre class="pt2">{% if b.old_html is not none %}{{ b.old_html }}{% elif b.old_text %}{{ b.old_text }}{% else %}текст недоступен{% endif %}</pre></div>
+<div><span class="muted">Текст сейчас</span><pre class="pt2">{% if b.new_html is not none %}{{ b.new_html }}{% elif b.new_text %}{{ b.new_text }}{% else %}— нет —{% endif %}</pre></div></div>
+{% else %}<p class="muted">Запись привязана к документу целиком.</p>{% endif %}</div>{% endfor %}
+{% if e.status == 'review' %}
+<div class="card"><b>Решение</b>
+<form method="post" action="/admin/faq/{{ e.id }}/review/confirm" style="margin:8px 0"><button type="submit">Подтвердить: ответ остаётся верным</button></form>
+<form method="post" action="/admin/faq/{{ e.id }}/review/edit" class="f"><label>Исправить ответ</label><textarea name="answer" rows="4">{{ e.answer }}</textarea><button type="submit" style="margin-top:6px">Сохранить исправленный ответ</button></form>
+<form method="post" action="/admin/faq/{{ e.id }}/review/repin" class="f"><label>Перепривязать к другому пункту</label>
+<select name="doc_id">{% for d in docs %}<option value="{{ d.doc_id }}">{{ d.title }}</option>{% endfor %}</select>
+<input type="text" name="number" placeholder="номер пункта, например 1.5" style="margin-top:6px"><button type="submit" style="margin-top:6px">Перепривязать</button></form>
+<form method="post" action="/admin/faq/{{ e.id }}/review/delete" style="margin-top:12px"><button class="sec" type="submit">Удалить запись</button></form></div>{% endif %}
+<div class="card"><b>История проверок</b>
+{% if history %}<table><tr><th>Дата</th><th>Кто</th><th>Действие</th></tr>{% for h in history %}<tr><td>{{ h.created_at.strftime("%d.%m.%Y %H:%M") }}</td><td>{{ h.actor }}</td><td>{{ h.label }}{% if h.detail.reasons %}: {{ h.detail.reasons|join("; ") }}{% endif %}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Проверок пока не было.</p>{% endif %}</div>
+{% endblock %}
