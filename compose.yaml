@@ -50,7 +50,11 @@ services:
       MAIL_USE_TLS: "false"
     command: ["python", "-m", "reglament_agent.quality"]
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-m", "reglament_agent.ops.sender_health"]
+      interval: 15s
+      timeout: 8s
+      retries: 4
+      start_period: 5s
     depends_on:
       migrate:
         condition: service_completed_successfully

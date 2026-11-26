@@ -39,7 +39,7 @@ docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml ps --all
 curl -fsS http://127.0.0.1:18800/health
 ```
 
-При первом запуске `migrate` должен завершиться с кодом 0. Уже созданные данные сохраняются в томах PostgreSQL и Mailpit. Для первичного наполнения чистой БД можно запустить обычный импорт выданных материалов внутри контейнера.
+При первом запуске `migrate` должен завершиться с кодом 0. Compose дожидается доступности очереди PostgreSQL и ответа SMTP на NOOP у почтового процесса. Отправку письма проверяйте отдельно через новое обращение. Уже созданные данные сохраняются в томах PostgreSQL и Mailpit. Для первичного наполнения чистой БД можно запустить обычный импорт выданных материалов внутри контейнера.
 
 ```sh
 docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml exec -T app python -m reglament_agent.ingest load docx/
