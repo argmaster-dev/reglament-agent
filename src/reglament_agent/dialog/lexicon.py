@@ -40,7 +40,9 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-_DEFAULT_GLOSSARY = Path(__file__).resolve().parents[3] / "docx" / "glossary.tsv"
+_PACKAGED_GLOSSARY = Path(__file__).with_name("glossary.tsv")
+_DEFAULT_GLOSSARY = (_PACKAGED_GLOSSARY if _PACKAGED_GLOSSARY.is_file()
+                     else Path(__file__).resolve().parents[3] / "docx" / "glossary.tsv")
 _glossary_path: Path | None = None
 
 

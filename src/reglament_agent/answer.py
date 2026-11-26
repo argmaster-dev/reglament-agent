@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Awaitable, Callable, Protocol
 
+from .ingest.model import Block
+
 
 class Outcome(StrEnum):
     ANSWER = "answer"  # «Ответ»
@@ -138,6 +140,7 @@ class PointView:
     highlight: int | None  # sentence index to highlight
     column: str | None
     neighbours: list[tuple[str, str]]  # (number, first line) of adjacent subpoints/notes
+    blocks: list[Block] = field(default_factory=list)  # original paragraph and table cells
 
 
 class Sources(Protocol):
