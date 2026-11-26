@@ -245,3 +245,70 @@ def test_model_timeout_gives_error_and_retry_can_succeed(isolated):
     assert failed.outcome == Outcome.ERROR and not failed.ticket
     retried = asyncio.run(route.answer(user(), "Кто утверждает годовой отчёт?", status))
     assert retried.outcome == Outcome.ANSWER
+
+
+def _faq(department, doc, answer_text, sentence):
+    from reglament_agent.answer import SourceRef
+    from reglament_agent.storage.retrieve import FAQHit
+
+    return FAQHit(
+        source=SourceRef(doc, "FAQ службы качества", department, 1, "", faq_id=41),
+        answer=answer_text,
+        basis=sentence,
+        department=department,
+        stage="project",
+        question="Каков срок выдачи пропуска?",
+        similarity=0.97,
+        attribution="Ответ службы качества",
+    )
+
+
+def _two_department_route(dsn, texts, faq_for, model=None):
+    north, east = hit("Склад Север", texts[0], doc="n"), hit("Склад Восток", texts[1], doc="e")
+    faq = _faq("Склад Север", "n", texts[0], north.source_ref(sentence=0))
+
+    def search(conn, question, vector, *, department=None, **kw):
+        points = [p for p in (north, east) if department in (None, p.department) and p.doc_id in texts_docs]
+        return Candidates(points, [faq] if department == faq_for else [])
+
+    texts_docs = {"n", "e"} if texts[1] else {"n"}
+    return Dialog(dsn, model or Model(), search=search, shortlist=lambda *a, **kw: [north, east])
+
+
+TWO = "Совпадает ли срок выдачи пропуска у Склада Север и Склада Восток?"
+
+
+def test_faq_for_one_of_two_departments_does_not_end_the_comparison(isolated):
+    conn, dsn = isolated
+    seed(conn, {"n": ("Склад Север", ["x"]), "e": ("Склад Восток", ["x"])})
+    texts = ["Срок выдачи пропуска — два дня.", "Срок выдачи пропуска — пять дней."]
+    result = asyncio.run(_two_department_route(dsn, texts, "Склад Север").answer(user(), TWO, status))
+    assert result.outcome == Outcome.VARIANTS and not result.ticket
+    north, east = result.variants
+    assert (north.department, east.department) == ("Склад Север", "Склад Восток")
+    assert north.statements[0].sources[0].faq_id == 41
+    assert east.statements[0].text == texts[1] and east.statements[0].sources[0].faq_id is None
+
+
+def test_department_without_basis_gets_an_explicit_note_and_no_ticket(isolated):
+    conn, dsn = isolated
+    seed(conn, {"n": ("Склад Север", ["x"]), "e": ("Склад Восток", ["x"])})
+    model = Model()
+    model.result = {"outcome": "no_basis", "claims": []}
+    route = _two_department_route(dsn, ["Срок выдачи пропуска — два дня.", "Выдачей занимается склад."], "Склад Север", model)
+    result = asyncio.run(route.answer(user(), TWO, status))
+    assert result.outcome == Outcome.VARIANTS and not result.ticket
+    north, east = result.variants
+    assert north.statements and not east.statements
+    assert east.note == "в регламентах этого подразделения нет основания"
+    assert conn.execute("SELECT count(*) FROM tickets").fetchone()[0] == 0
+
+
+def test_faq_for_a_single_department_still_answers_at_once(isolated):
+    conn, dsn = isolated
+    seed(conn, {"n": ("Склад Север", ["x"]), "e": ("Склад Восток", ["x"])})
+    texts = ["Срок выдачи пропуска — два дня.", "Срок выдачи пропуска — пять дней."]
+    model = Model()
+    route = _two_department_route(dsn, texts, "Склад Север", model)
+    result = asyncio.run(route.answer(user(), "Каков срок выдачи пропуска на Складе Север?", status))
+    assert result.outcome == Outcome.EXPERT_ANSWER and not model.calls
