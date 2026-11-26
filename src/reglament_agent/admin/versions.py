@@ -348,13 +348,14 @@ def _lock_documents(conn: Connection, doc_ids: list[str]) -> None:
         conn.execute("SELECT 1 FROM documents WHERE doc_id=ANY(%s) ORDER BY doc_id FOR UPDATE", (sorted(doc_ids),))
 
 
-def _review_entry(conn: Connection, faq_id: int, shown: dict | None = None, check: bool = True) -> dict:
+def _review_entry(conn: Connection, faq_id: int, shown: dict | None = None, check: bool = True,
+                  *, target_doc: str | None = None) -> dict:
     """Lock documents of the basis, then the entry; compare what the expert saw with all of it now."""
     first = F.get_faq(conn, faq_id)
     if first is None:
         raise VersionError("Запись FAQ не найдена.")
     docs = _basis_docs(first)
-    _lock_documents(conn, docs)
+    _lock_documents(conn, sorted(set(docs) | ({target_doc} if target_doc else set())))
     conn.execute("SELECT 1 FROM faq_entries WHERE id=%s FOR UPDATE", (faq_id,))
     row = F.get_faq(conn, faq_id)
     if row["status"] != "review":
@@ -409,7 +410,7 @@ def repin_entry(conn: Connection, faq_id: int, actor: str, doc_id: str, number: 
     if not doc_id or not number:
         raise VersionError("Укажите документ и номер пункта.")
     with conn.transaction():
-        row = _review_entry(conn, faq_id, shown)
+        row = _review_entry(conn, faq_id, shown, target_doc=doc_id)
         basis, first, version_id = _call(F._capture_basis, conn, "points", [(doc_id, number)])
         conn.execute("UPDATE faq_entries SET basis_kind='points', basis=%s, doc_id=%s, version_id=%s, "
                      "status='active', updated_at=now(), reviewed_at=now() WHERE id=%s",

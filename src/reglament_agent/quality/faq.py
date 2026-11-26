@@ -324,7 +324,7 @@ def recheck_faq_after_publication(conn: Connection, doc_id: str) -> int:
     with conn.transaction():
         rows = conn.cursor(row_factory=dict_row).execute(
             "SELECT id, basis_kind, doc_id, version_id, basis FROM faq_entries WHERE status='active' "
-            "AND basis_kind <> 'outside' AND (doc_id=%s OR basis @> %s::jsonb) FOR UPDATE",
+            "AND basis_kind <> 'outside' AND (doc_id=%s OR basis @> %s::jsonb) ORDER BY id FOR UPDATE",
             (doc_id, Jsonb([{"doc_id": doc_id}]))).fetchall()
         for row in rows:
             verdict, basis = _check_entry(conn, row)
