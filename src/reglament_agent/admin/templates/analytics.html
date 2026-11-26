@@ -1,0 +1,52 @@
+{% extends "base.html" %}{% block content %}
+<h1>Аналитика</h1>
+<p>Период:
+{% for k, (label, _) in periods.items() %}<a class="btn {{ '' if k == period else 'sec' }}" href="?period={{ k }}">{{ label }}</a> {% endfor %}
+&nbsp; <a href="/admin/analytics/journal?period={{ period }}">Журнал запросов</a>
+· <a href="/admin/analytics/requests.csv?period={{ period }}">Выгрузка журнала (CSV)</a></p>
+
+<div class="card"><h2>Обращения к агенту за {{ period_label }}</h2>
+<p><b>Вопросов:</b> {{ total }} · <b>Создано обращений в службу:</b> {{ ticket_outcomes }} ·
+<b>Медианное время ответа:</b> {% if median_ms is not none %}{{ (median_ms / 1000)|round(1) }} с{% else %}—{% endif %} ·
+<b>👍</b> {{ up }} · <b>👎</b> {{ down }}</p>
+<table><tr><th>Исход</th><th>Число</th></tr>
+{% for k, label, n in outcome_rows %}<tr><td>{{ label }}{% if k in tickets %} <span class="badge">тикет</span>{% endif %}</td><td>{{ n }}</td></tr>{% endfor %}</table></div>
+
+<div class="card"><h2>Рекомендации</h2>
+{% if recommendations %}<ul>{% for r in recommendations %}<li>{{ r }}</li>{% endfor %}</ul>
+{% else %}<p class="muted">Порог рекомендаций не достигнут.</p>{% endif %}</div>
+
+<div class="card"><h2>Проблемные разделы</h2>
+{% if problems %}<table><tr><th>Документ</th><th>Раздел</th><th>Тикеты</th><th>👎</th><th>Уточнения</th></tr>
+{% for p in problems %}<tr><td>{{ p.doc_title }}</td><td>{{ p.section }}{% if p.title %} «{{ p.title }}»{% endif %}</td>
+<td>{{ p.tickets }}</td><td>{{ p.down }}</td><td>{{ p.clarify }}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Нет данных.</p>{% endif %}</div>
+
+<div class="card"><h2>Востребованность разделов</h2>
+{% if demand %}<table><tr><th>Документ</th><th>Раздел</th><th>Ссылок в ответах</th></tr>
+{% for d in demand[:30] %}<tr><td>{{ d.doc_title }}</td><td>{{ d.section }}{% if d.title %} «{{ d.title }}»{% endif %}</td><td>{{ d.count }}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Ответов со ссылками на регламенты пока нет.</p>{% endif %}</div>
+
+<div class="card"><h2>Повторяющиеся вопросы</h2>
+{% if repeated %}<table><tr><th>Вопрос</th><th>Раз</th><th>Сотрудников</th></tr>
+{% for g in repeated[:30] %}<tr><td>{{ g.example }}{% if g.variants|length > 1 %}<details><summary>формулировки</summary>
+{% for v in g.variants %}<div class="pt">{{ v }}</div>{% endfor %}</details>{% endif %}</td><td>{{ g.count }}</td><td>{{ g.users }}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Повторов нет.</p>{% endif %}</div>
+
+<div class="card"><h2>Вопросы без ответа по причинам</h2>
+{% for o, items in unanswered.items() %}<h3>{{ labels[o] }} ({{ items|length }})</h3>
+<table>{% for q in items[:20] %}<tr><td><a href="/admin/analytics/journal/{{ q.id }}">{{ q.question[:140] }}</a></td>
+<td>{{ q.created_at.strftime("%d.%m.%Y %H:%M") }}</td><td>{% if q.ticket %}<a href="/admin/tickets/{{ q.ticket }}">{{ q.ticket }}</a>{% endif %}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Таких вопросов нет.</p>{% endfor %}</div>
+
+<div class="card"><h2>Экономика</h2>
+<p>Попаданий в кэш: {{ cache_hits }} из {{ total }}{% if total %} ({{ (cache_hits * 100 / total)|round(0)|int }}%){% endif %} ·
+токены всего: запрос {{ tokens_total[0] }}, ответ {{ tokens_total[1] }} ·
+<a href="/admin/analytics/economics.csv?period={{ period }}">CSV для расчёта стоимости</a></p>
+{% if economics %}<table><tr><th>Исход</th><th>Запросов</th><th>Токены запроса (ср.)</th><th>Токены ответа (ср.)</th><th>Вызовов модели (ср.)</th><th>Из кэша</th><th>Медиана, с</th><th>p90, с</th></tr>
+{% for e in economics %}<tr><td>{{ e.label }}</td><td>{{ e.requests }}</td><td>{{ e.avg_prompt|round(0)|int }}</td><td>{{ e.avg_completion|round(0)|int }}</td>
+<td>{{ e.avg_calls|round(1) }}</td><td>{{ (e.cache_share * 100)|round(0)|int }}%</td>
+<td>{% if e.median_ms is not none %}{{ (e.median_ms / 1000)|round(1) }}{% else %}—{% endif %}</td>
+<td>{% if e.p90_ms is not none %}{{ (e.p90_ms / 1000)|round(1) }}{% else %}—{% endif %}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Нет данных.</p>{% endif %}</div>
+{% endblock %}

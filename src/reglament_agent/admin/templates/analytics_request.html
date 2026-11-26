@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% block content %}
+<h1>Запрос</h1>
+<p><a href="/admin/analytics/journal">← К журналу</a></p>
+<div class="card">
+<p><b>Дата:</b> {{ r.created_at.strftime("%d.%m.%Y %H:%M:%S") }} · <b>Сотрудник:</b> {{ r.user_email }}</p>
+<p><b>Вопрос:</b> {{ r.question }}</p>
+<p><b>Переформулировано:</b> {{ r.restated }}</p>
+<p><b>Исход:</b> {{ outcome_label }}{% if cache_hit %} · <span class="badge">из кэша</span>{% endif %}
+· <b>Время:</b> {% if elapsed_ms is not none %}{{ (elapsed_ms / 1000)|round(1) }} с{% else %}—{% endif %}
+· <b>Оценка:</b> {{ '👍' if r.rating is true else '👎' if r.rating is false else 'нет' }}
+{% if ticket %}· <b>Обращение:</b> <a href="/admin/tickets/{{ ticket.number }}">{{ ticket.number }}</a>{% endif %}</p>
+{% if r.feedback %}<p><b>Комментарий:</b> {{ r.feedback }}</p>{% endif %}
+{% if summary %}<p><b>Ответ:</b> {{ summary }}</p>{% endif %}
+{% if sources %}<p><b>Основания:</b></p><ul>{% for s in sources %}<li>{{ s.doc_title }}, п. {{ s.point }}</li>{% endfor %}</ul>{% endif %}</div>
+
+<div class="card"><h2>Шаги</h2>{% if steps %}<ol>{% for s in steps %}<li>{{ s }}</li>{% endfor %}</ol>{% else %}<p class="muted">Нет.</p>{% endif %}</div>
+
+<div class="card"><h2>Кандидаты поиска</h2>
+{% if candidates %}<table><tr><th>Документ</th><th>Пункт</th><th>Подразделение</th><th>Версия</th><th>Оценка</th></tr>
+{% for c in candidates %}<tr><td>{{ c.title or c.doc_id }}</td><td>{{ c.point }}</td><td>{{ c.department }}</td><td>{{ c.version }}</td><td>{{ '%.3f'|format(c.score) if c.score is number else '' }}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Нет.</p>{% endif %}</div>
+
+<div class="card"><h2>Вызовы модели</h2>
+{% if calls %}<table><tr><th>Шаг</th><th>Модель</th><th>Токены запроса</th><th>Токены ответа</th><th>Время, мс</th><th>Очередь, мс</th><th>Статус</th></tr>
+{% for c in calls %}<tr><td>{{ c.step }}</td><td>{{ c.model }}</td><td>{{ c.prompt_tokens }}</td><td>{{ c.completion_tokens }}</td>
+<td>{{ c.total_ms|round(0)|int }}</td><td>{{ (c.queue_ms or 0)|round(0)|int }}</td><td>{% if c.ok %}ок{% else %}<span class="err">{{ c.error or 'ошибка' }}</span>{% endif %}</td></tr>{% endfor %}
+<tr><th>Итого</th><th>{{ n_calls }}</th><th>{{ prompt }}</th><th>{{ completion }}</th><th></th><th></th><th></th></tr></table>
+{% else %}<p class="muted">Вызовов модели не было.</p>{% endif %}</div>
+
+<div class="card"><h2>Отброшенные утверждения</h2>
+{% if dropped %}<ul>{% for d in dropped %}<li>{{ d }}</li>{% endfor %}</ul>{% else %}<p class="muted">Нет.</p>{% endif %}</div>
+{% endblock %}
