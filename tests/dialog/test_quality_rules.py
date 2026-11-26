@@ -124,9 +124,9 @@ def test_question_naming_two_departments_gets_variants_for_exactly_those(isolate
     conn, dsn = isolated
     seed(conn, {"n": ("Склад Север", ["x"]), "e": ("Склад Восток", ["x"]), "w": ("Склад Запад", ["x"])})
     points = [
-        hit("Склад Север", "Пропуск выдают за два дня.", doc="n"),
-        hit("Склад Восток", "Пропуск выдают за пять дней.", doc="e"),
-        hit("Склад Запад", "Пропуск выдают за день.", doc="w"),
+        hit("Склад Север", "Срок выдачи пропуска — два дня.", doc="n"),
+        hit("Склад Восток", "Срок выдачи пропуска — пять дней.", doc="e"),
+        hit("Склад Запад", "Срок выдачи пропуска — день.", doc="w"),
     ]
     model = Model()
     route = make(dsn, model, points)
