@@ -195,3 +195,61 @@ def test_journal_list_and_detail(data):
 
 def test_nav_link(data):
     assert 'href="/admin/analytics"' in client("expert").get("/admin/tickets").text
+
+
+# --- round 2 ---------------------------------------------------------------------------------
+
+def _group_hash(conn):
+    return A.summary(conn, "all")["repeated"][0]["hash"]
+
+
+def test_create_faq_from_repeated_group(data):
+    add(data, "Сколько дней на согласование договора?")
+    add(data, "согласование договора: сколько дней", user="v@x.local")
+    h = _group_hash(data)
+    page = client("expert").get("/admin/analytics?period=all").text
+    assert f'name="group" value="{h}"' in page and "Создать FAQ" in page
+    c = client("expert")
+    assert c.get("/admin/analytics/faq").status_code in (404, 405)
+    r = c.post("/admin/analytics/faq", data={"group": h, "period": "all"})
+    assert r.status_code == 303 and r.headers["location"].startswith("/admin/tickets/")
+    again = c.post("/admin/analytics/faq", data={"group": h, "period": "all"})
+    assert again.headers["location"] == r.headers["location"]
+    assert data.execute("SELECT count(*) FROM tickets").fetchone()[0] == 1
+    q, mid = data.execute("SELECT question, message_id FROM tickets").fetchone()
+    assert mid == f"analytics:{h}" and "договор" in q
+    assert c.post("/admin/analytics/faq", data={"group": "nope", "period": "all"}).status_code == 404
+    assert client("employee").post("/admin/analytics/faq", data={"group": h}).status_code == 403
+    assert client().post("/admin/analytics/faq", data={"group": h}).status_code == 303
+    assert data.execute("SELECT count(*) FROM tickets").fetchone()[0] == 1
+
+
+def test_journal_by_ticket(data):
+    rid = add(data, "Вопрос", "no_basis", ticket="2026-0005")
+    c = client("expert")
+    r = c.get("/admin/analytics/journal/by-ticket/2026-0005")
+    assert r.status_code == 303 and r.headers["location"] == f"/admin/analytics/journal/{rid}"
+    assert c.get("/admin/analytics/journal/by-ticket/2026-9999").status_code == 404
+    assert c.get("/admin/analytics/journal/by-ticket/x' OR '1'='1").status_code == 404
+    assert client("employee").get("/admin/analytics/journal/by-ticket/2026-0005").status_code == 403
+
+
+def test_ticket_card_links_to_journal(data):
+    from tests.admin.test_tickets import make_ticket
+    n = make_ticket(data)
+    assert f"/admin/analytics/journal/by-ticket/{n}" in client("expert").get(f"/admin/tickets/{n}").text
+
+
+def test_dropped_codes_in_russian(data):
+    codes = ["unknown_ref", "actor_missing", "action_missing", "actor_not_bound", "negation_mismatch",
+             "column_mismatch", "number_missing", "topic_mismatch"]
+    assert all(A.DROPPED[c] and A.DROPPED[c] != c for c in codes)
+    rid = add(data, "в", "answer", dropped=[*codes, "brand_new_code"], calls=[call(1, 1), {**call(1, 0), "kind": "embed"}])
+    page = client("expert").get(f"/admin/analytics/journal/{rid}").text
+    for c in codes:
+        assert A.DROPPED[c] in page
+    assert "brand_new_code" in page
+    assert "включая embed" in page and "Чат-вызовов: 1" in page
+    eco = client("expert").get("/admin/analytics?period=all").text
+    assert "включают embed" in eco and "Чат-вызовов (ср.)" in eco
+    assert rows(client("expert").get("/admin/analytics/economics.csv?period=all").text)[0]["avg_chat_calls"] == "1.0"

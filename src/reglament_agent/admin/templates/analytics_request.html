@@ -24,9 +24,10 @@
 {% if calls %}<table><tr><th>Шаг</th><th>Модель</th><th>Токены запроса</th><th>Токены ответа</th><th>Время, мс</th><th>Очередь, мс</th><th>Статус</th></tr>
 {% for c in calls %}<tr><td>{{ c.step }}</td><td>{{ c.model }}</td><td>{{ c.prompt_tokens }}</td><td>{{ c.completion_tokens }}</td>
 <td>{{ c.total_ms|round(0)|int }}</td><td>{{ (c.queue_ms or 0)|round(0)|int }}</td><td>{% if c.ok %}ок{% else %}<span class="err">{{ c.error or 'ошибка' }}</span>{% endif %}</td></tr>{% endfor %}
-<tr><th>Итого</th><th>{{ n_calls }}</th><th>{{ prompt }}</th><th>{{ completion }}</th><th></th><th></th><th></th></tr></table>
-{% else %}<p class="muted">Вызовов модели не было.</p>{% endif %}</div>
+<tr><th>Итого (включая embed)</th><th>{{ n_calls }}</th><th>{{ prompt }}</th><th>{{ completion }}</th><th></th><th></th><th></th></tr></table>
+{% else %}<p class="muted">Вызовов модели не было.</p>{% endif %}
+<p class="muted">Всего вызовов: {{ n_calls }} (включая embed). Чат-вызовов: {{ chat_calls }}.</p></div>
 
 <div class="card"><h2>Отброшенные утверждения</h2>
-{% if dropped %}<ul>{% for d in dropped %}<li>{{ d }}</li>{% endfor %}</ul>{% else %}<p class="muted">Нет.</p>{% endif %}</div>
+{% if dropped %}<ul>{% for code, text in dropped %}<li>{{ text }}{% if text != code %} <span class="muted">({{ code }})</span>{% endif %}</li>{% endfor %}</ul>{% else %}<p class="muted">Нет.</p>{% endif %}</div>
 {% endblock %}

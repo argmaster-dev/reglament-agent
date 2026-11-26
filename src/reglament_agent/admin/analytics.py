@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import re
 import statistics
@@ -26,6 +27,17 @@ OUTCOMES = {
 }
 TICKET_OUTCOMES = ("no_basis", "external_doc", "conflict", "low_confidence")
 UNANSWERED = (*TICKET_OUTCOMES, "off_topic", "error")
+
+DROPPED = {
+    "unknown_ref": "ссылка на пункт, которого нет среди найденных",
+    "actor_missing": "в пункте регламента не найден указанный исполнитель",
+    "action_missing": "в пункте регламента не найдено указанное действие",
+    "actor_not_bound": "действие в пункте относится к другому исполнителю",
+    "negation_mismatch": "утверждение и пункт расходятся в отрицании («не»)",
+    "column_mismatch": "утверждение относится к другому столбцу таблицы",
+    "number_missing": "числа из утверждения нет в тексте пункта",
+    "topic_mismatch": "пункт относится к другой теме вопроса",
+}
 
 _STOP = frozenset("а в во и или на по к с со у о об от до для за из не ли бы ни как что это ее его их мне мой нам "
                   "нужно можно ли ли же то так там тут при про над под без через ещё еще какой какая какие "
@@ -64,6 +76,10 @@ def elapsed(r: dict) -> int | None:
 
 def cache_hit(r: dict) -> bool:
     return bool((r["answer"] or {}).get("from_cache")) or "cache_hit" in ((r["trace"] or {}).get("steps") or [])
+
+
+def chat_calls(r: dict) -> int:
+    return sum(1 for c in (r["trace"] or {}).get("calls") or [] if c.get("kind", "chat") == "chat")
 
 
 def tokens(r: dict) -> tuple[int, int, int]:
@@ -132,13 +148,17 @@ def median(values: list[float]) -> float | None:
     return statistics.median(values) if values else None
 
 
+def group_hash(key: str) -> str:
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
+
+
 def repeated(rows: list[dict]) -> list[dict]:
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         key = normalize(r["restated"] or r["question"]) or normalize(r["question"])
         if key:
             groups[key].append(r)
-    out = [{"key": k, "count": len(v), "example": v[0]["question"], "users": len({x["user_email"] for x in v}),
+    out = [{"key": k, "hash": group_hash(k), "count": len(v), "example": v[0]["question"], "users": len({x["user_email"] for x in v}),
             "variants": sorted({x["question"] for x in v})[:5]} for k, v in groups.items() if len(v) >= 2]
     return sorted(out, key=lambda g: (-g["count"], g["key"]))
 
@@ -222,7 +242,8 @@ def economics(rows: list[dict]) -> list[dict]:
         n = len(rs)
         out.append({"outcome": o, "label": OUTCOMES.get(o, o), "requests": n,
                     "avg_prompt": sum(t[0] for t in tk) / n, "avg_completion": sum(t[1] for t in tk) / n,
-                    "avg_calls": sum(t[2] for t in tk) / n, "cache_share": sum(map(cache_hit, rs)) / n,
+                    "avg_calls": sum(t[2] for t in tk) / n,
+                    "avg_chat_calls": sum(map(chat_calls, rs)) / n, "cache_share": sum(map(cache_hit, rs)) / n,
                     "median_ms": median(ms), "p90_ms": _pct(ms, 0.9)})
     return out
 
@@ -269,17 +290,17 @@ def requests_csv(rows: list[dict]) -> str:
         p, c, n = tokens(r)
         return [r["id"], r["created_at"].isoformat(), r["user_email"], outcome(r), r["question"], r["restated"],
                 ticket_number(r) or "", "" if r["rating"] is None else ("up" if r["rating"] else "down"),
-                r["feedback"] or "", int(cache_hit(r)), elapsed(r) if elapsed(r) is not None else "", p, c, n]
+                r["feedback"] or "", int(cache_hit(r)), elapsed(r) if elapsed(r) is not None else "", p, c, n, chat_calls(r)]
     return _csv(["id", "created_at", "user_email", "outcome", "question", "restated", "ticket", "rating", "feedback",
-                 "cache_hit", "elapsed_ms", "prompt_tokens", "completion_tokens", "model_calls"], map(line, rows))
+                 "cache_hit", "elapsed_ms", "prompt_tokens", "completion_tokens", "model_calls", "chat_calls"], map(line, rows))
 
 
 def economics_csv(rows: list[dict]) -> str:
     def f(v):
         return "" if v is None else round(v, 2)
-    return _csv(["outcome", "requests", "avg_prompt_tokens", "avg_completion_tokens", "avg_model_calls",
+    return _csv(["outcome", "requests", "avg_prompt_tokens", "avg_completion_tokens", "avg_model_calls", "avg_chat_calls",
                  "cache_hit_share", "median_ms", "p90_ms"],
-                [[e["outcome"], e["requests"], f(e["avg_prompt"]), f(e["avg_completion"]), f(e["avg_calls"]),
+                [[e["outcome"], e["requests"], f(e["avg_prompt"]), f(e["avg_completion"]), f(e["avg_calls"]), f(e["avg_chat_calls"]),
                   f(e["cache_share"]), f(e["median_ms"]), f(e["p90_ms"])] for e in economics(rows)])
 
 
@@ -299,6 +320,7 @@ def request_detail(conn, request_id: str) -> dict | None:
             or {"number": ticket_number(r), "status": None, "reason": None}
     return {"r": r, "outcome": outcome(r), "outcome_label": OUTCOMES.get(outcome(r), outcome(r)),
             "steps": trace.get("steps") or [], "candidates": trace.get("candidates") or [],
-            "calls": trace.get("calls") or [], "dropped": trace.get("dropped") or [], "elapsed_ms": elapsed(r),
+            "calls": trace.get("calls") or [], "chat_calls": chat_calls(r),
+            "dropped": [(d, DROPPED.get(d, d)) for d in trace.get("dropped") or []], "elapsed_ms": elapsed(r),
             "prompt": p, "completion": c, "n_calls": n, "cache_hit": cache_hit(r), "ticket": ticket,
             "sources": _sources(answer), "summary": answer.get("summary", "")}
