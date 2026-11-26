@@ -19,6 +19,9 @@ class FAQHit:
     department: str | None = None
     stage: str | None = None
 
+    question: str = ""
+    alt_questions: tuple[str, ...] = ()
+
     def __post_init__(self):
         if self.source.faq_id is None:
             raise ValueError("A published FAQ candidate requires its FAQ reference")

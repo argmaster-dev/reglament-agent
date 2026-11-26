@@ -34,9 +34,21 @@ from reglament_agent.admin import routes as admin_routes  # noqa: E402
 from reglament_agent.chat.services import build_services  # noqa: E402
 from reglament_agent.chat import notifications as N  # noqa: E402
 
+from reglament_agent.ops.health import router as health_router
+
 services = build_services()
+# Chainlit already registers /health. Give the dependency check precedence over its liveness handler.
+for route in reversed(health_router.routes):
+    fastapi_app.router.routes.insert(0, route)
 start_page.install(fastapi_app)
 admin_routes.install(fastapi_app)
+
+
+@cl.data_layer
+def channel_storage():
+    # The service owns the conversation and request tables. Chainlit would otherwise
+    # interpret the application DSN as a provisioned Chainlit Cloud database at login.
+    return None
 
 
 @cl.header_auth_callback
@@ -88,7 +100,7 @@ async def deliver_notifications() -> None:
 async def start() -> None:
     cl.user_session.set("busy", False)
     u = cl.user_session.get("user")
-    if u.metadata.get("department"):
+    if u.metadata.get("department") and not (await services.profiles.get(u.identifier)).confirmed_at:
         await services.profiles.set_department(u.identifier, u.metadata["department"])
     if u.metadata.get("role") == "expert":
         await cl.Message(content=R.expert_notice()).send()
@@ -139,7 +151,16 @@ async def _fail(progress: cl.Message, kind: str) -> None:
     await progress.update()
 
 
+async def clear_clarification():
+    old = cl.user_session.get("clarify_msg")
+    if old:
+        await asyncio.gather(*(action.remove() for action in old.actions))
+        old.actions = []
+        cl.user_session.set("clarify_msg", None)
+
+
 async def _show(answer: Answer, text: str, message_id: str) -> None:
+    await clear_clarification()
     names = R.assign_chip_names(answer)
     specs = R.source_actions(names) + R.clarify_actions(answer) + R.answer_actions(answer, text, message_id)
     if answer.outcome is Outcome.CLARIFY:
@@ -181,17 +202,21 @@ async def retry(action: cl.Action) -> None:
 async def choose(action: cl.Action) -> None:
     option = action.payload["option"]
     old = cl.user_session.get("clarify_msg")
-    if old:
-        old.actions = []
-        await old.update()
+    if not old or action.forId != old.id or cl.user_session.get("busy"):
+        return
+    await clear_clarification()
     await cl.Message(content=option, author="user", type="user_message").send()
-    await _run(lambda st: services.answerer.choose(_user(), option, st), cl.user_session.get("last_text", ""), "")
+    await _run(lambda st: services.answerer.choose(_user(action.id), option, st), option, action.id)
 
 
 @cl.action_callback("open_source")
 async def open_source(action: cl.Action) -> None:
     ref = R.ref_from_payload(action.payload)
-    pv = await services.sources.point(ref)
+    try:
+        pv = await services.sources.point(ref)
+    except (ValueError, LookupError):
+        await cl.Message(content="Источник обновлён или недоступен. Задайте вопрос ещё раз.").send()
+        return
     await cl.ElementSidebar.set_elements([cl.Text(name=ref.label, content=R.point_markdown(pv), display="side")])
     await cl.ElementSidebar.set_title(ref.label)
 

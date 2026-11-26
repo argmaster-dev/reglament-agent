@@ -42,6 +42,7 @@ class FaqRow:
     similarity: float
     doc_title: str | None = None
     version_no: int | None = None
+    alt_questions: tuple[str, ...] = ()
 
 
 def basis_label(basis_kind: str, basis: list[dict]) -> str:
@@ -326,13 +327,13 @@ def search_rows(conn: Connection, question: str, vector: list[float], *, departm
               FROM eligible e, (SELECT websearch_to_tsquery('russian', %(query)s) AS t) q WHERE e.tsv @@ q.t),
         fused AS (SELECT id, sum(1.0 / (60 + r)) AS score FROM
                   (SELECT id, r FROM v UNION ALL SELECT id, r FROM l) x GROUP BY id)
-        SELECT e.id, e.question, e.answer, e.basis_kind, e.basis, e.doc_id, e.dept, fused.score, v.sim, e.dtitle, e.vno
+        SELECT e.id, e.question, e.alt_questions, e.answer, e.basis_kind, e.basis, e.doc_id, e.dept, fused.score, v.sim, e.dtitle, e.vno
         FROM fused JOIN eligible e ON e.id = fused.id JOIN v ON v.id = e.id
         ORDER BY fused.score DESC, e.id LIMIT %(limit)s""",
         {"vec": vector_literal(vector), "query": question, "dept": department, "stage": stage,
          "limit": limit}).fetchall()
     return [FaqRow(r["id"], r["question"], r["answer"], r["basis_kind"], r["basis"], r["doc_id"],
-                   r["dept"], float(r["score"]), float(r["sim"]), r["dtitle"], r["vno"]) for r in rows]
+                   r["dept"], float(r["score"]), float(r["sim"]), r["dtitle"], r["vno"], tuple(r["alt_questions"])) for r in rows]
 
 
 class PublishedFaqStore:
@@ -353,5 +354,6 @@ class PublishedFaqStore:
                                   point["number"], column=point.get("column"))
             source = SourceRef(r.doc_id or "faq", "FAQ службы качества", r.department or "Служба качества",
                                r.version_no or 0, "", faq_id=r.faq_id)
-            hits.append(FAQHit(source, r.answer, basis, r.department, stage if doc else None))
+            hits.append(FAQHit(source, r.answer, basis, r.department, stage if doc else None,
+                               r.question, r.alt_questions))
         return hits

@@ -27,6 +27,7 @@ services:
       # Override host-side values from .env: inside the container services are reached by name.
       DATABASE_URL: postgresql://regulations:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/regulations
       MODEL_OLLAMA_URL: http://host.docker.internal:11434
+      CHAT_SERVICES_FACTORY: ${CHAT_SERVICES_FACTORY:-reglament_agent.dialog.services:build_services}
       MAIL_HOST: mailpit
       MAIL_PORT: "1025"
       CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:?Set CHAINLIT_AUTH_SECRET}

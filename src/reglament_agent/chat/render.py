@@ -142,12 +142,18 @@ def answer_markdown(answer: Answer, names: dict[SourceRef, str] | None = None) -
     elif answer.outcome is Outcome.CLARIFY and answer.clarification:
         parts.append(answer.clarification.question)
     else:
-        if answer.summary:
+        remaining = answer.statements
+        if remaining and answer.summary == remaining[0].text:
+            parts.append(statement_line(remaining[0], names))
+            remaining = remaining[1:]
+        elif answer.summary:
             parts.append(answer.summary)
-        if answer.statements:
-            parts.append(statements_md(answer.statements, names))
+        if remaining:
+            parts.append(statements_md(remaining, names))
         if answer.variants:
             parts.extend(variant_md(v, names) for v in answer.variants)
+    if answer.caveat and answer.outcome != Outcome.LOW_CONFIDENCE:
+        parts.append(f"> {answer.caveat}")
     if answer.ticket:
         parts.append(ticket_card(answer.ticket))
     if answer.profile_note:

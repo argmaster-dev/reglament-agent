@@ -23,6 +23,7 @@ _ADVANCE_INTERVAL = (r"\mза\s+(?:[[:alnum:]-]+\s+){0,4}"
                      r"(?:минут[а-я]*|час(?:а|ов)?|день|дня|дней|сутки|суток|"
                      r"недел[а-я]*|месяц[а-я]*|год(?:а|ов)?|лет)\s+до\M")
 _RETRIEVAL_FORMS = (
+    (re.compile(r'\bмарж\w*'), 'маржинальность'),
     (re.compile(r"\bподпис\w*"), "подписание подписывать"),
     (re.compile(r"\bсоглашени\w*"), "договор"),
     (re.compile(r"\bвнешн\w+\s+исполнител\w*"), "подрядчик субподрядчик"),
@@ -118,3 +119,22 @@ def search(conn: Connection, query: str, vector: list[float], *, department: str
     remaining = [hit for hit in hits if hit.point_id not in reserved]
     keep = reserved.union(hit.point_id for hit in remaining[:limit - len(reserved)])
     return [h for h in hits if h.point_id in keep]
+
+
+def preview(conn: Connection, query: str, *, department=None, stage=None, limit=16) -> list[Hit]:
+    """Small lexical shortlist per department for clarification before model inference."""
+    rows = conn.execute("""
+        WITH terms AS (SELECT websearch_to_tsquery('russian', %(q)s) AS q),
+        pool AS (SELECT p.point_id,p.doc_id,p.version_id,p.number,p.text,ts_rank_cd(p.tsv,q) AS weight,
+                 d.title,d.department,v.version_number,p.sentences,p.blocks,
+                 row_number() OVER (PARTITION BY d.department ORDER BY
+                    (%(advance)s AND p.text ~* %(interval)s) DESC,ts_rank_cd(p.tsv,q) DESC,p.point_id) AS n
+                 FROM documents d JOIN document_versions v ON v.version_id=d.active_version_id
+                 JOIN points p ON p.version_id=v.version_id CROSS JOIN terms
+                 WHERE d.status='active' AND p.tsv @@ q AND (%(dept)s::text IS NULL OR d.department=%(dept)s)
+                 AND (%(stage)s::text IS NULL OR %(stage)s=ANY(d.stages)))
+        SELECT point_id,doc_id,version_id,number,text,weight,title,department,version_number,sentences,blocks
+        FROM pool WHERE n<=%(limit)s ORDER BY n,point_id""",
+        {'q':lexical_query(query),'dept':department,'stage':stage,'limit':limit,
+         'advance':bool(_ADVANCE_QUESTION.search(query)),'interval':_ADVANCE_INTERVAL}).fetchall()
+    return [Hit(*row[:10],read_blocks(row[10]),0.0,True) for row in rows]
