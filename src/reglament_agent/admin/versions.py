@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from contextlib import contextmanager
 from typing import Callable
 
 from markupsafe import Markup, escape
@@ -267,7 +268,20 @@ def history(conn: Connection, faq_id: int) -> list[dict]:
     return rows
 
 
+@contextmanager
+def snapshot(conn: Connection):
+    """One consistent view for building a page: text and token come from the same rows."""
+    with conn.transaction():
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        yield
+
+
 def review_context(conn: Connection, faq_id: int) -> dict | None:
+    with snapshot(conn):
+        return _review_context(conn, faq_id)
+
+
+def _review_context(conn: Connection, faq_id: int) -> dict | None:
     entry = F.get_faq(conn, faq_id)
     if entry is None:
         return None
@@ -293,21 +307,32 @@ def review_context(conn: Connection, faq_id: int) -> dict | None:
     docs = cur.execute("SELECT doc_id, title FROM documents WHERE status='active' AND "
                        "active_version_id IS NOT NULL ORDER BY title").fetchall()
     rows = history(conn, faq_id)
-    return {"e": entry, "items": items, "token": shown_token(conn, entry), "history": rows, "docs": docs}
+    return {"e": entry, "items": items, "token": shown_token(conn, entry, [i["new_text"] for i in items]), "history": rows, "docs": docs}
 
 
 Shown = tuple  # (expected_version_id, expected_hashes) as rendered into the form
 
 
-def shown_token(conn: Connection, entry: dict) -> dict:
-    """What the expert sees: the document's active version and the hash of each basis text now."""
-    version = conn.execute("SELECT active_version_id FROM documents WHERE doc_id=%s",
-                           (entry["doc_id"],)).fetchone() if entry["doc_id"] else None
+def _basis_docs(entry: dict) -> list[str]:
+    """Every document the entry depends on, in the one lock order used everywhere (by doc_id)."""
+    return sorted({b["doc_id"] for b in entry["basis"]} | ({entry["doc_id"]} if entry["doc_id"] else set()))
+
+
+def shown_token(conn: Connection, entry: dict, texts: list | None = None) -> dict:
+    """What the expert sees: active versions of ALL basis documents and the hash of each shown text.
+
+    `texts` are the very texts rendered on the page (same snapshot); without them the current ones are read."""
+    docs = _basis_docs(entry)
+    versions = dict(conn.execute("SELECT doc_id, active_version_id FROM documents WHERE doc_id=ANY(%s)",
+                                 (docs,)).fetchall())
     hashes = []
-    for b in entry["basis"]:
-        text = F.point_state(conn, b)["text"] if b.get("number") else None
+    for i, b in enumerate(entry["basis"]):
+        text = None
+        if b.get("number"):
+            text = texts[i] if texts is not None else F.point_state(conn, b)["text"]
         hashes.append(content_hash(text) if text else "-")
-    return {"expected_version_id": version[0] if version and version[0] else "",
+    ids = [str(versions.get(d) or "") for d in docs]
+    return {"expected_version_id": ids[0] if len(ids) == 1 else ",".join(ids),
             "expected_hashes": ",".join(hashes)}
 
 
@@ -315,16 +340,27 @@ def make_shown(expected_version_id: str = "", expected_hashes: str = "") -> dict
     return {"expected_version_id": str(expected_version_id or ""), "expected_hashes": str(expected_hashes or "")}
 
 
+def _lock_documents(conn: Connection, doc_ids: list[str]) -> None:
+    """Lock order everywhere: documents by doc_id (advisory, then row), only then FAQ rows."""
+    for d in sorted(doc_ids):
+        _lock(conn, d)
+    if doc_ids:
+        conn.execute("SELECT 1 FROM documents WHERE doc_id=ANY(%s) ORDER BY doc_id FOR UPDATE", (sorted(doc_ids),))
+
+
 def _review_entry(conn: Connection, faq_id: int, shown: dict | None = None, check: bool = True) -> dict:
-    """Lock the entry (and its document), then compare what the expert saw with what is there now."""
-    first = conn.execute("SELECT doc_id FROM faq_entries WHERE id=%s FOR UPDATE", (faq_id,)).fetchone()
+    """Lock documents of the basis, then the entry; compare what the expert saw with all of it now."""
+    first = F.get_faq(conn, faq_id)
     if first is None:
         raise VersionError("Запись FAQ не найдена.")
-    if first[0]:
-        _lock(conn, first[0])
+    docs = _basis_docs(first)
+    _lock_documents(conn, docs)
+    conn.execute("SELECT 1 FROM faq_entries WHERE id=%s FOR UPDATE", (faq_id,))
     row = F.get_faq(conn, faq_id)
     if row["status"] != "review":
         raise VersionError("Запись не на проверке.")
+    if _basis_docs(row) != docs:
+        raise StaleBasis("Основание изменилось, проверьте новый текст.")
     if check:
         now = shown_token(conn, row)
         given = {k: str(v) for k, v in (shown or {}).items()}

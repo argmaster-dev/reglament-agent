@@ -149,17 +149,18 @@ def faq_list(request: Request, status: str = ""):
 
 @expert_router.get("/faq/{faq_id}", response_class=HTMLResponse)
 def faq_page(request: Request, faq_id: int, error: str = "", status_code: int = 200):
-    with jobs.connect() as conn:
+    with jobs.connect() as conn, V.snapshot(conn):  # text and token come from one snapshot
         e = F.get_faq(conn, faq_id)
         if e is None:
             return render("forbidden.html", request, 404, message="Запись FAQ не найдена")
-        items = []
+        items, shown = [], []
         for b in e["basis"]:
             st = F.point_state(conn, b) if b.get("number") else None
+            shown.append(st["text"] if st else None)
             if st and st["state"] != "removed":
                 st["text"] = (view_text(conn, b["doc_id"], st["number"]) or {}).get("text", st["text"])
             items.append({**b, "now": st})
-        token = V.shown_token(conn, e)
+        token = V.shown_token(conn, e, shown)
     return render("faq_entry.html", request, status_code, nav="faq", e=e, items=items, error=error, token=token,
                   status_text=FAQ_STATUS.get(e["status"], e["status"]),
                   label=F.basis_label(e["basis_kind"], e["basis"]))
