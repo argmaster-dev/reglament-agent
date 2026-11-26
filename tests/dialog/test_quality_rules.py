@@ -344,3 +344,14 @@ def test_action_missing_without_actor_is_tolerated_only_when_no_executor_is_aske
     assert asked.outcome == Outcome.NO_BASIS
     with_actor = _assemble(items, [_claim(items, "S1", "Архитектор", "подписывает")])
     assert with_actor.outcome == Outcome.NO_BASIS
+
+
+def test_wrong_verb_with_a_present_actor_is_tolerated_only_for_a_non_executor_question():
+    items = _two_sentence_point()
+    q = "Сколько дней отводится на заявку на допуск?"
+    present = _assemble(items, [_claim(items, "S1", "Архитектор", "утверждает")], q)
+    assert present.outcome == Outcome.ANSWER and present.statements[0].text == items["S1"].text
+    absent = _assemble(items, [_claim(items, "S1", "Логист", "утверждает")], q)
+    assert absent.outcome == Outcome.NO_BASIS
+    asked = _assemble(items, [_claim(items, "S1", "Архитектор", "подписывает")])
+    assert asked.outcome == Outcome.NO_BASIS
