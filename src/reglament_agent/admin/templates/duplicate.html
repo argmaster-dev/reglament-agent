@@ -1,0 +1,4 @@
+{% extends "base.html" %}{% block content %}
+<h1>Эта редакция уже загружена (версия {{ number }})</h1>
+<p>Файл полностью совпадает с одной из версий документа «{{ title }}». Публикация не нужна.</p>
+<a class="btn sec" href="/admin/documents">К документам</a>{% endblock %}

@@ -52,3 +52,16 @@ class FakeEmbedder:
                 vector[slot] += 1.0
             result.append(vector)
         return result
+
+
+def make_embedder(env=None) -> Embedder:
+    """EMBEDDER=ollama|fake (default ollama); OLLAMA_URL for the Ollama endpoint."""
+    import os
+    env = env if env is not None else os.environ
+    kind = (env.get("EMBEDDER") or "ollama").lower()
+    if kind == "fake":
+        return FakeEmbedder()
+    if kind != "ollama":
+        raise ValueError(f"Unknown EMBEDDER: {kind}")
+    client = httpx.Client(base_url=env.get("OLLAMA_URL", "http://localhost:11434"), timeout=300)
+    return OllamaEmbedder(client)

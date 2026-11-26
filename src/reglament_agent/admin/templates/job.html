@@ -1,0 +1,24 @@
+{% extends "base.html" %}{% block content %}
+<h1>Публикация: {{ card.title }}</h1>
+<div class="card"><ul class="steps">
+<li><span class="m ok">✓</span><span>Разбор</span><span class="s">{{ t.parse if t.parse is not none else "" }}{{ " с" if t.parse is not none }}</span></li>
+{% set names = {"embed": "Эмбеддинги", "publish": "Публикация", "selfcheck": "Самопроверка поиска"} %}
+{% for s in steps %}<li class="{{ s.state }}"><span class="m">{% if s.state == "done" %}<span class="ok">✓</span>{% elif s.state == "active" %}●{% elif s.state == "failed" %}<span class="err">✕</span>{% else %}○{% endif %}</span>
+<span>{{ names[s.key] }}
+{% if s.key == "embed" %}{% if s.state == "active" and total %} {{ done }}/{{ total }} <progress value="{{ done }}" max="{{ total }}"></progress>
+{% elif s.state == "done" and stats.embed %} {{ stats.embed.done }}/{{ stats.embed.total }}{% if stats.publication %} (переиспользовано векторов: {{ stats.publication.vectors_reused }}){% endif %}{% endif %}
+{% elif s.key == "selfcheck" and s.state == "active" %} {{ done }}/{{ total }} <progress value="{{ done }}" max="{{ total }}"></progress>
+{% elif s.key == "selfcheck" and s.state == "done" and check %} {{ check.total }}/{{ check.total }}{% endif %}</span>
+<span class="s">{% if s.sec is not none %}{{ "%.1f"|format(s.sec) }} с{% endif %}</span></li>{% endfor %}
+</ul>{% if t.total is defined %}<p class="muted">Всего: {{ "%.1f"|format(t.total) }} с</p>{% endif %}
+{% if status == "queued" %}<p class="muted">В очереди…</p>{% endif %}</div>
+{% if status == "failed" %}<div class="card"><p class="err"><b>Ошибка публикации.</b> Активная версия документа не изменена.</p>
+<pre style="white-space:pre-wrap">{{ error }}</pre><a class="btn sec" href="/admin/documents/upload">Загрузить заново</a></div>{% endif %}
+{% if status == "duplicate" %}<div class="card"><p>Эта редакция уже загружена (версия {{ stats.version }}). Ничего не изменено.</p>
+<a class="btn sec" href="/admin/documents">К документам</a></div>{% endif %}
+{% if status == "ready" %}<div class="card"><p class="ready">● Готов к поиску</p>
+{% if check %}<p>Поиск находит {{ check.found }} из {{ check.total }} пунктов (в первой тройке выдачи; на первом месте: {{ check.top1 }}).</p>
+{% if check.misses %}<p class="warn">Не найдены по собственному тексту: {{ check.misses|join(", ") }}</p>{% endif %}{% endif %}
+<p class="muted">Версия {{ stats.version }}. Новое подразделение появится в кнопках уточнения в чате.</p>
+<a class="btn" href="/admin/documents">Открыть документ</a></div>{% endif %}
+{% endblock %}

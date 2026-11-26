@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% block content %}
+<h1>Предпросмотр: {{ filename }}</h1>
+<div class="card"><p><b>{{ summary.sections }}</b> разделов, <b>{{ summary.points }}</b> пунктов, уровней: {{ summary.levels }},
+примечаний: {{ summary.notes }}, списков: {{ summary.lists }}, таблиц: {{ summary.tables }},
+предупреждений: {{ summary.warnings|length }}</p>
+<p class="muted">Подразделение: {{ card.department }} · Этапы: {% for s in card.stages %}{{ stages.get(s, s) }}{% if not loop.last %}, {% endif %}{% endfor %}
+· Разбор занял {{ parse_sec }} с</p>
+{% if summary.warnings %}<ul class="warn">{% for w in summary.warnings %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}
+{% if diff %}<p>Новая редакция документа «{{ card.title }}»: добавлено пунктов {{ diff.added }}, удалено {{ diff.removed }},
+изменено {{ diff.changed }}, без изменений {{ diff.same }}. Векторы неизменённых пунктов будут переиспользованы.</p>{% endif %}</div>
+<div class="card"><details><summary>Структура документа</summary>
+{% for s in summary.tree %}<details><summary>{{ s.point.number }}. {{ s.point.heading }} ({{ s.children|length }})</summary>
+{% for p in s.children %}<div class="pt"><b>{{ p.number }}</b> {{ p.heading|truncate(140) }}</div>{% endfor %}</details>{% endfor %}
+</details></div>
+<form class="f" method="post" action="/admin/jobs/{{ job_id }}/publish">
+{% if card.mode == "new" %}<label>Название документа</label><input type="text" name="title" value="{{ card.title }}">{% endif %}
+<p><button type="submit">Опубликовать</button></p></form>
+<form method="post" action="/admin/jobs/{{ job_id }}/cancel"><button class="sec" type="submit">Отмена</button></form>
+{% endblock %}

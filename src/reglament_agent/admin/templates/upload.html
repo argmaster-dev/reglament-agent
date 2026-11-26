@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% block content %}
+<h1>Загрузить регламент</h1>
+{% if error %}<p class="err">{{ error }}</p>{% endif %}
+<form class="f card" method="post" action="/admin/documents/upload" enctype="multipart/form-data">
+<label>Файл DOCX</label><input type="file" name="file" accept=".docx" required>
+<label>Что загружаем</label>
+<select name="target"><option value="new">Новый документ</option>
+{% for id, title, dep in docs %}<option value="{{ id }}">Новая редакция: {{ title }} ({{ dep }})</option>{% endfor %}</select>
+<div class="muted" style="margin-top:6px">Для новой редакции подразделение и этапы берутся из документа.</div>
+<label>Название (для нового документа; если пусто, возьмём из файла)</label><input type="text" name="title">
+<label>Подразделение (для нового документа)</label>
+<select name="department_select">{% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+<option value="__new__">Новое подразделение…</option></select>
+<input type="text" name="department_new" placeholder="Название нового подразделения" style="margin-top:6px">
+<label>Этапы</label><div class="row"><label><input type="checkbox" name="stages" value="presale"> пресейл</label>
+<label><input type="checkbox" name="stages" value="project"> реализация</label></div>
+<p><button type="submit">Проверить файл</button> <a class="btn sec" href="/admin/documents">Отмена</a></p></form>{% endblock %}
