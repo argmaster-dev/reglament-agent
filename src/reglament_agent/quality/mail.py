@@ -56,8 +56,9 @@ def build_body(*, number: str, question: str, restated: str | None, reason: str,
     if candidates:
         lines += ["", "Найденные пункты регламентов:"]
         for c in candidates:
-            line = (f"- {c.get('title') or c.get('doc_id')}, п. {c.get('point')}"
-                    f" (версия {c.get('version_no')})")
+            line = f"- {c.get('title') or c.get('doc_id')}, п. {c.get('point')}"
+            if version := c.get("version_no") or c.get("version"):
+                line += f" (версия {version})"
             if isinstance(c.get("score"), (int, float)):
                 line += f", релевантность {c['score']:.2f}"
             lines.append(line)

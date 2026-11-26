@@ -189,3 +189,19 @@ def test_continuous_worker_drains_new_messages_and_stops_on_signal(isolated, smt
         finally:
             if worker.poll() is None:
                 worker.kill()
+
+
+def test_mail_formats_candidate_version_from_dialog_trace():
+    from reglament_agent.quality.mail import build_body
+
+    body = build_body(
+        number="2026-0001", question="Вопрос", restated=None, reason="no_basis",
+        user_email="employee@demo.local", profile={}, clarifications=[],
+        candidates=[
+            {"doc_id": "rules", "point": "3.2", "version": 4},
+            {"doc_id": "other-rules", "point": "1.1"},
+        ],
+        public_base_url="http://localhost:8000",
+    )
+    assert "rules, п. 3.2 (версия 4)" in body
+    assert "версия None" not in body

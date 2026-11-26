@@ -61,8 +61,9 @@ def _ticket_context(conn, number: str) -> dict | None:
     ans = cur.execute("SELECT * FROM ticket_answers WHERE ticket_id=%s", (t["id"],)).fetchone()
     cands = []
     for c in t["candidates"]:
-        view = view_text(conn, c.get("doc_id"), c.get("point"), c.get("version_no")) if c.get("point") else None
-        cands.append({**c, "view": view})
+        version = c.get("version_no") or c.get("version")
+        view = view_text(conn, c.get("doc_id"), c.get("point"), version) if c.get("point") else None
+        cands.append({**c, "version_no": version, "view": view})
     ctx = {"t": t, "mails": mails, "answer": ans, "candidates": cands, "reason_text": REASONS.get(t["reason"], t["reason"]),
            "status_text": STATUS.get(t["status"], t["status"]), "mail_text": MAIL,
            "basis_text": F.basis_label(ans["basis_kind"], ans["basis"]) if ans else None}

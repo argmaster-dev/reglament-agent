@@ -112,10 +112,11 @@ def test_point_basis_review_flow(env):
     emb = FakeEmbedder()
     data = (CORPUS / CARD.file).read_bytes()
     publish(env, CARD, data, emb, "t")
-    n = make_ticket(env, candidates=[{"doc_id": "td-project", "point": "14.1", "title": "ТД", "version_no": 1}])
+    n = make_ticket(env, candidates=[{"doc_id": "td-project", "point": "14.1", "title": "ТД", "version": 1}])
     c = client("expert")
     page = c.get(f"/admin/tickets/{n}").text
     assert "td-project|14.1" in page and "За организацию размещения заказов" in page
+    assert "ТД, п. 14.1 (версия 1)" in page
     r = c.post(f"/admin/tickets/{n}", data={
         "action": "answer", "answer": "Заказ размещает аккаунт-менеджер.", "basis_kind": "points",
         "cand": ["td-project|14.1"], "extra_points": "td-project п. 16.1", "visibility": "faq",
