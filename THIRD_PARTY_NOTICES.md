@@ -6,14 +6,17 @@
 
 | Компонент | Версия | Лицензия | Роль |
 |---|---|---|---|
-| httpx | >=0.27 | BSD-3-Clause | HTTP-клиент к Ollama |
-| pydantic | >=2.7 | MIT | Модели данных |
-| pydantic-settings | >=2.3 | MIT | Настройки из переменных окружения |
+| psycopg и psycopg-binary (PyPI) | 3.3.9 | LGPL-3.0-only | Драйвер PostgreSQL |
+| pgvector (PyPI) | 0.5.1 | MIT | Адаптер pgvector в окружении |
+| HTTPX (PyPI) | 0.28.1 | BSD-3-Clause | Клиент Ollama |
+| Pydantic / pydantic-settings (PyPI) | 2.14.4 / 2.16.3 | MIT | Модели и настройки приложения |
+| pytest / pgserver (PyPI, разработка) | 9.2.0 / 0.1.4 | MIT / Apache-2.0 | Проверки и временная БД |
 
 ## Модели
 
 | Модель | Редакция | Лицензия | Роль |
 |---|---|---|---|
+| BAAI/bge-m3 (Hugging Face, поставка Ollama) | bge-m3:latest, digest `7907646426070047…` | MIT | Плотный вектор, 1024 измерения |
 
 ## Ранее созданные наработки
 
@@ -24,3 +27,6 @@
 
 | Компонент | Версия | Лицензия | Роль |
 |---|---|---|---|
+| PostgreSQL / pgvector (образ pgvector/pgvector) | 16 / 0.8.7, digest в compose.yaml | PostgreSQL License | Хранилище, полнотекстовый и векторный поиск |
+| Mailpit (axllent/mailpit) | digest `ed9b00c609e7…` в compose.yaml | MIT | Приём почты на стенде |
+| Ollama (ollama/ollama) | 0.40.2 на проверочном стенде | MIT | Локальный сервер моделей |
