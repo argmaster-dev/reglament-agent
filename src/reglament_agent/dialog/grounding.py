@@ -425,15 +425,12 @@ def assemble(question, data, items, departments, variants, trace, rows=()):
         out = Outcome.NO_BASIS
     # An unchanged baseline and a discretionary override are both material to a general question.
     if out == Outcome.ANSWER and "приоритет" in fold(question):
-        baseline = [s for s in statements if re.search(r"приоритет не меняется", fold(s.text))]
+        baseline = [s for s in statements if re.search(r"приоритет(?: заявки)? не меняется", fold(s.text))]
         overrides = [
             s for s in statements if re.search(r"может.{0,35}(понизить|повысить) приоритет", fold(s.text))
         ]
         if baseline and overrides:
-            if not re.search(r"\bss\b", fold(question)):
-                out = Outcome.CONFLICT
-            else:
-                statements = [s for s in statements if s not in baseline]
+            out = Outcome.CONFLICT
     if out == Outcome.CONFLICT and len(statements) < 2:
         out = Outcome.LOW_CONFIDENCE
     trace["dropped"] = [reason for verdict in dropped for reason in verdict.reasons]
@@ -456,12 +453,7 @@ def assemble(question, data, items, departments, variants, trace, rows=()):
     if out in (Outcome.OFF_TOPIC, Outcome.NO_BASIS):
         statements = []
     if out == Outcome.ANSWER and statements:
-        first = statements[0]
-        plain = re.sub(r"^Важно:\s*", "", first.text)
-        plain = re.sub(r"\bдолжен быть инициирован\b", "нужно начать", plain)
-        plain = re.sub(r"^Заявка должна быть инициирована", "Заявку нужно инициировать", plain)
-        statements[0] = Statement(plain, first.sources)
-        summaries[out] = plain
+        summaries[out] = statements[0].text
     return Answer(
         out,
         summaries.get(out, ""),
