@@ -14,14 +14,17 @@ Docker Engine и Tailscale должны запускаться при загру
 install -d ~/.config/systemd/user
 ```
 
-Установите три файла и включите пользовательские службы. Если на 11434 уже работает вручную запущенная Ollama, перед переключением дождитесь завершения её запросов.
+Установите три файла и включите пользовательские службы. Если на 11434 уже работает вручную запущенная Ollama, включите её службу для следующей загрузки и запустите сейчас только сокет прокси. При первой перезагрузке Ollama запустится из службы.
 
 ```sh
 install -m 644 deploy/reglament-ollama.service deploy/reglament-ollama-proxy.service deploy/reglament-ollama-proxy.socket ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now reglament-ollama.service reglament-ollama-proxy.socket
+systemctl --user enable reglament-ollama.service
+systemctl --user enable --now reglament-ollama-proxy.socket
+# Запустите, если на порту 11434 ещё нет процесса Ollama.
+systemctl --user start reglament-ollama.service
+# Один раз, если loginctl show-user "$(id -un)" --property=Linger показывает Linger=no.
 sudo loginctl enable-linger "$(id -un)"
-systemctl --user is-active reglament-ollama.service reglament-ollama-proxy.socket
 ```
 
 `enable-linger` запускает пользователя systemd без входа в рабочий стол. Ollama продолжает слушать на loopback и обслуживает один запрос генерации за раз.

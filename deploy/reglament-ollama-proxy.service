@@ -1,6 +1,5 @@
 [Unit]
 Description=Forward the regulatory stand bridge to local Ollama
-Requires=reglament-ollama.service
 After=reglament-ollama.service
 
 [Service]
