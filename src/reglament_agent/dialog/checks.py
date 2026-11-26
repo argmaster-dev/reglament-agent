@@ -98,8 +98,17 @@ def _action_positions(toks: list[str], action: str) -> list[int]:
     return pos
 
 
+_LIMIT_PREFIXES = ("реже", "чаще", "позднее", "ранее", "менее", "более", "свыше",
+                   "превыша", "только")
+
+
+def _is_limit_ne(toks: list[str], j: int) -> bool:
+    """«не» introducing a comparative/limit phrase («не реже», «не более»...)."""
+    return toks[j] == "не" and j + 1 < len(toks) and toks[j + 1].startswith(_LIMIT_PREFIXES)
+
+
 def _negated_at(toks: list[str], clauses: list[int], i: int) -> bool:
-    if any(_is_neg(t) for t in toks[max(0, i - NEG_WINDOW) : i]):
+    if any(_is_neg(toks[j]) and not _is_limit_ne(toks, j) for j in range(max(0, i - NEG_WINDOW), i)):
         return True
     return any(
         j > i and clauses[j] == clauses[i] and toks[j].startswith(NEGATION_PREFIXES)

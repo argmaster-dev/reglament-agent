@@ -94,3 +94,10 @@ def test_lexicon_inflection():
     assert find_roles(words("письмо аккаунт-менеджера"))[0][2] == "ам"
     assert find_roles(words("пресейл-архитектор"))[0][2] == "па"
     assert find_roles(words("Менеджера по работе с договорами"))[0][2] == "менеджер по работе с договорами"
+
+
+def test_limit_phrases_not_negation():
+    assert run("РП не реже одного раза в неделю направляет отчёт.", actor="РП", action="направляет") == []
+    s = "Не позднее чем за 5 рабочих дней до встречи РП запрашивает согласование."
+    assert run(s, actor="РП", action="запрашивает") == []
+    assert "negation_mismatch" in run("РП не вправе подписывать договор.", actor="РП", action="подписывает")
