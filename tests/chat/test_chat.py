@@ -146,3 +146,63 @@ def test_switching_demo_identity_expires_prior_chat_session(monkeypatch, tmp_pat
             r = getattr(client, method)(path, headers={'Cookie': 'access_token=old; access_token_1=part'})
             expired = [v.split('=', 1)[0] for v in r.headers.get_list('set-cookie') if 'Max-Age=0' in v]
             assert {'access_token', 'access_token_1'} <= set(expired)
+
+
+def test_start_uses_current_active_departments(isolated, monkeypatch, tmp_path):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from reglament_agent.chat.start_page import install
+    from reglament_agent.ingest.embedding import FakeEmbedder
+    from reglament_agent.ingest.parser import load_cards
+    from reglament_agent.storage.publish import publish
+
+    conn, dsn = isolated
+    monkeypatch.setenv("CHAINLIT_APP_ROOT", str(tmp_path))
+    monkeypatch.setenv("CHAINLIT_AUTH_SECRET", SECRET)
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    monkeypatch.delenv("CHAT_TRUSTED_HEADER", raising=False)
+    app = FastAPI()
+    install(app)
+
+    def preset(client, department):
+        response = client.post("/start/employee", data={"department": department})
+        assert response.status_code == 303
+        return S.verify_identity(response.cookies[S.COOKIE_NAME], SECRET).department
+
+    with TestClient(app, follow_redirects=False) as browser:
+        assert '<option value="">Без профиля</option>' in browser.get("/start").text
+        assert 'value="Техническая дирекция"' not in browser.get("/start").text
+        assert preset(browser, "Техническая дирекция") is None
+
+        directory = Path(__file__).resolve().parents[2] / "docx"
+        department = "Отдел & >"
+        card = replace(load_cards(directory)[0], department=department)
+        publish(conn, card, (directory / card.file).read_bytes(), FakeEmbedder(), "test")
+        assert 'value="Отдел &amp; &gt;"' in browser.get("/start").text
+        assert preset(browser, department) == department
+
+        conn.execute("UPDATE documents SET status='inactive' WHERE doc_id=%s", (card.doc_id,))
+        assert 'value="Отдел &amp; &gt;"' not in browser.get("/start").text
+        assert preset(browser, department) is None
+
+
+def test_start_keeps_demo_departments_without_a_database(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from reglament_agent.chat.start_page import install
+
+    monkeypatch.setenv("CHAINLIT_APP_ROOT", str(tmp_path))
+    monkeypatch.setenv("CHAINLIT_AUTH_SECRET", SECRET)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("CHAT_TRUSTED_HEADER", raising=False)
+    app = FastAPI()
+    install(app)
+    with TestClient(app, follow_redirects=False) as browser:
+        assert 'value="Техническая дирекция"' in browser.get("/start").text
+        response = browser.post("/start/employee", data={"department": "Техническая дирекция"})
+        assert S.verify_identity(response.cookies[S.COOKIE_NAME], SECRET).department == "Техническая дирекция"

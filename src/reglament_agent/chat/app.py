@@ -34,7 +34,7 @@ from reglament_agent.chat import render as R  # noqa: E402
 from reglament_agent.chat import session as S  # noqa: E402
 from reglament_agent.chat import start_page  # noqa: E402
 from reglament_agent.admin import routes as admin_routes  # noqa: E402
-from reglament_agent.chat.services import build_services  # noqa: E402
+from reglament_agent.chat.services import available_departments, build_services  # noqa: E402
 from reglament_agent.chat import notifications as N  # noqa: E402
 
 from reglament_agent.chat.history import router as history_router
@@ -328,9 +328,15 @@ async def change_scope(action: cl.Action) -> None:
     if not current_scope_action(action):
         await cl.Message(content="Чтобы вернуться к прежнему вопросу, задайте его ещё раз.").send()
         return
+    departments = await available_departments()
+    if not current_scope_action(action):
+        return
+    if not departments:
+        await cl.Message(content="Нужен действующий регламент, чтобы выбрать подразделение.").send()
+        return
     specs = [
         R.ActionSpec("set_department", d, {"department": d, "answer_id": action.payload["answer_id"]})
-        for d in S.DEPARTMENTS
+        for d in departments
     ]
     await cl.Message(content="Для какого подразделения ответить?", actions=_actions(specs)).send()
 
@@ -347,7 +353,9 @@ def current_scope_action(action: cl.Action) -> bool:
 @cl.action_callback("set_department")
 async def set_department(action: cl.Action) -> None:
     department = action.payload.get("department")
-    if department not in S.DEPARTMENTS or not current_scope_action(action):
+    if not department or not current_scope_action(action):
+        return
+    if department not in await available_departments() or not current_scope_action(action):
         return
     await action.remove()
     msg = cl.Message(content=f"А в подразделении {department}?", author="user", type="user_message")

@@ -24,6 +24,7 @@ from reglament_agent.answer import (
 TD = "Техническая дирекция"
 IB = "Дирекция ИБ"
 DB = "ДБРЦТ"
+PREVIEW_DEPARTMENTS = (DB, IB, TD)
 
 REF_TD_1_5 = SourceRef("stub-td", "Регламент пресейла", "ТД", 3, "1.5", sentence=1)
 REF_TD_16_1 = SourceRef("stub-td-sub", "Регламент работы с субподрядчиками", "ТД", 2, "16.1", sentence=0)
