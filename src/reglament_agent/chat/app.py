@@ -221,7 +221,8 @@ async def on_message(message: cl.Message) -> None:
     if text == "/feedback":
         await open_feedback(cl.user_session.get("last_answer_id"))
         return
-    if not 3 <= len(text) <= 2000:
+    small_reply = len(text) == 2 and cl.user_session.get("clarify_msg") is not None
+    if not (small_reply or 3 <= len(text) <= 2000):
         await cl.Message(content="Введите вопрос длиной от 3 до 2000 символов.").send()
         return
     cl.user_session.set("last_mid", message.id)

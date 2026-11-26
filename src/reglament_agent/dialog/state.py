@@ -16,15 +16,40 @@ answers = TypeAdapter(Answer)
 
 def get_profile(conn, email):
     row = conn.execute(
-        "SELECT department, confirmed_at FROM dialog_profiles WHERE email=%s", (email,)
+        "SELECT department, position, confirmed_at FROM dialog_profiles WHERE email=%s", (email,)
     ).fetchone()
-    return Profile(email, row[0] if row else None, None, row[1].isoformat() if row and row[1] else None)
+    if row is None:
+        return Profile(email, None, None, None)
+    department, position, confirmed_at = row
+    return Profile(email, department, position, confirmed_at.isoformat() if confirmed_at else None)
+
+
+def update_profile(conn, email, *, department=None, position=None):
+    conn.execute(
+        """INSERT INTO dialog_profiles (email, department, position, confirmed_at)
+           VALUES (%s,%s,%s,now())
+           ON CONFLICT(email) DO UPDATE SET
+                department=coalesce(excluded.department, dialog_profiles.department),
+                position=coalesce(excluded.position, dialog_profiles.position),
+                confirmed_at=CASE WHEN excluded.department IS NOT NULL
+                    OR dialog_profiles.department IS NULL THEN excluded.confirmed_at
+                    ELSE dialog_profiles.confirmed_at END""",
+        (email, department, position),
+    )
+    return get_profile(conn, email)
 
 
 def set_department(conn, email, department):
+    return update_profile(conn, email, department=department)
+
+
+def reset_profile(conn, email):
+    conn.execute("DELETE FROM dialog_profiles WHERE email=%s", (email,))
+
+
+def confirm_department(conn, email, department):
     conn.execute(
-        """INSERT INTO dialog_profiles VALUES (%s,%s,now())
-                    ON CONFLICT(email) DO UPDATE SET department=excluded.department, confirmed_at=now()""",
+        "UPDATE dialog_profiles SET confirmed_at=now() WHERE email=%s AND department=%s",
         (email, department),
     )
     return get_profile(conn, email)
@@ -45,7 +70,7 @@ class Profiles:
         return await self.run(get_profile, email)
 
     async def reset(self, email):
-        await self.run(set_department, email, None)
+        await self.run(reset_profile, email)
 
     async def set_department(self, email, department):
         return await self.run(set_department, email, department)

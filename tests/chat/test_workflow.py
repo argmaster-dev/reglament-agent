@@ -137,3 +137,44 @@ def test_clickable_statements_keep_the_exact_reference_for_each_variant():
     assert [r["source"]["sentence"] for r in main["items"][0]["refs"]] == [0, 1]
     assert variant["items"][0]["refs"][0]["source"]["column"] == "Обязательно"
     assert answer.summary not in render.answer_markdown(answer, names, separate_evidence=True)
+
+
+def test_history_http_uses_the_signed_employee_identity(isolated, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from reglament_agent.answer import UserContext
+    from reglament_agent.chat import session, start_page
+    from reglament_agent.chat.history import router
+    from reglament_agent.dialog.route import Dialog
+
+    _, dsn = isolated
+    secret = "test-session-signing-value"
+    monkeypatch.setenv("CHAINLIT_AUTH_SECRET", secret)
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    monkeypatch.delenv("CHAT_TRUSTED_HEADER", raising=False)
+    app = FastAPI()
+    app.include_router(router)
+    start_page.install(app)
+
+    async def quiet(_):
+        pass
+
+    with TestClient(app) as first, TestClient(app) as other:
+        assert first.post("/start/employee", follow_redirects=False).status_code == 303
+        assert other.post("/start/employee", follow_redirects=False).status_code == 303
+        first_cookie = first.cookies.get(session.COOKIE_NAME)
+        other_cookie = other.cookies.get(session.COOKIE_NAME)
+        identity = session.verify_identity(first_cookie, secret)
+        assert first_cookie != other_cookie and identity is not None
+        answerer = Dialog(dsn, model=SimpleNamespace())
+        owner = UserContext(identity.email, identity.role, "private-history", "1")
+        asyncio.run(answerer.answer(owner, "Что такое РП?", quiet))
+        address = "/history/private-history"
+        history = first.get(address)
+        assert history.status_code == 200 and "Что такое РП?" in history.text
+        history = other.get(address, headers={"X-User-Email": identity.email})
+        assert history.status_code == 403 and "Что такое РП?" not in history.text
