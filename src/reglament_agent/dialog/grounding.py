@@ -182,12 +182,11 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         check = verify_claims([claim], evidence)
         if (
             check.dropped
-            and not claim.actor
             and check.dropped[0].reasons == ["action_missing"]
             and not guards.asks_executor(question)
         ):
-            # A claim that names no performer and a question that asks for none: the verb adds no binding,
-            # the verbatim sentence carries the fact.
+            # The question asks for no performer and the cited role (if any) stands in the sentence: the verb
+            # adds no binding, the verbatim sentence carries the fact.
             claim = replace(claim, action=None)
             check = verify_claims([claim], evidence)
         if check.dropped:
