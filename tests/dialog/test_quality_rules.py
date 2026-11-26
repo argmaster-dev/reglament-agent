@@ -314,17 +314,17 @@ def test_faq_for_a_single_department_still_answers_at_once(isolated):
     assert result.outcome == Outcome.EXPERT_ANSWER and not model.calls
 
 
-def test_each_department_without_basis_gets_its_own_named_note(isolated):
+def test_no_basis_for_every_named_department_is_a_refusal_with_a_ticket_and_named_marks(isolated):
     conn, dsn = isolated
     seed(conn, {"n": ("Склад Север", ["x"]), "e": ("Склад Восток", ["x"])})
     model = Model()
     model.result = {"outcome": "no_basis", "claims": []}
     route = _two_department_route(dsn, ["Выдачей занимается склад.", "Склад работает по графику."], None, model)
     result = asyncio.run(route.answer(user(), TWO, status))
-    assert result.outcome == Outcome.VARIANTS and not result.ticket
-    assert [v.note for v in result.variants] == [
-        "в регламентах Склад Север нет основания", "в регламентах Склад Восток нет основания"
-    ]
+    assert result.outcome == Outcome.NO_BASIS and result.ticket and not result.statements
+    assert "в регламентах Склад Север нет основания" in result.summary
+    assert "в регламентах Склад Восток нет основания" in result.summary
+    assert conn.execute("SELECT count(*) FROM tickets").fetchone()[0] == 1
 
 
 def test_faq_variant_keeps_the_expert_attribution(isolated):

@@ -454,7 +454,11 @@ class Dialog:
                 for code, label in context.STAGE_LABELS.items()
             ]
         trace["steps"].append("verify")
-        if multi and (result.outcome in (Outcome.VARIANTS, Outcome.NO_BASIS) or any(faqs.values())):
+        if multi and result.outcome == Outcome.NO_BASIS and not any(faqs.values()):
+            # Nothing for any named department: an ordinary refusal with a ticket, each department named.
+            marks = [v.note for v in self._merge_variants(named, faqs, [])]
+            result.summary = "\n".join([result.summary, *marks])
+        elif multi and (result.outcome == Outcome.VARIANTS or any(faqs.values())):
             # A department without a basis is marked in its variant; it does not open a ticket.
             own = result.variants if result.outcome == Outcome.VARIANTS else []
             result = Answer(
