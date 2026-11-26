@@ -143,19 +143,20 @@ def score(question, anchor):
     return value + 2 / (1 + anchor.rank)
 
 
-def applicable_refs(question, rows):
+def applicable_refs(question, rows, *, department=None):
     """Only clarify if several scopes have concrete evidence for the requested operation."""
     q = fold(question)
+    scoped_terms = {word_key(word) for word in words(department)} if department else set()
     if asks_amount(q):
         # The amount for an individual transaction also depends on its inputs.
         return set()
     if _ADVANCE.search(q) or re.search(r"кто .*подпис|кто .*заключ", q):
         relevant = [a for a in rows if matches_request(q, a)]
     elif re.search(r"без\s+\w+", q):
-        keys = terms(q)
+        keys = terms(q) - scoped_terms
         relevant = [a for a in rows if len(keys & terms(a.text + " " + a.context)) >= 2]
     else:
-        keys = terms(q)
+        keys = terms(q) - scoped_terms
         relevant = [a for a in rows if keys and keys <= terms(a.text)]
     return {a.ref for a in relevant}
 

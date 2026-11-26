@@ -614,3 +614,40 @@ def test_model_failure_does_not_consume_clarification_or_save_profile(isolated):
     assert asyncio.run(route.choose(user, "Отдел А", status)).ticket
     assert asyncio.run(route.profiles.get(user.email)).department == "Отдел А"
     assert conn.execute("SELECT count(*) FROM tickets").fetchone() == (1,)
+
+
+def test_stage_clarification_preserves_the_scoped_department(isolated):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from reglament_agent.ingest.embedding import FakeEmbedder
+    from reglament_agent.ingest.parser import load_cards
+    from reglament_agent.storage.publish import publish
+
+    conn, dsn = isolated
+    docs = Path("docx")
+    department = "Дирекция ИБ"
+    for card in load_cards(docs):
+        if card.department == department:
+            publish(conn, card, (docs / card.file).read_bytes(), FakeEmbedder(), "test")
+    points = [
+        replace(hit(department, "Начальник контролирует сроки."), doc_id="ib-project"),
+        replace(hit(department, "Куратор контролирует сроки."), doc_id="ib-presale"),
+    ]
+    checked = []
+
+    def search(conn, question, vector, *, department, stage, **kwargs):
+        checked.append((question, department, stage))
+        return Candidates([], [])
+
+    model = Model()
+    model.result = {"outcome": "no_basis", "claims": []}
+    route = Dialog(dsn, model, search=search, shortlist=lambda *args, **kwargs: points)
+    user = UserContext("stage@example.org", "employee", "chat", "question")
+    question = "Кто контролирует сроки в Дирекции ИБ?"
+    request = asyncio.run(route.answer(user, question, status))
+    assert request.outcome == Outcome.CLARIFY and "Пресейл" in request.clarification.options
+    user.message_id = "choose"
+    result = asyncio.run(route.choose(user, "Пресейл", status))
+    assert result.scope.stage == "presale" and checked[-1] == (question, department, "presale")
+    assert asyncio.run(route.profiles.get(user.email)).department is None

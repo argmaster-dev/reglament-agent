@@ -284,7 +284,7 @@ class Dialog:
 
         def ambiguity(points):
             rows = grounding.anchors(points)
-            related = relevance.applicable_refs(question, rows)
+            related = relevance.applicable_refs(question, rows, department=dept)
             by_department, by_stage = {}, {}
             for anchor in rows:
                 if anchor.ref not in related:
