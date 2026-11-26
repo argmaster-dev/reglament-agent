@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -11,7 +11,8 @@ def test_sender_health_checks_outbox_without_sending_mail(monkeypatch):
     db_connection = db.return_value.__enter__.return_value
     mail_connection = smtp.return_value.__enter__.return_value
     mail_connection.noop.return_value = (250, b"OK")
-    monkeypatch.setenv("DATABASE_URL", "postgresql://sender@database/regulations")
+    dsn = "dbname=regulations host=database user=sender options='-csearch_path=expert2_fixture,public'"
+    monkeypatch.setenv("DATABASE_URL", dsn)
     monkeypatch.setenv("MAIL_HOST", "mailpit")
     monkeypatch.setenv("MAIL_PORT", "1025")
     monkeypatch.setattr(sender_health.psycopg, "connect", db)
@@ -19,7 +20,11 @@ def test_sender_health_checks_outbox_without_sending_mail(monkeypatch):
 
     sender_health.check()
 
-    db_connection.execute.assert_called_once_with("SELECT id FROM mail_outbox LIMIT 0")
+    db.assert_called_once_with(dsn, connect_timeout=2)
+    assert db_connection.execute.call_args_list == [
+        call("SET LOCAL statement_timeout = '2s'"),
+        call("SELECT id FROM mail_outbox LIMIT 0"),
+    ]
     mail_connection.noop.assert_called_once_with()
     mail_connection.send_message.assert_not_called()
 

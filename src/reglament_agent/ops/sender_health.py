@@ -10,9 +10,8 @@ from reglament_agent.quality.mail import MailSettings
 
 def check() -> None:
     settings = MailSettings()
-    with psycopg.connect(
-        os.environ["DATABASE_URL"], connect_timeout=2, options="-c statement_timeout=2000"
-    ) as conn:
+    with psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=2) as conn:
+        conn.execute("SET LOCAL statement_timeout = '2s'")
         conn.execute("SELECT id FROM mail_outbox LIMIT 0")
     with smtplib.SMTP(settings.host, settings.port, timeout=2) as smtp:
         if settings.use_tls:
