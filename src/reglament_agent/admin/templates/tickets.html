@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% block content %}
+<h1>Обращения</h1>
+<form method="get" class="f" style="display:flex;gap:12px;align-items:end;margin-bottom:16px">
+<div><label>Статус</label><select name="status"><option value="">все</option>
+{% for k, v in statuses.items() %}<option value="{{ k }}" {{ 'selected' if k == status }}>{{ v }}</option>{% endfor %}</select></div>
+<div><label>Повод</label><select name="reason"><option value="">все</option>
+{% for k, v in reasons.items() %}<option value="{{ k }}" {{ 'selected' if k == reason }}>{{ v }}</option>{% endfor %}</select></div>
+<button class="sec" type="submit">Показать</button></form>
+{% if rows %}<table><tr><th>№</th><th>Дата</th><th>Сотрудник</th><th>Повод</th><th>Вопрос</th><th>Письмо</th><th>Статус</th></tr>
+{% for r in rows %}<tr><td><a href="/admin/tickets/{{ r.number }}">{{ r.number }}</a></td>
+<td>{{ r.created_at.strftime("%d.%m.%Y %H:%M") }}</td><td>{{ r.user_email }}</td>
+<td>{{ reasons.get(r.reason, r.reason) }}</td><td>{{ r.question[:120] }}</td>
+<td>{{ mail_text.get(r.mail, "—") }}</td><td>{{ statuses.get(r.status, r.status) }}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Обращений нет.</p>{% endif %}{% endblock %}

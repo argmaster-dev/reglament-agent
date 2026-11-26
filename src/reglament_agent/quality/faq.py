@@ -191,7 +191,7 @@ def get_faq(conn: Connection, faq_id: int) -> dict[str, Any] | None:
 
 
 def set_faq_status(conn: Connection, faq_id: int, status: str) -> bool:
-    """`active` confirms an entry (re-validating its basis against the active version), `deleted` removes it."""
+    """`active` confirms an entry (re-pinning its basis to the current points), `deleted` removes it."""
     if status not in ("active", "review", "deleted"):
         raise ValueError("bad status")
     with conn.transaction():
@@ -199,13 +199,32 @@ def set_faq_status(conn: Connection, faq_id: int, status: str) -> bool:
         if row is None:
             return False
         if status == "active" and row["basis_kind"] != "outside":
-            if _check_entry(conn, row)[0] != "ok":
-                raise TicketError("Основание ещё не соответствует действующей версии: "
-                                  "исправьте ответ или удалите запись.")
+            _repin(conn, row)
         conn.execute("UPDATE faq_entries SET status=%s, updated_at=now(), "
                      "reviewed_at=CASE WHEN %s='active' THEN now() ELSE reviewed_at END WHERE id=%s",
                      (status, status, faq_id))
     return True
+
+
+def _repin(conn: Connection, row: dict) -> None:
+    """Expert confirmed a `review` entry: pin it to the current text of its points (removed ones block it)."""
+    basis = [dict(b) for b in row["basis"]]
+    cur = conn.cursor(row_factory=dict_row)
+    for b in basis:
+        if row["basis_kind"] == "document":
+            continue
+        st = point_state(conn, b)
+        if st["state"] == "removed":
+            raise TicketError(f"Пункт {b['number']} удалён из действующей версии: "
+                              "исправьте ответ или удалите запись.")
+        p = cur.execute("SELECT p.number, p.parent, p.sha256, p.section_number, p.section_title FROM points p "
+                        "JOIN documents d ON d.active_version_id=p.version_id WHERE d.doc_id=%s AND p.number=%s",
+                        (b["doc_id"], st["number"])).fetchone()
+        b.update(number=p["number"], sha256=p["sha256"], parent=p["parent"],
+                 section_path=f"{p['section_number']} {p['section_title']}".strip())
+    version = conn.execute("SELECT active_version_id FROM documents WHERE doc_id=%s", (row["doc_id"],)).fetchone()
+    conn.execute("UPDATE faq_entries SET basis=%s, version_id=%s WHERE id=%s",
+                 (Jsonb(basis), version[0] if version else row["version_id"], row["id"]))
 
 
 def point_state(conn: Connection, item: dict) -> dict:

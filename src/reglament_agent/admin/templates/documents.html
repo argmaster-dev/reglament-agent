@@ -1,4 +1,4 @@
-{% extends "base.html" %}{% block content %}
+{% extends "base.html" %}{% set nav = "documents" %}{% block content %}
 <div style="display:flex;align-items:center;margin-bottom:16px"><h1 style="margin:0">Документы</h1>
 <a class="btn" style="margin-left:auto" href="/admin/documents/upload">Загрузить регламент</a></div>
 {% for id, doc in running %}<p class="card">Идёт публикация: <a href="/admin/jobs/{{ id }}">задача №{{ id }}</a></p>{% endfor %}

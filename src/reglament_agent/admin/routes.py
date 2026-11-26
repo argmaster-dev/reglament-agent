@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from collections import Counter
 from pathlib import Path
@@ -26,18 +27,31 @@ router = APIRouter(prefix="/admin")
 
 def render(template: str, request: Request, status_code: int = 200, **ctx) -> HTMLResponse:
     ident = S.identity_from_headers(request.headers, _secret())
-    html = env.get_template(template).render(identity=ident, stages=STAGES, **ctx)
+    html = env.get_template(template).render(
+        identity=ident, stages=STAGES, open_tickets=_open_tickets(ident),
+        mail_ui_url=os.environ.get("MAIL_UI_URL") if ident and ident.role == "expert" else None, **ctx)
     return HTMLResponse(html, status_code=status_code)
 
 
+def _open_tickets(ident) -> int | None:
+    if ident is None or ident.role != "expert":
+        return None
+    try:
+        with jobs.connect() as conn:
+            return conn.execute("SELECT count(*) FROM tickets WHERE status='open'").fetchone()[0]
+    except Exception:  # noqa: BLE001 - a nav badge must never break a page
+        return None
+
+
 def _secret() -> str:
-    import os
     return os.environ["CHAINLIT_AUTH_SECRET"]
 
 
 def install(app) -> None:
     """Mount routes and the role guard (expert only) in front of Chainlit's catch-all route."""
-    for i, route in enumerate(router.routes):
+    from reglament_agent.admin.quality_routes import router as quality_router
+
+    for i, route in enumerate([*router.routes, *quality_router.routes]):
         app.router.routes.insert(i, route)
 
     @app.middleware("http")

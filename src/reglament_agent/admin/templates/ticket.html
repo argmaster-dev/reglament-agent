@@ -1,0 +1,41 @@
+{% extends "base.html" %}{% block content %}
+<p><a href="/admin/tickets">← Все обращения</a></p>
+<h1>Обращение №{{ t.number }} <span class="badge">{{ status_text }}</span></h1>
+{% if error %}<p class="card err">{{ error }}</p>{% endif %}
+<div class="card">
+<p><b>Вопрос:</b><br>{{ t.question }}</p>
+{% if t.restated_question %}<p><b>Переформулировка:</b><br>{{ t.restated_question }}</p>{% endif %}
+<p><b>Повод:</b> {{ reason_text }}</p>
+<p><b>Сотрудник:</b> {{ t.user_email }}{% if t.profile %} · профиль: {% for k, v in t.profile.items() if v %}{{ k }}: {{ v }}{% if not loop.last %}, {% endif %}{% else %}не указан{% endfor %}{% endif %}</p>
+{% if t.clarifications %}<p><b>Уточнения:</b></p><ol>{% for c in t.clarifications %}<li>{{ c.question }} — {{ c.answer }}</li>{% endfor %}</ol>{% endif %}
+<p><b>Доставка письма:</b> {% for m in mails %}{{ 'сотруднику' if m.kind == 'expert_answer' else 'службе' }}: {{ mail_text.get(m.status, m.status) }}{% if m.last_error %} ({{ m.last_error }}){% endif %}{% if not loop.last %}; {% endif %}{% else %}—{% endfor %}</p>
+</div>
+<div class="card"><b>Найденные кандидаты</b>
+{% for c in candidates %}<details><summary>{{ c.title or c.doc_id }}, п. {{ c.point }}{% if c.version_no %} (версия {{ c.version_no }}){% endif %}</summary>
+{% if c.view %}<pre class="pt2">{{ c.view.heading }}
+{{ c.view.text }}</pre>{% else %}<p class="muted">Пункт не найден в действующей версии.</p>{% endif %}</details>
+{% else %}<p class="muted">Кандидатов нет.</p>{% endfor %}</div>
+{% if answer %}
+<div class="card"><p class="ok"><b>Ответ отправлен</b> · {{ answer.expert_email }}</p><p>{{ answer.answer }}</p>
+<p class="muted">Основание: {{ basis_text }}</p>
+{% if answer.faq_id %}<p>Опубликовано в FAQ: <a href="/admin/faq/{{ answer.faq_id }}">запись №{{ answer.faq_id }}</a></p>
+{% else %}<p class="muted">Ответ только сотруднику, в FAQ не публиковался.</p>{% endif %}</div>
+{% elif t.status == 'open' %}
+<form method="post" class="f card">
+<label>Ответ сотруднику</label><textarea name="answer" rows="6" required>{{ form.answer }}</textarea>
+<label>Основание</label>
+<div class="row"><label><input type="radio" name="basis_kind" value="points" {{ 'checked' if form.basis_kind != 'outside' }}> пункты регламентов</label>
+<label><input type="radio" name="basis_kind" value="outside" {{ 'checked' if form.basis_kind == 'outside' }}> вне регламентов</label></div>
+{% for c in candidates %}<div class="row"><label><input type="checkbox" name="cand" value="{{ c.doc_id }}|{{ c.point }}" {{ 'checked' if (c.doc_id ~ '|' ~ c.point) in form.cand }}> {{ c.title or c.doc_id }}, п. {{ c.point }}</label></div>{% endfor %}
+<label>Другие пункты: «doc_id п. N, …»</label><input type="text" name="extra_points" value="{{ form.extra_points }}" placeholder="td-project п. 16.1, ib-project п. 3">
+<label>Видимость</label>
+<div class="row"><label><input type="radio" name="visibility" value="faq" {{ 'checked' if form.visibility != 'private' }}> опубликовать в FAQ</label>
+<label><input type="radio" name="visibility" value="private" {{ 'checked' if form.visibility == 'private' }}> только сотруднику</label></div>
+<label>Вопрос для FAQ</label><input type="text" name="faq_question" value="{{ form.faq_question }}">
+<label>Другие формулировки (по одной в строке)</label><textarea name="alt_questions" rows="3">{{ form.alt_questions }}</textarea>
+<p><button type="submit" name="action" value="answer">Отправить ответ</button></p>
+<hr><label>Номер обращения-оригинала (для дубликата)</label><input type="text" name="dup_ref" value="{{ form.dup_ref }}">
+<p><button class="sec" type="submit" name="action" value="duplicate" formnovalidate>Закрыть как дубликат</button>
+<button class="sec" type="submit" name="action" value="offtopic" formnovalidate>Не по регламентам</button></p>
+</form>
+{% endif %}{% endblock %}
