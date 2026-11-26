@@ -101,7 +101,7 @@ _RANK = """
 
 
 def search(conn: Connection, query: str, vector: list[float], *, department: str | None = None,
-           stage: str | None = None, limit: int = 10, exact: bool = False) -> list[Hit]:
+           stage: str | None = None, limit: int = 10, exact: bool = False, literal: bool = True) -> list[Hit]:
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
     if not query.strip():
@@ -109,7 +109,7 @@ def search(conn: Connection, query: str, vector: list[float], *, department: str
     pool = max(32, 4 * limit)
     # The publication hash represents the full normalized point. A short exact text
     # takes precedence over longer points that contain the same phrase.
-    literal_hash = content_hash(query)
+    literal_hash = content_hash(query) if literal else None
     params = {"vec": vector_literal(vector), "query": lexical_query(query), "original": query,
               "dept": department, "stage": stage, "pool": pool, "limit": limit, "exact": exact,
               "literal_hash": literal_hash,
@@ -125,7 +125,9 @@ def search(conn: Connection, query: str, vector: list[float], *, department: str
     if department is not None or len(hits) <= limit:
         return hits
     # Per-department RRF scores use local ranks. Use cosine similarity to break ties across groups.
-    hits.sort(key=lambda h: (content_hash(h.text) != literal_hash, -h.score, -h.similarity, h.point_id))
+    hits.sort(key=lambda h: (
+        literal_hash is not None and content_hash(h.text) != literal_hash, -h.score, -h.similarity, h.point_id,
+    ))
     groups = defaultdict(list)
     for hit in hits:
         groups[hit.department].append(hit)

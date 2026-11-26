@@ -15,10 +15,15 @@ def selfcheck(conn: Connection, doc_id: str, progress: Callable[[int, int], None
         "SELECT department, active_version_id FROM documents WHERE doc_id=%s", (doc_id,)).fetchone()
     rows = conn.execute("SELECT point_id, number, text, embedding::text FROM points "
                         "WHERE version_id=%s AND level > 1 ORDER BY position", (version_id,)).fetchall()
-    total, found, top1, misses, top1_misses = len(rows), 0, 0, [], []
+    total = len(rows)
+    found = top1 = full_text = 0
+    misses, top1_misses = [], []
     for i, (point_id, number, text, embedding) in enumerate(rows, 1):
         vector = [float(x) for x in embedding.strip("[]").split(",")]
-        hits = search(conn, text, vector, department=department, limit=3)
+        hits = search(conn, text, vector, department=department, limit=3, literal=False)
+        literal_hits = search(conn, text, vector, department=department, limit=1, literal=True)
+        if literal_hits and literal_hits[0].point_id == point_id:
+            full_text += 1
         if any(hit.point_id == point_id for hit in hits):
             found += 1
         else:
@@ -34,4 +39,5 @@ def selfcheck(conn: Connection, doc_id: str, progress: Callable[[int, int], None
             top1_misses.append(miss)
         if progress and (i % 10 == 0 or i == total):
             progress(i, total)
-    return {"found": found, "total": total, "top1": top1, "misses": misses, "top1_misses": top1_misses}
+    return {"found": found, "total": total, "top1": top1, "full_text": full_text,
+            "misses": misses, "top1_misses": top1_misses}

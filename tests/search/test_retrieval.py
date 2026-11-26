@@ -39,7 +39,6 @@ def test_literal_point_precedes_longer_phrase_matches_and_keeps_duplicates(isola
     from xml.sax.saxutils import escape
     from zipfile import ZipFile
 
-    from reglament_agent.admin.selfcheck import selfcheck
     from reglament_agent.ingest.model import DocumentCard
     from reglament_agent.storage.search import preview
 
@@ -61,11 +60,9 @@ def test_literal_point_precedes_longer_phrase_matches_and_keeps_duplicates(isola
     vector = embedder.embed([longer])[0]
     assert [hit.number for hit in search(conn, query, vector, limit=3)] == ["1.2", "1.3", "1.1"]
     assert [hit.number for hit in preview(conn, query, limit=3)] == ["1.2", "1.3", "1.1"]
-    result = selfcheck(conn, card.doc_id)
-    assert (result["top1"], result["found"], result["total"]) == (2, 3, 3)
-    [miss] = result["top1_misses"]
-    assert miss["number"] == "1.3" and miss["first_number"] == "1.2"
-    assert miss["first_text"] == phrase and miss["same_text"] is True
+    hybrid = search(conn, query, vector, limit=3, literal=False)
+    assert hybrid[0].number == "1.1"
+
 
 
 def test_large_scoped_top_k_matches_brute_force(isolated):

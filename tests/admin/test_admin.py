@@ -54,21 +54,33 @@ def test_upload_publish_selfcheck_and_duplicate(env):
     c = client("expert")
     r = upload(c)
     assert r.status_code == 200
-    assert "<b>24</b> разделов" in r.text and "<b>171</b> пунктов" in r.text
+    from reglament_agent.ingest.parser import parse_docx
+
+    points = parse_docx(DOCX.read_bytes()).points
+    sections = sum(point.level == 1 for point in points)
+    searchable = len(points) - sections
+    assert f"<b>{sections}</b> разделов" in r.text and f"<b>{searchable}</b> пунктов" in r.text
     assert "предупреждений: 0" in r.text
-    assert "Уровень 1 · 24" in r.text and "Уровень 2 ·" in r.text
+    assert f"Уровень 1 · {sections}" in r.text and "Уровень 2 ·" in r.text
     job = job_id_of(r.text)
     assert c.post(f"/admin/jobs/{job}/publish", data={"title": "Тех регламент"}).status_code == 303
     jobs.run_job(job)
     row = env.execute("SELECT status, done, total, selfcheck FROM ingest_jobs WHERE id=%s", (job,)).fetchone()
     assert row[0] == "ready", env.execute("SELECT error FROM ingest_jobs").fetchone()
     check = row[3]
-    assert check["total"] == 171  # level>1 points of the TD regulation; 24 section headings excluded
-    assert check["top1"] == check["found"] == check["total"]
+    assert check["total"] == searchable
+    assert 0 <= check["top1"] <= check["found"] <= searchable
+    assert check["full_text"] == searchable
     assert len(check["top1_misses"]) == check["total"] - check["top1"]
     assert {m["number"] for m in check["misses"]} <= {m["number"] for m in check["top1_misses"]}
     page = c.get(f"/admin/jobs/{job}").text
-    assert "Готов к поиску" in page and f"Поиск находит {check['top1']} из 171" in page
+    assert "Готов к поиску" in page and f"{check['top1']} из {searchable}" in page
+    assert f"Полный текст — {check['full_text']} из {searchable}" in page
+
+    env.execute("UPDATE ingest_jobs SET selfcheck=selfcheck - 'full_text' WHERE id=%s", (job,))
+    old_page = c.get(f"/admin/jobs/{job}").text
+    assert f"{check['top1']} из {searchable}" in old_page
+    assert "Полный текст" not in old_page
     assert active_departments(env) == ["Техническая дирекция"]
     assert "Тех регламент" in c.get("/admin/documents").text
     doc_id = env.execute("SELECT doc_id FROM documents").fetchone()[0]
@@ -225,3 +237,38 @@ def test_application_restart_consumes_queued_job_without_admin_request(env, monk
         assert ran.wait(5), "No queued job was picked up during application startup"
         assert env.execute("SELECT status FROM ingest_jobs").fetchone() == ("ready",)
     assert preserved == ["start", "stop"]
+
+
+def test_selfcheck_measures_hybrid_without_literal_priority(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from reglament_agent.admin import selfcheck as checks
+
+    phrase = "График поставки."
+    target = SimpleNamespace(point_id=42, number="1.2", doc_title="Регламент", text=phrase)
+    competing = SimpleNamespace(
+        point_id=11, number="1.1", doc_title="Регламент",
+        text="График поставки. Документ утверждает начальник.",
+    )
+    catalog = Mock()
+    catalog.execute.side_effect = [
+        Mock(fetchone=Mock(return_value=("Отдел", 7))),
+        Mock(fetchall=Mock(return_value=[(target.point_id, target.number, phrase, "[1.0]")])),
+    ]
+    ranking_modes = []
+
+    def rank(conn, text, vector, *, department, limit, literal=True):
+        assert conn is catalog and text == phrase and department == "Отдел"
+        ranking_modes.append(literal)
+        contenders = [target, competing] if literal else [competing, target]
+        return contenders[:limit]
+
+    monkeypatch.setattr(checks, "search", rank)
+    report = checks.selfcheck(catalog, "regulation")
+    assert ranking_modes == [False, True]
+    assert report["full_text"] == report["found"] == report["total"]
+    assert report["top1"] < report["full_text"]
+    [miss] = report["top1_misses"]
+    assert miss["number"] == target.number and miss["first_number"] == competing.number
+    assert miss["first_text"] == competing.text and miss["same_text"] is False
