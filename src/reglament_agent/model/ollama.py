@@ -64,6 +64,7 @@ class OllamaClient:
             base_url=self.settings.ollama_url,
             timeout=self.settings.timeout_s,
             transport=transport,
+            trust_env=False,  # local Ollama: ignore system HTTP(S)_PROXY settings
         )
 
     async def aclose(self) -> None:
@@ -113,6 +114,7 @@ class OllamaClient:
                     {
                         "model": s.embed_model,
                         "input": batch,
+                        "truncate": False,
                         "keep_alive": s.keep_alive,
                         "options": {"num_gpu": s.embed_num_gpu},
                     },

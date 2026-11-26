@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Callable
 
 PositionCallback = Callable[[int], None]
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,7 +43,10 @@ class GenerationSlot:
         for i, w in enumerate(self._queue, start=1):
             if w.on_position and w.last_position != i:
                 w.last_position = i
-                w.on_position(i)
+                try:
+                    w.on_position(i)
+                except Exception:  # a UI callback must never stall the generation queue
+                    log.exception("on_position callback failed")
 
     def _grant(self) -> None:
         while self._queue and self.active < self.capacity:

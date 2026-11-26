@@ -1,4 +1,7 @@
-"""Search self-check without model calls: every point must be found (top-3) by its own text."""
+"""Search self-check without model calls: every point must be found (top-3) by its own text.
+
+Section headings (level 1) are titles, not answer units: a query equal to a heading legitimately
+returns its sub-points, so they are excluded. Misses are reported with their text."""
 from collections.abc import Callable
 
 from psycopg import Connection
@@ -10,7 +13,7 @@ def selfcheck(conn: Connection, doc_id: str, progress: Callable[[int, int], None
     department, version_id = conn.execute(
         "SELECT department, active_version_id FROM documents WHERE doc_id=%s", (doc_id,)).fetchone()
     rows = conn.execute("SELECT point_id, number, text, embedding::text FROM points "
-                        "WHERE version_id=%s ORDER BY position", (version_id,)).fetchall()
+                        "WHERE version_id=%s AND level > 1 ORDER BY position", (version_id,)).fetchall()
     total, found, top1, misses = len(rows), 0, 0, []
     for i, (point_id, number, text, embedding) in enumerate(rows, 1):
         vector = [float(x) for x in embedding.strip("[]").split(",")]
@@ -21,7 +24,7 @@ def selfcheck(conn: Connection, doc_id: str, progress: Callable[[int, int], None
             found += 1
             top1 += bool(hits and hits[0].point_id == point_id)
         else:
-            misses.append(number)
+            misses.append({"number": number, "text": text[:80]})
         if progress and (i % 10 == 0 or i == total):
             progress(i, total)
     return {"found": found, "total": total, "top1": top1, "misses": misses}
