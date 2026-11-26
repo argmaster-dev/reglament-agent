@@ -38,6 +38,9 @@ class Question:
     outcome: str  # expected Outcome value
     phrase: str | None = None  # must occur in the answer or in the cited point text
     version: int = 1  # document version the expected phrase was written against
+    gold_id: str | None = None  # id of the approved gold case the question is taken from
+    kind: str | None = None  # «перефраз» for a paraphrase of the gold question
+    facts: tuple[str, ...] = ()  # further phrases that must also be present
 
 
 @dataclass(frozen=True)
@@ -57,15 +60,33 @@ def load_questions(doc_id: str, directory: Path | None = None) -> CheckSet | Non
     path = (directory or checks_dir()) / f"{doc_id}.toml"
     if not path.is_file():
         return None
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
-    questions = []
-    for q in data.get("question", []):
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise CheckFileError(f"{path.name}: файл не читается ({exc})") from exc
+    if data.get("doc_id", doc_id) != doc_id:
+        raise CheckFileError(f"{path.name}: в файле указан документ «{data.get('doc_id')}», ожидался «{doc_id}»")
+    if not str(data.get("department", "")).strip():
+        raise CheckFileError(f"{path.name}: не указано подразделение (department)")
+    known, seen, questions = {o.value for o in Outcome}, set(), []
+    for i, q in enumerate(data.get("question", []), 1):
+        text = str(q.get("question", "")).strip()
+        if not text:
+            raise CheckFileError(f"{path.name}: вопрос №{i} пустой")
+        if norm(text) in seen:
+            raise CheckFileError(f"{path.name}: вопрос «{text}» повторяется")
+        seen.add(norm(text))
         outcome = q.get("outcome", q.get("expected_outcome", "answer"))
         if outcome in TICKET_OUTCOMES:
-            raise CheckFileError(f"{path.name}: вопрос «{q['question']}» ожидает исход «{outcome}», а он создаёт "
+            raise CheckFileError(f"{path.name}: вопрос «{text}» ожидает исход «{outcome}», а он создаёт "
                                  "обращение и письмо службе качества; проверочные вопросы не должны вести к обращению")
-        questions.append(Question(q["question"], q.get("point"), outcome, q.get("phrase"), int(q.get("version", 1))))
-    return CheckSet(data.get("doc_id", doc_id), data["department"], questions)
+        if outcome not in known:
+            raise CheckFileError(f"{path.name}: вопрос «{text}»: неизвестный исход «{outcome}»")
+        questions.append(Question(text, q.get("point"), outcome, q.get("phrase"), int(q.get("version", 1)),
+                                  q.get("gold_id"), q.get("kind"), tuple(q.get("facts", ()))))
+    if not questions:
+        raise CheckFileError(f"{path.name}: нет ни одного вопроса")
+    return CheckSet(doc_id, data["department"].strip(), questions)
 
 
 def norm(text: str) -> str:
@@ -87,25 +108,43 @@ def _point_text(conn, doc_id: str, number: str, version_no: int) -> str | None:
     return row[0] if row else None
 
 
+def _active_version(conn, doc_id: str) -> int | None:
+    row = conn.execute("SELECT v.version_number FROM documents d JOIN document_versions v "
+                       "ON v.version_id=d.active_version_id WHERE d.doc_id=%s AND d.status='active'",
+                       (doc_id,)).fetchone()
+    return row[0] if row else None
+
+
 def evaluate(conn, doc_id: str, q: Question, answer: Answer, seconds: float, error: str | None = None) -> dict:
+    active = _active_version(conn, doc_id)
     refs = [(src.point, src.version_no) for st in _statements(answer) for src in st.sources
             if src.faq_id is None and src.doc_id == doc_id]
     found = list(dict.fromkeys(point for point, _ in refs))
-    versions = dict.fromkeys(version for point, version in refs if point == q.point)
-    version_no = next(iter(versions), refs[0][1] if refs else None)
+    current = [(p, v) for p, v in refs if v == active]
+    stale = [(p, v) for p, v in refs if v != active]
+    versions = dict.fromkeys(v for p, v in current if p == q.point)
+    version_no = next(iter(versions), (current or refs or [(None, None)])[0][1])
+    reason = None
+    if q.point and any(p == q.point for p, _ in stale) and not any(p == q.point for p, _ in current):
+        old = next(v for p, v in stale if p == q.point)
+        reason = f"ссылка на устаревшую версию {old}, активна {active if active else 'нет'}"
+        version_no = old
+    elif q.point is None and stale:
+        reason = f"ссылка на устаревшую версию {stale[0][1]}, активна {active if active else 'нет'}"
     texts = [answer.summary, *(st.text for st in _statements(answer))]
+    wanted = [x for x in (q.phrase, *q.facts) if x]
+    cited_ok = bool(q.point) and any(p == q.point for p, _ in current)
     phrase_found = None
-    if q.phrase:
+    if wanted:
         hay = [norm(t) for t in texts]
-        if q.point in found and version_no is not None:
-            cited = _point_text(conn, doc_id, q.point, version_no)
-            hay.append(norm(cited or ""))
-        phrase_found = any(norm(q.phrase) in h for h in hay) and q.point in found
-    point_ok = (q.point in found) if q.point else not found
+        if cited_ok and version_no is not None:
+            hay.append(norm(_point_text(conn, doc_id, q.point, version_no) or ""))
+        phrase_found = cited_ok and all(any(norm(w) in h for h in hay) for w in wanted)
+    point_ok = cited_ok if q.point else not refs
     outcome = str(answer.outcome.value if isinstance(answer.outcome, Outcome) else answer.outcome)
     outcome_ok = outcome == q.outcome
     passed = bool(point_ok and outcome_ok and phrase_found is not False and error is None)
-    changed = bool(not passed and error is None and q.point and point_ok and outcome_ok and phrase_found is False
+    changed = bool(not passed and error is None and cited_ok and outcome_ok and phrase_found is False
                    and version_no is not None and version_no > q.version)
     excerpt = None
     if changed:
@@ -115,8 +154,9 @@ def evaluate(conn, doc_id: str, q: Question, answer: Answer, seconds: float, err
             "expected_phrase": q.phrase, "found_points": found, "outcome": outcome, "version_no": version_no,
             "phrase_found": phrase_found, "point_ok": point_ok, "outcome_ok": outcome_ok,
             "passed": passed, "status": "passed" if passed else "changed" if changed else "failed",
-            "changed_excerpt": excerpt, "expected_version": q.version,
-            "seconds": round(seconds, 2), "answer_text": " ".join(t for t in texts if t), "error": error}
+            "changed_excerpt": excerpt, "expected_version": q.version, "reason": reason, "gold_id": q.gold_id,
+            "kind": q.kind, "seconds": round(seconds, 2), "answer_text": " ".join(t for t in texts if t),
+            "error": error}
 
 
 # --- storage -----------------------------------------------------------------------------------

@@ -39,6 +39,8 @@ def _info(row: dict, delivery: str | None) -> TicketInfo:
                                                row["clarifications"]))
 
 
+SERVICE_DOMAIN = "@service.local"
+
 _SELECT = (
     "SELECT t.*, o.status AS delivery, o.attempts AS delivery_attempts FROM tickets t "
     "LEFT JOIN mail_outbox o ON o.ticket_id = t.id AND o.kind = 'ticket_created' "
@@ -52,6 +54,9 @@ def _row_info(row: dict) -> TicketInfo:
 def create_ticket(conn: Connection, *, user: UserContext, question: str, restated: str | None,
                   reason: str, profile: dict, clarifications: list[dict], candidates: list[dict],
                   service_email: str, public_base_url: str) -> TicketInfo:
+    if user.email.lower().endswith(SERVICE_DOMAIN):  # service runs (check questions): no ticket, no mail
+        return TicketInfo(number="служебный", reason="служебный прогон, обращение не создано",
+                          delivery="none", transferred=[])
     with conn.transaction():
         cur = conn.cursor(row_factory=dict_row)
         if user.message_id is not None:

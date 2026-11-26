@@ -20,10 +20,13 @@ OUTCOMES = {"answer": "ответ", "clarify": "нужно уточнение", 
 def _page(request: Request, doc_id: str):
     with jobs.connect() as conn:
         doc = V.get_document(conn, doc_id)
-        cs = C.load_questions(doc_id)
         if doc is None:
             return render("forbidden.html", request, 404, message="Документ не найден")
         runs = C.last_runs(conn, doc_id, 2)
+    try:
+        cs = C.load_questions(doc_id)
+    except C.CheckFileError as exc:
+        return _invalid(request, doc, runs, exc)
     latest = runs[0] if runs else None
     previous = runs[1] if len(runs) > 1 else None
     old = {r["question"]: r for r in previous["results"]} if previous else {}
@@ -32,6 +35,12 @@ def _page(request: Request, doc_id: str):
                   rows=rows, outcomes=OUTCOMES, refresh=bool(latest and latest["status"] == "running"),
                   passed=sum(1 for r in rows if r["r"]["passed"]),
                   changed=sum(1 for r in rows if r["r"].get("status") == "changed"))
+
+
+def _invalid(request, doc, runs, exc):
+    return render("checks_page.html", request, 400, nav="documents", doc=doc, cs=None, latest=None, previous=None,
+                  rows=[], outcomes=OUTCOMES, refresh=False, passed=0, changed=0,
+                  error=f"Набор проверочных вопросов не принят: {exc}")
 
 
 @router.get("/documents/{doc_id}/checks", response_class=HTMLResponse)
@@ -43,7 +52,14 @@ def checks_page(request: Request, doc_id: str):
 def checks_run(request: Request, doc_id: str):
     actor = S.identity_from_headers(request.headers, _secret()).email
     with jobs.connect() as conn:
-        if V.get_document(conn, doc_id) is None or C.load_questions(doc_id) is None:
+        doc = V.get_document(conn, doc_id)
+        if doc is None:
+            return render("forbidden.html", request, 404, message="Документ не найден")
+        try:
+            cs = C.load_questions(doc_id)
+        except C.CheckFileError as exc:
+            return _invalid(request, doc, [], exc)
+        if cs is None:
             return render("forbidden.html", request, 404, message="Для документа нет проверочных вопросов")
         busy = C.running_run(conn, doc_id)
     if busy is None:

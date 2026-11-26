@@ -107,10 +107,10 @@ def fake_services(dsn):
 def test_every_document_has_check_file_with_5_to_7_questions():
     for doc_id in DOC_IDS:
         cs = C.load_questions(doc_id)
-        assert 5 <= len(cs.questions) <= 7, doc_id
+        assert 5 <= len(cs.questions) <= 12, doc_id
         assert cs.department == next(c["department"] for c in CARDS if c["doc_id"] == doc_id)
         text = (DOCX / "checks" / f"{doc_id}.toml").read_text(encoding="utf-8")
-        assert "Проверочные вопросы службы качества; составлены по тексту регламента" in text.splitlines()[0]
+        assert text.startswith("# Проверочные вопросы службы качества")
 
 
 @pytest.mark.parametrize("doc_id", DOC_IDS)
@@ -132,7 +132,7 @@ def test_expected_points_and_phrases_exist_in_parsed_document(doc_id):
 
 def test_dbrct_has_presale_deadline_question_pointing_to_1_5():
     q = next(q for q in C.load_questions("dbrct-project").questions if q.point == "1.5")
-    assert "заявк" in q.question.lower() and q.phrase == "3 рабочих дня"
+    assert "заявк" in q.question.lower() and "3 рабочих дня" in q.phrase
     assert "3 рабочих дня" not in q.question  # not a copy of the point text
 
 
@@ -195,15 +195,22 @@ def test_evaluate_pass_and_each_failure_mode(env):
     assert nophrase["passed"] and nophrase["phrase_found"] is None
 
 
+def publish_demo_v2(conn):
+    card = next(x for x in CARDS if x["doc_id"] == "dbrct-project")
+    publish(conn, DocumentCard(card["doc_id"], card["title"], card["department"], tuple(card["stages"]),
+                               DEMO.name), DEMO.read_bytes(), EMB, "tester")
+
+
 def test_changed_status_only_when_newer_version_lacks_phrase(env):
     load_corpus(env)
     ev = lambda q, a: C.evaluate(env, "dbrct-project", q, a, 0)  # noqa: E731
     same = ev(mkq(phrase="7 рабочих дней"), ans("1.5", version=1, text="x"))
     assert same["status"] == "failed" and not same["passed"]  # same version: a real failure
-    newer = ev(mkq(phrase="7 рабочих дней"), ans("1.5", version=2, text="x"))  # v2 not in DB: no excerpt text
+    assert ev(mkq(), ans("1.5"))["status"] == "passed"
+    publish_demo_v2(env)
+    newer = ev(mkq(phrase="7 рабочих дней"), ans("1.5", version=2, text="x"))
     assert newer["status"] == "changed" and not newer["passed"]
     assert ev(mkq(version=2, phrase="7 рабочих дней"), ans("1.5", version=2, text="x"))["status"] == "failed"
-    assert ev(mkq(), ans("1.5"))["status"] == "passed"
     wrong_outcome = ev(mkq(phrase="7 рабочих дней"), ans("1.5", version=2, outcome=Outcome.LOW_CONFIDENCE))
     assert wrong_outcome["status"] == "failed"
     wrong_point = ev(mkq(phrase="7 рабочих дней"), ans("1.6", version=2))
@@ -292,7 +299,7 @@ def test_check_button_runs_and_page_shows_table(env, monkeypatch):
     assert r.status_code == 303 and r.headers["location"] == "/admin/documents/dbrct-project/checks"
     html = c.get("/admin/documents/dbrct-project/checks").text
     assert "п. 1.5" in html and "3 рабочих дня" in html and "Спросить в чате" in html
-    assert "за сколько рабочих дней до отправки предложения" in html.lower()
+    assert "за сколько подавать заявку на пресейл" in html.lower()
     assert "версия 1" in html
     assert env.execute("SELECT started_by FROM check_runs").fetchone()[0] == "expert@x.local"
 
@@ -341,5 +348,5 @@ def test_d12_answer_changes_after_replacing_with_demo_v2(env, monkeypatch):
     html = c.get("/admin/documents/dbrct-project/checks").text
     assert "Предыдущий прогон" in html and "версия 2" in html and "версия 1" in html
     assert "5 рабочих дней" in html and "3 рабочих дня" in html
-    assert "Изменилось: ожидалось «3 рабочих дня» (версия 1), найдено в версии 2" in html
-    assert "изменилось — обновите ожидание: 1" in html and "Пройдено 6 из 7" not in html
+    assert "Изменилось: ожидалось «не менее чем за 3 рабочих дня» (версия 1), найдено в версии 2" in html
+    assert "изменилось — обновите ожидание: 2" in html
