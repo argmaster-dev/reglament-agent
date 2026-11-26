@@ -13,4 +13,5 @@ class ModelSettings(BaseSettings):
     embed_num_gpu: int = 0
     keep_alive: str = "30m"
     timeout_s: float = 120
+    generation_max_waiters: int = Field(default=3, ge=0)
     embed_batch: int = Field(default=32, ge=1)

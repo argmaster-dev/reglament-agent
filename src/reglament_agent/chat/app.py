@@ -37,10 +37,13 @@ from reglament_agent.admin import routes as admin_routes  # noqa: E402
 from reglament_agent.chat.services import build_services  # noqa: E402
 from reglament_agent.chat import notifications as N  # noqa: E402
 
+from reglament_agent.chat.admission import AdmissionRejected, AdmissionSettings, TurnAdmission
 from reglament_agent.chat.history import router as history_router
+from reglament_agent.model.queue import GenerationQueueFull
 from reglament_agent.ops.health import router as health_router
 
 services = build_services()
+turn_admission = TurnAdmission(AdmissionSettings())
 # Chainlit already registers /health. Give the dependency check precedence over its liveness handler.
 for route in reversed([*history_router.routes, *health_router.routes]):
     fastapi_app.router.routes.insert(0, route)
@@ -121,11 +124,32 @@ async def resume(thread) -> None:
 TURN_TIMEOUT = 60
 
 
+def _retry_actions(text: str, message_id: str, choice: bool) -> list[cl.Action]:
+    return _actions(
+        [R.ActionSpec("retry", "🔁 Повторить", {"text": text, "message_id": message_id, "choice": choice})]
+    )
+
+
 async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
     if cl.user_session.get("busy"):
         await cl.Message(content=R.ERROR_TEXTS["busy"]).send()
         return
-    cl.user_session.set("busy", True)
+    user = _user(message_id)
+    try:
+        with turn_admission.accept(user.email):
+            cl.user_session.set("busy", True)
+            try:
+                await _run_admitted(user, text, message_id, choice=choice)
+            finally:
+                cl.user_session.set("busy", False)
+    except AdmissionRejected as rejected:
+        await cl.Message(
+            content=R.ERROR_TEXTS[rejected.reason],
+            actions=_retry_actions(text, message_id, choice),
+        ).send()
+
+
+async def _run_admitted(user: UserContext, text: str, message_id: str, *, choice: bool) -> None:
     phase = "Обрабатываю вопрос…"
     started = time.monotonic()
     progress = cl.Message(content=f"⏳ {phase}")
@@ -151,8 +175,11 @@ async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
         method = services.answerer.choose if choice else services.answerer.answer
         try:
             async with asyncio.timeout(TURN_TIMEOUT):
-                answer = await method(_user(message_id), text, update_status)
+                await deliver_notifications()
+                answer = await method(user, text, update_status)
             error = "unavailable" if answer.outcome == Outcome.ERROR else None
+        except GenerationQueueFull:
+            error = "stand_busy"
         except (TimeoutError, httpx.TimeoutException):
             error = "timeout"
         except (httpx.RequestError, httpx.HTTPStatusError, psycopg.Error):
@@ -164,10 +191,7 @@ async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
                 await clock
         if error:
             progress.content = f"⚠️ {R.ERROR_TEXTS[error]} · {int(time.monotonic() - started)} с"
-            spec = R.ActionSpec(
-                "retry", "🔁 Повторить", {"text": text, "message_id": message_id, "choice": choice}
-            )
-            progress.actions = _actions([spec])
+            progress.actions = _retry_actions(text, message_id, choice)
             await progress.update()
         else:
             await progress.remove()
@@ -178,8 +202,6 @@ async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
         progress.content = R.ERROR_TEXTS["cancelled"]
         await progress.update()
         raise
-    finally:
-        cl.user_session.set("busy", False)
 
 
 async def clear_clarification():
@@ -216,7 +238,6 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    await deliver_notifications()
     text = message.content.strip()
     if text == "/feedback":
         await open_feedback(cl.user_session.get("last_answer_id"))

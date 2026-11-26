@@ -59,7 +59,7 @@ class OllamaClient:
     ) -> None:
         self.settings = settings or ModelSettings()
         self.sink: CallSink = sink if sink is not None else MemorySink()
-        self.slot = slot or GenerationSlot(1)
+        self.slot = slot or GenerationSlot(1, max_waiting=self.settings.generation_max_waiters)
         self._http = httpx.AsyncClient(
             base_url=self.settings.ollama_url,
             timeout=self.settings.timeout_s,
