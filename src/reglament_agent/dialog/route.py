@@ -22,7 +22,7 @@ from reglament_agent.answer import (
 )
 from reglament_agent.model.queue import generation_progress
 from reglament_agent.model.ollama import ModelError, ModelOutputError, OllamaClient
-from reglament_agent.quality.faq import PublishedFaqStore
+from reglament_agent.quality.faq import PublishedFaqStore, match_published
 from reglament_agent.quality.mail import MailSettings
 from reglament_agent.quality.tickets import create_ticket
 from reglament_agent.storage.retrieve import retrieve
@@ -320,18 +320,18 @@ class Dialog:
             faq=PublishedFaqStore(),
         )
         trace["candidates"] = describe(found.points)
-        normalized = words(question)
-        for faq in found.faq:
-            if any(words(q) == normalized for q in (faq.question, *faq.alt_questions)):
-                refs = [faq.source] + ([faq.basis] if faq.basis else [])
-                reply = Answer(
-                    Outcome.EXPERT_ANSWER,
-                    statements=[Statement(faq.answer, refs)],
-                    scope=scope,
-                    profile_note=note,
-                )
-                trace["steps"].append("published_faq")
-                return reply, question, key
+        faq = match_published(question, found.faq)
+        if faq is not None:
+            refs = [faq.source] + ([faq.basis] if faq.basis else [])
+            reply = Answer(
+                Outcome.EXPERT_ANSWER,
+                summary=faq.attribution,
+                statements=[Statement(faq.answer, refs)],
+                scope=scope,
+                profile_note=note,
+            )
+            trace["steps"].append("published_faq")
+            return reply, question, key
         rows = grounding.anchors(found.points)
         if not departments:
             departments = sorted({p.department for p in found.points})

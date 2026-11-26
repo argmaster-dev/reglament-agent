@@ -22,17 +22,17 @@
 {% else %}<p class="muted">Ответ только сотруднику, в FAQ не публиковался.</p>{% endif %}</div>
 {% elif t.status == 'open' %}
 <form method="post" class="f card">
-<label>Ответ сотруднику</label><textarea name="answer" rows="6" required>{{ form.answer }}</textarea>
+<label for="expert-answer">Ответ сотруднику</label><textarea id="expert-answer" name="answer" rows="6" required>{{ form.answer }}</textarea>
 <label>Основание</label>
 <div class="row"><label><input type="radio" name="basis_kind" value="points" {{ 'checked' if form.basis_kind != 'outside' }}> пункты регламентов</label>
 <label><input type="radio" name="basis_kind" value="outside" {{ 'checked' if form.basis_kind == 'outside' }}> вне регламентов</label></div>
 {% for c in candidates %}<div class="row"><label><input type="checkbox" name="cand" value="{{ c.doc_id }}|{{ c.point }}" {{ 'checked' if (c.doc_id ~ '|' ~ c.point) in form.cand }}> {{ c.title or c.doc_id }}, п. {{ c.point }}</label></div>{% endfor %}
 <label>Другие пункты: «doc_id п. N, …»</label><input type="text" name="extra_points" value="{{ form.extra_points }}" placeholder="td-project п. 16.1, ib-project п. 3">
 <label>Видимость</label>
-<div class="row"><label><input type="radio" name="visibility" value="faq" {{ 'checked' if form.visibility != 'private' }}> опубликовать в FAQ</label>
-<label><input type="radio" name="visibility" value="private" {{ 'checked' if form.visibility == 'private' }}> только сотруднику</label></div>
-<label>Вопрос для FAQ</label><input type="text" name="faq_question" value="{{ form.faq_question }}">
-<label>Другие формулировки (по одной в строке)</label><textarea name="alt_questions" rows="3">{{ form.alt_questions }}</textarea>
+<div class="row"><label><input type="radio" name="visibility" value="faq" {{ 'checked' if form.visibility == 'faq' }}> опубликовать в FAQ</label>
+<label><input type="radio" name="visibility" value="private" {{ 'checked' if form.visibility != 'faq' }}> только сотруднику</label></div>
+<label for="faq-question">Вопрос для FAQ</label><input id="faq-question" type="text" name="faq_question" value="{{ form.faq_question }}">
+<label for="faq-alts">Другие формулировки (по одной в строке)</label><textarea id="faq-alts" name="alt_questions" rows="3">{{ form.alt_questions }}</textarea>
 <p><button type="submit" name="action" value="answer">Отправить ответ</button></p>
 <hr><label>Номер обращения-оригинала (для дубликата)</label><input type="text" name="dup_ref" value="{{ form.dup_ref }}">
 <p><button class="sec" type="submit" name="action" value="duplicate" formnovalidate>Закрыть как дубликат</button>

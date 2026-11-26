@@ -20,6 +20,15 @@ h1{font-size:1.5rem}dt{font-weight:600}dd{margin:0 0 1rem;overflow-wrap:anywhere
 <dt>Доставка письма</dt>
 <dd>{{ delivery or 'нет данных' }}{% if ticket.delivery_attempts is not none %} (попыток: {{ ticket.delivery_attempts }}){% endif %}</dd>
 </dl>
+{% if answer %}
+<section>
+<h2>Ответ службы качества</h2>
+<p>{{ answer.answer }}</p>
+<p>{{ answer.expert_email }} · <time>{{ answer.created_at.strftime('%d.%m.%Y') }}</time></p>
+<p>{{ answer_basis }}</p>
+<p>{{ 'только сотруднику' if answer.visibility == 'private' else 'опубликовано в FAQ' }}</p>
+</section>
+{% endif %}
 {% else %}
 <h1>Обращение не найдено</h1>
 {% endif %}
