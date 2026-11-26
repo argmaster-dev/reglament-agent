@@ -8,5 +8,5 @@
 <tr><td>{{ title }}</td><td>{{ dep }}</td><td>{% for s in st %}{{ stages.get(s, s) }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
 <td>{{ ver or "—" }}</td><td>{{ created.strftime("%d.%m.%Y %H:%M") if created else "—" }}</td><td>{{ points or "—" }}</td>
 <td>{{ "активен" if status == "active" else "отключён" }}</td>
-<td><a href="/admin/documents/{{ doc_id }}/versions">Версии</a>{% if status == "active" %} · <a href="/admin/documents/{{ doc_id }}/withdraw">Снять с публикации</a>{% endif %}</td></tr>{% endfor %}</table>
+<td><a href="/admin/documents/{{ doc_id }}/versions">Версии</a> · <a href="/admin/documents/{{ doc_id }}/checks">Проверка вопросов</a>{% if status == "active" %} · <a href="/admin/documents/{{ doc_id }}/withdraw">Снять с публикации</a>{% endif %}</td></tr>{% endfor %}</table>
 {% else %}<p class="muted">Пока нет ни одного регламента. Загрузите первый.</p>{% endif %}{% endblock %}
