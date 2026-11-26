@@ -10,14 +10,11 @@ from typing import Callable
 import httpx
 
 from .calls import CallRecord, CallSink, MemorySink
+from .errors import ModelError, QueueFull  # noqa: F401  (re-exported)
 from .queue import GenerationSlot
 from .settings import ModelSettings
 
 EMBED_DIM = 1024
-
-
-class ModelError(Exception):
-    pass
 
 
 class ModelUnavailable(ModelError):
@@ -59,13 +56,19 @@ class OllamaClient:
     ) -> None:
         self.settings = settings or ModelSettings()
         self.sink: CallSink = sink if sink is not None else MemorySink()
-        self.slot = slot or GenerationSlot(1)
+        self.slot = slot or GenerationSlot(
+            self.settings.chat_slots, max_queue=self.settings.chat_queue_max
+        )
         self._http = httpx.AsyncClient(
             base_url=self.settings.ollama_url,
             timeout=self.settings.timeout_s,
             transport=transport,
             trust_env=False,  # local Ollama: ignore system HTTP(S)_PROXY settings
         )
+
+    def slot_status(self) -> dict:
+        """{slots, busy, waiting} for /health."""
+        return self.slot.slot_status()
 
     async def aclose(self) -> None:
         await self._http.aclose()

@@ -14,3 +14,5 @@ class ModelSettings(BaseSettings):
     keep_alive: str = "30m"
     timeout_s: float = 120
     embed_batch: int = Field(default=32, ge=1)
+    chat_slots: int = Field(default=1, ge=1)
+    chat_queue_max: int = Field(default=0, ge=0)  # 0 = unlimited

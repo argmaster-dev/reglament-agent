@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator, Callable
 
+from .errors import QueueFull
+
 PositionCallback = Callable[[int], None]
 
 log = logging.getLogger(__name__)
@@ -28,16 +30,22 @@ class _Waiter:
 class GenerationSlot:
     """Single (or N) generation slot; FIFO. Position 1 = next in line."""
 
-    def __init__(self, capacity: int = 1) -> None:
+    def __init__(self, capacity: int = 1, max_queue: int = 0) -> None:
         if capacity < 1:
             raise ValueError("capacity must be >= 1")
+        if max_queue < 0:
+            raise ValueError("max_queue must be >= 0")
         self.capacity = capacity
+        self.max_queue = max_queue  # 0 = unlimited
         self.active = 0
         self._queue: deque[_Waiter] = deque()
 
     @property
     def waiting(self) -> int:
         return len(self._queue)
+
+    def slot_status(self) -> dict:
+        return {"slots": self.capacity, "busy": self.active, "waiting": len(self._queue)}
 
     def _notify(self) -> None:
         for i, w in enumerate(self._queue, start=1):
@@ -63,6 +71,8 @@ class GenerationSlot:
         if self.active < self.capacity and not self._queue:
             self.active += 1
         else:
+            if self.max_queue and len(self._queue) >= self.max_queue:
+                raise QueueFull(f"generation queue is full ({self.max_queue})")
             w = _Waiter(on_position)
             self._queue.append(w)
             self._notify()
