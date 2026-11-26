@@ -1,6 +1,17 @@
 # Public demo. Publish only Caddy's loopback port. Tailscale terminates TLS.
 services:
+  sender:
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.3
+  migrate:
+    mem_limit: 192m
+    memswap_limit: 192m
+    cpus: 0.5
   app:
+    mem_limit: 640m
+    memswap_limit: 640m
+    cpus: 1.25
     ports: !reset []
     environment:
       CHAT_TRUSTED_HEADER: ""
@@ -9,14 +20,36 @@ services:
       MAIL_UI_URL: /mail/
     networks: [backend, local_access]
   postgres:
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: 0.75
+    shm_size: 128m
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=48MB
+      - -c
+      - effective_cache_size=192MB
+      - -c
+      - max_connections=24
     ports: !reset []
     networks: [backend]
   mailpit:
+    mem_limit: 96m
+    memswap_limit: 96m
+    cpus: 0.25
     ports: !reset []
     networks: [backend]
     environment:
       MP_WEBROOT: /mail/
   gateway:
+    mem_limit: 96m
+    memswap_limit: 96m
+    cpus: 0.25
     environment:
       STAND_BASIC_USER: ${STAND_BASIC_USER:?Set STAND_BASIC_USER in .env}
       STAND_BASIC_PASSWORD_HASH: ${STAND_BASIC_PASSWORD_HASH:?Run deploy/setup-basic.py}

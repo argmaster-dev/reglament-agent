@@ -2,6 +2,7 @@
 import argparse
 from datetime import UTC, datetime
 import fcntl
+from functools import partial
 import hashlib
 import json
 import os
@@ -19,6 +20,14 @@ RELEASE_STORE = Path.home() / ".local/share/reglament-stand/releases"
 
 def output(*args, **kwargs):
     return subprocess.check_output(args, text=True, **kwargs).strip()
+
+
+def private_compose(command, *arguments, cwd, env):
+    # Dotenv/Compose errors can quote the offending line or interpolated password.
+    result = subprocess.run([*command, *arguments], cwd=cwd, env=env, text=True, capture_output=True)
+    if result.returncode:
+        raise ValueError(f"Stand Compose {arguments[0]} failed (exit {result.returncode}).")
+    return result.stdout.strip()
 
 
 def runtime_env_file(path):
@@ -87,7 +96,8 @@ def build_release(args, env_file):
         return
     env = dict(context, REGULATIONS_ENV_FILE=str(env_file))
     command = [*compose, "--env-file", str(env_file)]
-    config = json.loads(output(*command, "config", "--format", "json", cwd=clone, env=env))
+    stand_compose = partial(private_compose, command, cwd=clone, env=env)
+    config = json.loads(stand_compose("config", "--format", "json"))
     external = sorted(config["services"].keys() - PRODUCT_SERVICES)
     images = {name: service["image"] for name, service in config["services"].items()}
     if any(images[name] != app_image for name in PRODUCT_SERVICES):
@@ -95,7 +105,7 @@ def build_release(args, env_file):
     for name in external:
         if not DIGEST.fullmatch(images[name].partition("@")[2]):
             raise ValueError(f"No pinned registry digest for {name}.")
-    subprocess.run([*command, "pull", "--policy", "missing", *external], cwd=clone, env=env, check=True)
+    stand_compose("pull", "--policy", "missing", *external)
     snapshots = {name: {"image_id": image_id} for name in sorted(PRODUCT_SERVICES)}
     for name in external:
         pinned = images[name].partition("@")[2]
@@ -105,9 +115,9 @@ def build_release(args, env_file):
             raise ValueError(f"Local manifest or image ID does not match {name}.")
         snapshots[name] = {"manifest_digest": pinned, "image_id": inspected["Id"]}
     env["REGULATIONS_IMAGE_DIGESTS"] = json.dumps(snapshots, separators=(",", ":"))
-    subprocess.run([*command, "up", "-d", "--no-build", "--pull", "never", "--wait"], cwd=clone, env=env, check=True)
+    stand_compose("up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "180")
     for name, snapshot in snapshots.items():
-        container = output(*command, "ps", "--all", "--quiet", name, cwd=clone, env=env)
+        container = stand_compose("ps", "--all", "--quiet", name)
         if output("docker", "inspect", "--format", "{{.Image}}", container) != snapshot["image_id"]:
             raise ValueError(f"Container {name} does not use the recorded image.")
     (release_dir / "images.json").write_text(json.dumps(snapshots, indent=2) + "\n")
