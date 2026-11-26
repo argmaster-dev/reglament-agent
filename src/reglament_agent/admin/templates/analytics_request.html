@@ -8,7 +8,7 @@
 <p><b>Исход:</b> {{ outcome_label }}{% if cache_hit %} · <span class="badge">из кэша</span>{% endif %}
 · <b>Время:</b> {% if elapsed_ms is not none %}{{ (elapsed_ms / 1000)|round(1) }} с{% else %}—{% endif %}
 · <b>Оценка:</b> {{ '👍' if r.rating is true else '👎' if r.rating is false else 'нет' }}
-{% if ticket %}· <b>Обращение:</b> <a href="/admin/tickets/{{ ticket.number }}">{{ ticket.number }}</a>{% endif %}</p>
+{% if ticket %}· <b>Обращения:</b> {% for n in ticket %}<a href="/admin/tickets/{{ n }}">{{ n }}</a>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</p>
 {% if r.feedback %}<p><b>Комментарий:</b> {{ r.feedback }}</p>{% endif %}
 {% if summary %}<p><b>Ответ:</b> {{ summary }}</p>{% endif %}
 {% if sources %}<p><b>Основания:</b></p><ul>{% for s in sources %}<li>{{ s.doc_title }}, п. {{ s.point }}</li>{% endfor %}</ul>{% endif %}</div>

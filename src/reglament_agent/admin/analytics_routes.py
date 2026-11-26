@@ -51,7 +51,7 @@ def journal(request: Request, period: str = A.DEFAULT_PERIOD):
     with jobs.connect() as conn:
         rows = A.fetch(conn, period, limit=200)
     items = [{"r": r, "outcome": A.OUTCOMES.get(A.outcome(r), A.outcome(r)), "ms": A.elapsed(r),
-              "ticket": A.ticket_number(r)} for r in rows]
+              "ticket": r["tickets"]} for r in rows]
     return render("analytics_journal.html", request, nav="analytics", periods=A.PERIODS, period=period, items=items)
 
 

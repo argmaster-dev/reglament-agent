@@ -60,7 +60,31 @@ def fetch(conn, period: str, limit: int | None = None) -> list[dict]:
     sql = ("SELECT id, user_email, dialog_id, question, restated, answer, trace, created_at, rating, feedback, "
            "cache_key FROM dialog_requests " + ("WHERE created_at >= %s " if since else "")
            + "ORDER BY created_at DESC, id" + (f" LIMIT {int(limit)}" if limit else ""))
-    return conn.cursor(row_factory=dict_row).execute(sql, (since,) if since else ()).fetchall()
+    rows = conn.cursor(row_factory=dict_row).execute(sql, (since,) if since else ()).fetchall()
+    attach_tickets(conn, rows, since)
+    return rows
+
+
+def attach_tickets(conn, rows: list[dict], since) -> None:
+    """r["tickets"]: numbers of all tickets of the request, deduplicated: the one named in the answer plus
+    tickets linked by the same message or by a forwarded 👎 (`feedback:<id>`), created within the period."""
+    linked: dict = defaultdict(list)
+    if rows:
+        found = conn.execute(
+            "SELECT r.id, t.number FROM tickets t JOIN dialog_requests r ON r.user_email=t.user_email AND "
+            "(t.message_id = 'feedback:' || r.id::text OR (r.dialog_id=t.dialog_id AND r.message_id=t.message_id)) "
+            "WHERE r.id = ANY(%s)" + (" AND t.created_at >= %s" if since else "") + " ORDER BY t.id",
+            [[r["id"] for r in rows], *([since] if since else [])]).fetchall()
+        for rid, number in found:
+            linked[rid].append(number)
+    for r in rows:
+        own = ticket_number(r)
+        r["tickets"] = list(dict.fromkeys([*([own] if own else []), *linked.get(r["id"], [])]))
+
+
+def n_tickets(r: dict) -> int:
+    """Tickets of a request; a ticket-creating outcome counts as one even if its row is not found."""
+    return max(len(r.get("tickets") or []), 1 if outcome(r) in TICKET_OUTCOMES else 0)
 
 
 # --- per-request facts -----------------------------------------------------------------------
@@ -169,7 +193,7 @@ def unanswered(rows: list[dict]) -> dict[str, list[dict]]:
         o = outcome(r)
         if o in UNANSWERED:
             out.setdefault(o, []).append({"id": r["id"], "question": r["question"], "created_at": r["created_at"],
-                                          "ticket": ticket_number(r)})
+                                          "ticket": r.get("tickets") or []})
     return {o: out[o] for o in UNANSWERED if o in out}
 
 
@@ -196,14 +220,11 @@ def sections_stats(conn, rows: list[dict]) -> tuple[list[dict], list[dict]]:
         touched = {key(x) for x in (shown if r["rating"] is False and shown else cands if r["rating"] is False else ())}
         for k in touched:
             problems[k]["down"] += 1
-        flows = []
-        if ticket_number(r) or o in TICKET_OUTCOMES:
-            flows.append("tickets")
-        if o == "clarify":
-            flows.append("clarify")
-        for flow in flows:
-            for k in {key(x) for x in cands}:
-                problems[k][flow] += 1
+        n = n_tickets(r)
+        for k in {key(x) for x in (cands or shown)}:
+            problems[k]["tickets"] += n
+            if o == "clarify":
+                problems[k]["clarify"] += 1
     prob = [{"doc_id": k[0], "section": k[1], "doc_title": k[2], "title": k[3], "tickets": c["tickets"],
              "down": c["down"], "clarify": c["clarify"], "total": c["tickets"] + c["down"] + c["clarify"]}
             for k, c in problems.items()]
@@ -258,7 +279,7 @@ def summary(conn, period: str) -> dict:
     return {
         "period": period, "period_label": PERIODS[period][0], "total": len(rows), "counts": counts,
         "outcome_rows": [(k, OUTCOMES[k], counts.get(k, 0)) for k in OUTCOMES],
-        "ticket_outcomes": sum(counts.get(k, 0) for k in TICKET_OUTCOMES),
+        "ticket_outcomes": sum(map(n_tickets, rows)),
         "median_ms": median(ms), "up": sum(1 for r in rows if r["rating"] is True),
         "down": sum(1 for r in rows if r["rating"] is False),
         "repeated": rep, "unanswered": unanswered(rows), "problems": problems, "demand": demand,
@@ -289,7 +310,7 @@ def requests_csv(rows: list[dict]) -> str:
     def line(r):
         p, c, n = tokens(r)
         return [r["id"], r["created_at"].isoformat(), r["user_email"], outcome(r), r["question"], r["restated"],
-                ticket_number(r) or "", "" if r["rating"] is None else ("up" if r["rating"] else "down"),
+                ";".join(r.get("tickets") or []), "" if r["rating"] is None else ("up" if r["rating"] else "down"),
                 r["feedback"] or "", int(cache_hit(r)), elapsed(r) if elapsed(r) is not None else "", p, c, n, chat_calls(r)]
     return _csv(["id", "created_at", "user_email", "outcome", "question", "restated", "ticket", "rating", "feedback",
                  "cache_hit", "elapsed_ms", "prompt_tokens", "completion_tokens", "model_calls", "chat_calls"], map(line, rows))
@@ -313,11 +334,8 @@ def request_detail(conn, request_id: str) -> dict | None:
         return None
     trace, answer = r["trace"] or {}, r["answer"] or {}
     p, c, n = tokens(r)
-    ticket = None
-    if ticket_number(r):
-        ticket = conn.cursor(row_factory=dict_row).execute(
-            "SELECT number, status, reason FROM tickets WHERE number=%s", (ticket_number(r),)).fetchone() \
-            or {"number": ticket_number(r), "status": None, "reason": None}
+    attach_tickets(conn, [r], None)
+    ticket = r["tickets"]
     return {"r": r, "outcome": outcome(r), "outcome_label": OUTCOMES.get(outcome(r), outcome(r)),
             "steps": trace.get("steps") or [], "candidates": trace.get("candidates") or [],
             "calls": trace.get("calls") or [], "chat_calls": chat_calls(r),

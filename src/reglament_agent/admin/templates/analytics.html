@@ -36,7 +36,7 @@
 <div class="card"><h2>Вопросы без ответа по причинам</h2>
 {% for o, items in unanswered.items() %}<h3>{{ labels[o] }} ({{ items|length }})</h3>
 <table>{% for q in items[:20] %}<tr><td><a href="/admin/analytics/journal/{{ q.id }}">{{ q.question[:140] }}</a></td>
-<td>{{ q.created_at.strftime("%d.%m.%Y %H:%M") }}</td><td>{% if q.ticket %}<a href="/admin/tickets/{{ q.ticket }}">{{ q.ticket }}</a>{% endif %}</td></tr>{% endfor %}</table>
+<td>{{ q.created_at.strftime("%d.%m.%Y %H:%M") }}</td><td>{% for n in q.ticket %}<a href="/admin/tickets/{{ n }}">{{ n }}</a> {% endfor %}</td></tr>{% endfor %}</table>
 {% else %}<p class="muted">Таких вопросов нет.</p>{% endfor %}</div>
 
 <div class="card"><h2>Экономика</h2>
