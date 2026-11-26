@@ -11,12 +11,12 @@
 {% else %}<p class="muted">Запись привязана к документу целиком.</p>{% endif %}</div>{% endfor %}
 {% if e.status == 'review' %}
 <div class="card"><b>Решение</b>
-<form method="post" action="/admin/faq/{{ e.id }}/review/confirm" style="margin:8px 0"><button type="submit">Подтвердить: ответ остаётся верным</button></form>
-<form method="post" action="/admin/faq/{{ e.id }}/review/edit" class="f"><label>Исправить ответ</label><textarea name="answer" rows="4">{{ e.answer }}</textarea><button type="submit" style="margin-top:6px">Сохранить исправленный ответ</button></form>
-<form method="post" action="/admin/faq/{{ e.id }}/review/repin" class="f"><label>Перепривязать к другому пункту</label>
+<form method="post" action="/admin/faq/{{ e.id }}/review/confirm" style="margin:8px 0"><input type="hidden" name="expected_version_id" value="{{ token.expected_version_id }}"><input type="hidden" name="expected_hashes" value="{{ token.expected_hashes }}"><button type="submit">Подтвердить: ответ остаётся верным</button></form>
+<form method="post" action="/admin/faq/{{ e.id }}/review/edit" class="f"><input type="hidden" name="expected_version_id" value="{{ token.expected_version_id }}"><input type="hidden" name="expected_hashes" value="{{ token.expected_hashes }}"><label>Исправить ответ</label><textarea name="answer" rows="4">{{ e.answer }}</textarea><button type="submit" style="margin-top:6px">Сохранить исправленный ответ</button></form>
+<form method="post" action="/admin/faq/{{ e.id }}/review/repin" class="f"><input type="hidden" name="expected_version_id" value="{{ token.expected_version_id }}"><input type="hidden" name="expected_hashes" value="{{ token.expected_hashes }}"><label>Перепривязать к другому пункту</label>
 <select name="doc_id">{% for d in docs %}<option value="{{ d.doc_id }}">{{ d.title }}</option>{% endfor %}</select>
 <input type="text" name="number" placeholder="номер пункта, например 1.5" style="margin-top:6px"><button type="submit" style="margin-top:6px">Перепривязать</button></form>
-<form method="post" action="/admin/faq/{{ e.id }}/review/delete" style="margin-top:12px"><button class="sec" type="submit">Удалить запись</button></form></div>{% endif %}
+<form method="post" action="/admin/faq/{{ e.id }}/review/delete" style="margin-top:12px"><input type="hidden" name="expected_version_id" value="{{ token.expected_version_id }}"><input type="hidden" name="expected_hashes" value="{{ token.expected_hashes }}"><button class="sec" type="submit">Удалить запись</button></form></div>{% endif %}
 <div class="card"><b>История проверок</b>
 {% if history %}<table><tr><th>Дата</th><th>Кто</th><th>Действие</th></tr>{% for h in history %}<tr><td>{{ h.created_at.strftime("%d.%m.%Y %H:%M") }}</td><td>{{ h.actor }}</td><td>{{ h.label }}{% if h.detail.reasons %}: {{ h.detail.reasons|join("; ") }}{% endif %}</td></tr>{% endfor %}</table>
 {% else %}<p class="muted">Проверок пока не было.</p>{% endif %}</div>

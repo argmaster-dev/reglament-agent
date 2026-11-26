@@ -27,6 +27,10 @@ class VersionError(ValueError):
     """The requested operation is not possible (shown to the expert as is)."""
 
 
+class StaleBasis(VersionError):
+    """The FAQ review form shows an older basis than the current one: nothing was applied."""
+
+
 class StaleVersion(VersionError):
     """The confirmation form was built for another active version: nothing was changed."""
 
@@ -289,15 +293,43 @@ def review_context(conn: Connection, faq_id: int) -> dict | None:
     docs = cur.execute("SELECT doc_id, title FROM documents WHERE status='active' AND "
                        "active_version_id IS NOT NULL ORDER BY title").fetchall()
     rows = history(conn, faq_id)
-    return {"e": entry, "items": items, "history": rows, "docs": docs}
+    return {"e": entry, "items": items, "token": shown_token(conn, entry), "history": rows, "docs": docs}
 
 
-def _review_entry(conn: Connection, faq_id: int) -> dict:
-    row = F.get_faq(conn, faq_id)
-    if row is None:
+Shown = tuple  # (expected_version_id, expected_hashes) as rendered into the form
+
+
+def shown_token(conn: Connection, entry: dict) -> dict:
+    """What the expert sees: the document's active version and the hash of each basis text now."""
+    version = conn.execute("SELECT active_version_id FROM documents WHERE doc_id=%s",
+                           (entry["doc_id"],)).fetchone() if entry["doc_id"] else None
+    hashes = []
+    for b in entry["basis"]:
+        text = F.point_state(conn, b)["text"] if b.get("number") else None
+        hashes.append(content_hash(text) if text else "-")
+    return {"expected_version_id": version[0] if version and version[0] else "",
+            "expected_hashes": ",".join(hashes)}
+
+
+def make_shown(expected_version_id: str = "", expected_hashes: str = "") -> dict:
+    return {"expected_version_id": str(expected_version_id or ""), "expected_hashes": str(expected_hashes or "")}
+
+
+def _review_entry(conn: Connection, faq_id: int, shown: dict | None = None, check: bool = True) -> dict:
+    """Lock the entry (and its document), then compare what the expert saw with what is there now."""
+    first = conn.execute("SELECT doc_id FROM faq_entries WHERE id=%s FOR UPDATE", (faq_id,)).fetchone()
+    if first is None:
         raise VersionError("Запись FAQ не найдена.")
+    if first[0]:
+        _lock(conn, first[0])
+    row = F.get_faq(conn, faq_id)
     if row["status"] != "review":
         raise VersionError("Запись не на проверке.")
+    if check:
+        now = shown_token(conn, row)
+        given = {k: str(v) for k, v in (shown or {}).items()}
+        if given != {k: str(v) for k, v in now.items()}:
+            raise StaleBasis("Основание изменилось, проверьте новый текст.")
     return row
 
 
@@ -316,31 +348,32 @@ def _require_published(conn: Connection, row: dict) -> None:
 # The four decisions below are the only way an expert changes a FAQ entry's status: every route
 # (review page, plain FAQ card) calls them, and each writes one `faq_reviews` line.
 
-def confirm_entry(conn: Connection, faq_id: int, actor: str) -> None:
+def confirm_entry(conn: Connection, faq_id: int, actor: str, shown: dict | None = None) -> None:
     with conn.transaction():
-        _require_published(conn, _review_entry(conn, faq_id))
+        _require_published(conn, _review_entry(conn, faq_id, shown))
         _call(F.set_faq_status, conn, faq_id, "active")
         log(conn, faq_id, actor, "confirm", {"basis": F.get_faq(conn, faq_id)["basis"]})
 
 
-def edit_answer(conn: Connection, faq_id: int, actor: str, answer: str) -> None:
+def edit_answer(conn: Connection, faq_id: int, actor: str, answer: str, shown: dict | None = None) -> None:
     answer = (answer or "").strip()
     if not answer:
         raise VersionError("Ответ не может быть пустым.")
     with conn.transaction():
-        row = _review_entry(conn, faq_id)
+        row = _review_entry(conn, faq_id, shown)
         _require_published(conn, row)
         conn.execute("UPDATE faq_entries SET answer=%s WHERE id=%s", (answer, faq_id))
         _call(F.set_faq_status, conn, faq_id, "active")
         log(conn, faq_id, actor, "edit", {"old_answer": row["answer"], "new_answer": answer})
 
 
-def repin_entry(conn: Connection, faq_id: int, actor: str, doc_id: str, number: str) -> None:
+def repin_entry(conn: Connection, faq_id: int, actor: str, doc_id: str, number: str,
+                shown: dict | None = None) -> None:
     doc_id, number = (doc_id or "").strip(), (number or "").strip()
     if not doc_id or not number:
         raise VersionError("Укажите документ и номер пункта.")
     with conn.transaction():
-        row = _review_entry(conn, faq_id)
+        row = _review_entry(conn, faq_id, shown)
         basis, first, version_id = _call(F._capture_basis, conn, "points", [(doc_id, number)])
         conn.execute("UPDATE faq_entries SET basis_kind='points', basis=%s, doc_id=%s, version_id=%s, "
                      "status='active', updated_at=now(), reviewed_at=now() WHERE id=%s",
@@ -348,7 +381,8 @@ def repin_entry(conn: Connection, faq_id: int, actor: str, doc_id: str, number: 
         log(conn, faq_id, actor, "repin", {"old_basis": row["basis"], "new_basis": basis})
 
 
-def delete_entry(conn: Connection, faq_id: int, actor: str) -> None:
+def delete_entry(conn: Connection, faq_id: int, actor: str, shown: dict | None = None) -> None:
+    """Deleting is allowed without comparing what was shown: removing an entry is safe on any basis."""
     with conn.transaction():
         row = F.get_faq(conn, faq_id)
         if row is None or row["status"] == "deleted":

@@ -81,6 +81,10 @@ def faq(conn, question, kind="points", points=(("doc-x", "1.2"),), mid=None):
                          faq_question=question, alt_questions=[], embedder=EMB)["faq_id"]
 
 
+def shown(conn, faq_id):
+    return V.shown_token(conn, V.F.get_faq(conn, faq_id))
+
+
 def expected(conn):
     return {"expected_version_id": conn.execute("SELECT active_version_id FROM documents").fetchone()[0]}
 
@@ -293,21 +297,21 @@ def test_review_page_shows_old_and_new_text_side_by_side(env):
 def test_review_confirm_repins_and_logs(env):
     f = review_setup(env)
     c = client("expert")
-    assert c.post(f"/admin/faq/{f}/review/confirm").status_code == 303
+    assert c.post(f"/admin/faq/{f}/review/confirm", data=shown(env, f)).status_code == 303
     assert status(env, f) == "active" and found(env, "Кто согласует?") == [f]
     sha = env.execute("SELECT sha256 FROM points p JOIN documents d ON d.active_version_id=p.version_id "
                       "WHERE p.number='1.2'").fetchone()[0]
     assert env.execute("SELECT basis FROM faq_entries").fetchone()[0][0]["sha256"] == sha
     page = c.get(f"/admin/faq/{f}/review").text
     assert "expert@x.local" in page and "подтверждено" in page and "отправлено на проверку" in page and "система" in page and "изменён" in page
-    assert c.post(f"/admin/faq/{f}/review/confirm").status_code == 400  # no longer under review
+    assert c.post(f"/admin/faq/{f}/review/confirm", data=shown(env, f)).status_code == 400  # no longer under review
 
 
 def test_review_edit_answer(env):
     f = review_setup(env)
     c = client("expert")
-    assert c.post(f"/admin/faq/{f}/review/edit", data={"answer": "  "}).status_code == 400
-    assert c.post(f"/admin/faq/{f}/review/edit", data={"answer": "Согласует директор."}).status_code == 303
+    assert c.post(f"/admin/faq/{f}/review/edit", data={**shown(env, f), "answer": "  "}).status_code == 400
+    assert c.post(f"/admin/faq/{f}/review/edit", data={**shown(env, f), "answer": "Согласует директор."}).status_code == 303
     assert env.execute("SELECT answer, status FROM faq_entries").fetchone() == ("Согласует директор.", "active")
     assert [h["action"] for h in V.history(env, f)][-1] == "edit"
 
@@ -315,9 +319,9 @@ def test_review_edit_answer(env):
 def test_review_repin_and_delete(env):
     f = review_setup(env)
     c = client("expert")
-    assert c.post(f"/admin/faq/{f}/review/repin", data={"doc_id": "doc-x", "number": "9.9"}).status_code == 400
+    assert c.post(f"/admin/faq/{f}/review/repin", data={**shown(env, f), "doc_id": "doc-x", "number": "9.9"}).status_code == 400
     assert status(env, f) == "review"
-    assert c.post(f"/admin/faq/{f}/review/repin", data={"doc_id": "doc-x", "number": "1.3"}).status_code == 303
+    assert c.post(f"/admin/faq/{f}/review/repin", data={**shown(env, f), "doc_id": "doc-x", "number": "1.3"}).status_code == 303
     assert status(env, f) == "active"
     assert env.execute("SELECT basis FROM faq_entries").fetchone()[0][0]["number"] == "1.3"
     assert c.post(f"/admin/faq/{f}/review/delete").status_code == 303
@@ -330,7 +334,7 @@ def test_confirm_blocked_when_point_removed(env):
     f = faq(env, "Сколько хранится архив?", points=[("doc-x", "1.3")])
     pub(env, docx("Регламент", "1. Раздел", "1.1. Срок подачи заявки составляет три дня."))
     assert status(env, f) == "review"
-    r = client("expert").post(f"/admin/faq/{f}/review/confirm")
+    r = client("expert").post(f"/admin/faq/{f}/review/confirm", data=shown(env, f))
     assert r.status_code == 400 and "удалён" in r.text and status(env, f) == "review"
 
 

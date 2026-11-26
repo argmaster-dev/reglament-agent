@@ -13,7 +13,7 @@
 <p class="muted">Раздел: {{ b.section_path }}{% if b.column %} · столбец: {{ b.column }}{% endif %} {% if b.sha256 %} · хеш при ответе: {{ b.sha256[:12] }}…{% endif %}</p>
 {% if b.now and b.now.text %}<p><b>Текст сейчас:</b></p><pre class="pt2">{{ b.now.text }}</pre>{% else %}<p class="muted">Пункта в действующей версии нет.</p>{% endif %}</details>{% endfor %}</div>{% endif %}
 {% if e.status == 'review' %}<p><a class="btn" href="/admin/faq/{{ e.id }}/review">Проверить</a></p>{% endif %}
-{% if e.status != 'deleted' %}<form method="post" style="display:flex;gap:12px">
+{% if e.status != 'deleted' %}<form method="post" style="display:flex;gap:12px"><input type="hidden" name="expected_version_id" value="{{ token.expected_version_id }}"><input type="hidden" name="expected_hashes" value="{{ token.expected_hashes }}">
 {% if e.status == 'review' %}<button formaction="/admin/faq/{{ e.id }}/confirm">Подтвердить (вернуть в поиск)</button>{% endif %}
 <button class="sec" formaction="/admin/faq/{{ e.id }}/delete">Удалить</button></form>{% endif %}
 {% endblock %}

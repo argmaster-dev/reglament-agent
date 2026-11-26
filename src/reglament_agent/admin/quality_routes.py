@@ -148,7 +148,7 @@ def faq_list(request: Request, status: str = ""):
 
 
 @expert_router.get("/faq/{faq_id}", response_class=HTMLResponse)
-def faq_page(request: Request, faq_id: int, error: str = ""):
+def faq_page(request: Request, faq_id: int, error: str = "", status_code: int = 200):
     with jobs.connect() as conn:
         e = F.get_faq(conn, faq_id)
         if e is None:
@@ -159,21 +159,26 @@ def faq_page(request: Request, faq_id: int, error: str = ""):
             if st and st["state"] != "removed":
                 st["text"] = (view_text(conn, b["doc_id"], st["number"]) or {}).get("text", st["text"])
             items.append({**b, "now": st})
-    return render("faq_entry.html", request, nav="faq", e=e, items=items, error=error,
+        token = V.shown_token(conn, e)
+    return render("faq_entry.html", request, status_code, nav="faq", e=e, items=items, error=error, token=token,
                   status_text=FAQ_STATUS.get(e["status"], e["status"]),
                   label=F.basis_label(e["basis_kind"], e["basis"]))
 
 
 @expert_router.post("/faq/{faq_id}/{action}")
-def faq_action(request: Request, faq_id: int, action: str):
+async def faq_action(request: Request, faq_id: int, action: str):
     """Plain-card buttons share the single decision path (and history) of the review page."""
     decide = {"confirm": V.confirm_entry, "delete": V.delete_entry}.get(action)
     if decide is None:
         return RedirectResponse(f"/admin/faq/{faq_id}", status_code=303)
     actor = S.identity_from_headers(request.headers, _import_secret()).email
+    form = await request.form()
+    shown = V.make_shown(form.get("expected_version_id", ""), form.get("expected_hashes", ""))
     with jobs.connect() as conn:
         try:
-            decide(conn, faq_id, actor)
+            decide(conn, faq_id, actor, shown)
+        except V.StaleBasis as exc:
+            return faq_page(request, faq_id, error=str(exc), status_code=409)
         except V.VersionError as exc:
             return RedirectResponse(f"/admin/faq/{faq_id}?error={exc}", status_code=303)
     return RedirectResponse(f"/admin/faq/{faq_id}", status_code=303)

@@ -1,5 +1,7 @@
 from html.parser import HTMLParser
 
+import pytest
+
 from tests.admin.test_versions import BASE, DBRCT, DEMO, V, client, docx, env, job_of, pub, publish_via_job, review_setup, upload
 
 
@@ -31,7 +33,7 @@ def test_confirm_from_visible_card_records_expert(env):
     c = client('expert')
     card = c.get(f'/admin/faq/{item}')
     action = next(s for s in Controls(card.text).targets if s.endswith('/confirm'))
-    assert c.post(action).status_code == 303
+    assert c.post(action, data=shown(env, item)).status_code == 303
     assert any(row['action'] == 'confirm' and row['actor'] == 'expert@x.local' for row in V.history(env, item))
 
 
@@ -57,7 +59,7 @@ def test_withdraw_form_applies_only_to_previewed_version(env):
 
 import re  # noqa: E402
 
-from tests.admin.test_versions import faq, status  # noqa: E402
+from tests.admin.test_versions import faq, shown, status  # noqa: E402
 
 V2 = docx("Регламент", "1. Раздел", "1.1. Изменённый этап.")
 
@@ -128,9 +130,9 @@ def test_document_level_entry_cannot_be_confirmed_while_withdrawn(env):
     exp = env.execute("SELECT active_version_id FROM documents").fetchone()[0]
     c.post("/admin/documents/doc-x/withdraw", data={"expected_version_id": exp})
     assert status(env, f) == "review"
-    r = c.post(f"/admin/faq/{f}/review/confirm")
+    r = c.post(f"/admin/faq/{f}/review/confirm", data=shown(env, f))
     assert r.status_code == 400 and "снят с публикации" in r.text and status(env, f) == "review"
-    old = c.post(f"/admin/faq/{f}/confirm", follow_redirects=True)
+    old = c.post(f"/admin/faq/{f}/confirm", data=shown(env, f), follow_redirects=True)
     assert "снят с публикации" in old.text and status(env, f) == "review"
 
 
@@ -160,3 +162,49 @@ def test_all_status_routes_write_one_history_line_with_version(env):
     last = V.history(env, f)[-1]
     assert (last["action"], last["actor"], last["detail"]["version"]) == ("delete", "expert@x.local", 2)
     assert last["created_at"] is not None
+
+
+# --- round 3: the form decides only on what the expert saw -----------------------------------------
+
+def republish_other(env):
+    pub(env, docx("Регламент", "1. Раздел", "1.1. Срок составляет три дня.", "1.2. Согласование выполняет секретарь комиссии."))
+
+
+def test_forms_carry_the_shown_state(env):
+    f = review_setup(env)
+    c = client("expert")
+    for page in (c.get(f"/admin/faq/{f}/review").text, c.get(f"/admin/faq/{f}").text):
+        assert page.count('name="expected_version_id"') >= 1 and page.count('name="expected_hashes"') >= 1
+
+
+@pytest.mark.parametrize("action,data", [("confirm", {}), ("edit", {"answer": "Новый ответ."}),
+                                         ("repin", {"doc_id": "doc-x", "number": "1.1"})])
+def test_stale_review_form_applies_nothing(env, action, data):
+    f = review_setup(env)
+    c = client("expert")
+    old = shown(env, f)
+    republish_other(env)
+    r = c.post(f"/admin/faq/{f}/review/{action}", data={**old, **data})
+    assert r.status_code == 409 and "Основание изменилось, проверьте новый текст" in r.text
+    assert "секретарь" in r.text  # the page now shows the new text
+    assert status(env, f) == "review" and env.execute("SELECT answer FROM faq_entries").fetchone()[0] == "Ответ эксперта."
+    assert [h["action"] for h in V.history(env, f)] == ["to_review"]
+    fresh = shown(env, f)
+    assert c.post(f"/admin/faq/{f}/review/{action}", data={**fresh, **data}).status_code == 303
+
+
+def test_stale_plain_card_confirm_applies_nothing_and_missing_fields_rejected(env):
+    f = review_setup(env)
+    c = client("expert")
+    old = shown(env, f)
+    republish_other(env)
+    r = c.post(f"/admin/faq/{f}/confirm", data=old)
+    assert r.status_code == 409 and "Основание изменилось" in r.text and status(env, f) == "review"
+    assert c.post(f"/admin/faq/{f}/review/confirm").status_code == 409  # no fields = nothing was shown
+
+
+def test_delete_needs_no_comparison(env):
+    f = review_setup(env)
+    republish_other(env)
+    assert client("expert").post(f"/admin/faq/{f}/review/delete").status_code == 303
+    assert status(env, f) == "deleted"

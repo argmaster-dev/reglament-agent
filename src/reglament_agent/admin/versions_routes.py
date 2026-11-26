@@ -169,20 +169,23 @@ def review_page(request: Request, faq_id: int):
 
 @router.post("/faq/{faq_id}/review/{action}", response_class=HTMLResponse)
 def review_action(request: Request, faq_id: int, action: str, answer: str = Form(""), doc_id: str = Form(""),
-                  number: str = Form("")):
+                  number: str = Form(""), expected_version_id: str = Form(""), expected_hashes: str = Form("")):
     actor = _actor(request)
+    shown = V.make_shown(expected_version_id, expected_hashes)
     with jobs.connect() as conn:
         try:
             if action == "confirm":
-                V.confirm_entry(conn, faq_id, actor)
+                V.confirm_entry(conn, faq_id, actor, shown)
             elif action == "edit":
-                V.edit_answer(conn, faq_id, actor, answer)
+                V.edit_answer(conn, faq_id, actor, answer, shown)
             elif action == "repin":
-                V.repin_entry(conn, faq_id, actor, doc_id, number)
+                V.repin_entry(conn, faq_id, actor, doc_id, number, shown)
             elif action == "delete":
                 V.delete_entry(conn, faq_id, actor)
             else:
                 return _not_found(request, "Неизвестное действие")
+        except V.StaleBasis as exc:
+            return _review_page(request, conn, faq_id, error=str(exc), status_code=409)
         except V.VersionError as exc:
             return _review_page(request, conn, faq_id, error=str(exc), status_code=400)
     return RedirectResponse(f"/admin/faq/{faq_id}/review", status_code=303)
