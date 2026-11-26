@@ -114,6 +114,7 @@ class OllamaClient:
                     {
                         "model": s.embed_model,
                         "input": batch,
+                        "truncate": False,
                         "keep_alive": s.keep_alive,
                         "options": {"num_gpu": s.embed_num_gpu},
                     },
