@@ -76,6 +76,7 @@ def install(app) -> None:
 def summarize(parsed) -> dict:
     kinds = Counter(b.kind for p in parsed.points for b in p.blocks)
     sections = []
+    levels = Counter(point.level for point in parsed.points)
     for p in parsed.points:
         if p.level == 1:
             sections.append({"point": p, "children": []})
@@ -83,7 +84,7 @@ def summarize(parsed) -> dict:
             sections[-1]["children"].append(p)
     return {
         "sections": sum(1 for p in parsed.points if p.level == 1), "points": sum(1 for p in parsed.points if p.level > 1),
-        "levels": len({p.level for p in parsed.points}), "notes": kinds[BlockKind.NOTE],
+        "levels": dict(sorted(levels.items())), "notes": kinds[BlockKind.NOTE],
         "lists": kinds[BlockKind.LIST_ITEM], "tables": kinds[BlockKind.TABLE],
         "warnings": parsed.warnings, "tree": sections,
     }
@@ -151,6 +152,8 @@ async def upload(request: Request, file: UploadFile = File(...), target: str = F
         def fail(msg):
             return _upload_form(request, conn, msg, 400)
 
+        if Path(file.filename or "").suffix.lower() != ".docx":
+            return fail("Загрузите документ в формате DOCX.")
         if not data or len(data) > MAX_UPLOAD:
             return fail("Файл пустой или больше 20 МБ.")
         t0 = time.time()
@@ -226,19 +229,22 @@ def job_page(request: Request, job_id: int):
     embed_end = stats.get("published", None)
     if started:
         publish_sec = stats.get("publish_sec")
-        t["embed"] = (stats["published"] - started - (publish_sec or 0)) if embed_end else now - started
-        t["publish"] = publish_sec
+        publishing_at = stats.get("publishing")
+        stopped_at = stats.get("finished") or now
+        if publishing_at is None:  # older jobs only record the time of publication
+            publishing_at = embed_end - (publish_sec or 0) if embed_end else stopped_at
+        t["embed"] = publishing_at - started
+        t["publish"] = publish_sec if publish_sec is not None else (
+            stopped_at - publishing_at if stage == "publish" and "publishing" in stats else None)
         t["selfcheck"] = stats.get("selfcheck_sec") if "selfcheck_sec" in stats else (
             now - stats["published"] if embed_end and status == "running" else None)
         t["total"] = (stats.get("finished") or now) - started
     t["parse"] = stats.get("parse_sec")
     order = ["embed", "publish", "selfcheck"]
     cur = {"queued": -1, "embed": 0, "publish": 1, "selfcheck": 2, "ready": 3}.get(stage, -1)
-    if status == "running" and stage == "embed" and total and done >= total:
-        cur = 1  # all batches done, transaction being written
     steps = []
     for i, key in enumerate(order):
-        state = "done" if (cur > i or status in ("ready", "duplicate")) else "active" if cur == i else "todo"
+        state = "done" if (cur > i or status in ("ready", "duplicate")) else "active" if cur == i and status == "running" else "todo"
         if status == "failed" and cur == i:
             state = "failed"
         steps.append({"key": key, "state": state, "sec": t.get(key)})

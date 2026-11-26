@@ -5,7 +5,9 @@ import os
 import sys
 from pathlib import Path
 
-from .demo import allowed, demo_reset, make_embedder
+from reglament_agent.ingest.embedding import open_embedder
+
+from .demo import allowed, demo_reset
 
 
 def main(argv=None) -> int:
@@ -26,12 +28,8 @@ def main(argv=None) -> int:
     if not allowed(args.yes):
         print("Refused: pass --yes or set DEMO_RESET_ALLOWED=1", file=sys.stderr)
         return 2
-    embedder, closer = make_embedder(kind)
-    try:
+    with open_embedder(kind) as embedder:
         summary = demo_reset(dsn, args.directory, without=tuple(args.without), embedder=embedder, schema=schema)
-    finally:
-        if closer:
-            closer.close()
     print(json.dumps(summary, ensure_ascii=False))
     return 0
 

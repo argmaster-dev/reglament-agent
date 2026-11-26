@@ -1,6 +1,8 @@
 """Publication jobs: DB-backed queue, in-process background runner, honest progress."""
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import asyncio
 import os
 import time
@@ -9,11 +11,11 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from reglament_agent.admin.selfcheck import selfcheck
-from reglament_agent.ingest.embedding import Embedder, make_embedder
+from reglament_agent.ingest.embedding import Embedder, open_embedder
 from reglament_agent.ingest.model import DocumentCard
 from reglament_agent.quality.faq import recheck_faq_after_publication
 from reglament_agent.storage.migrate import migrate
-from reglament_agent.storage.publish import publish
+from reglament_agent.storage.publish import Publication, publish
 
 
 def connect() -> psycopg.Connection:
@@ -26,8 +28,8 @@ def ensure_schema() -> None:
 
 
 def update_job(job_id: int, *, status=None, stage=None, done=None, total=None, error=None,
-               selfcheck_result=None, stats: dict | None = None) -> None:
-    """Short separate connection so progress is visible to page polling immediately."""
+               selfcheck_result=None, stats: dict | None = None, connection: psycopg.Connection | None = None) -> None:
+    """Persist progress independently, or record a publication inside its transaction."""
     sets, params = ["updated_at=now()"], []
     for column, value in (("status", status), ("stage", stage), ("done", done), ("total", total),
                           ("error", error)):
@@ -40,7 +42,7 @@ def update_job(job_id: int, *, status=None, stage=None, done=None, total=None, e
     if stats:
         sets.append("stats=stats || %s")
         params.append(Jsonb(stats))
-    with connect() as conn:
+    with (connect() if connection is None else nullcontext(connection)) as conn:
         conn.execute(f"UPDATE ingest_jobs SET {', '.join(sets)} WHERE id=%s", (*params, job_id))
 
 
@@ -63,36 +65,43 @@ class ProgressEmbedder:
 def run_job(job_id: int, embedder: Embedder | None = None) -> None:
     """Run one queued job to completion (blocking). Never raises: failures are stored on the job."""
     with connect() as conn:
-        row = conn.execute("SELECT card, filename, data, created_by, stats FROM ingest_jobs WHERE id=%s",
+        row = conn.execute("SELECT card, filename, data, created_by FROM ingest_jobs WHERE id=%s",
                            (job_id,)).fetchone()
-    card_data, filename, data, created_by, _ = row
+    card_data, filename, data, created_by = row
     card = DocumentCard(card_data["doc_id"], card_data["title"], card_data["department"],
                         tuple(card_data["stages"]), filename)
-    started = time.time()
+    started = publishing_at = time.time()
     update_job(job_id, status="running", stage="embed", done=0, total=0, stats={"started": started})
+
+    def start_publishing() -> None:
+        nonlocal publishing_at
+        publishing_at = time.time()
+        update_job(job_id, stage="publish", stats={"publishing": publishing_at})
+
+    def record_publication(conn: psycopg.Connection, pub: Publication) -> None:
+        faq_review = recheck_faq_after_publication(conn, card.doc_id)
+        done, total = conn.execute("SELECT done, total FROM ingest_jobs WHERE id=%s", (job_id,)).fetchone()
+        published = time.time()
+        update_job(job_id, stage="selfcheck", done=0, total=pub.stats["points"] - pub.stats["levels"].get("1", 0),
+                   stats={"version": pub.number, "faq_review": faq_review, "embed": {"done": done, "total": total},
+                          "publish_sec": round(published - publishing_at, 2), "published": published,
+                          "publication": pub.stats},
+                   connection=conn)
+
     try:
-        inner = embedder or make_embedder()
-        with connect() as conn:
-            t_publish = time.time()
-            pub = publish(conn, card, bytes(data), ProgressEmbedder(inner, job_id), created_by)
-            published = time.time()
-            # Also for a duplicate upload: the re-check is idempotent and covers a crashed earlier run.
-            faq_review = recheck_faq_after_publication(conn, card.doc_id)
+        with (open_embedder() if embedder is None else nullcontext(embedder)) as inner, connect() as conn:
+            pub = publish(conn, card, bytes(data), ProgressEmbedder(inner, job_id), created_by,
+                          on_publish_start=start_publishing, before_commit=record_publication)
             if not pub.created:
                 update_job(job_id, status="duplicate", stage="publish",
-                           stats={"version": pub.number, "finished": published})
+                           stats={"version": pub.number, "finished": time.time()})
                 return
-            with connect() as c2:
-                total = c2.execute("SELECT done, total FROM ingest_jobs WHERE id=%s", (job_id,)).fetchone()
-            update_job(job_id, stage="selfcheck", done=0, total=pub.stats["points"], stats={
-                "version": pub.number, "faq_review": faq_review, "embed": {"done": total[0], "total": total[1]},
-                "publish_sec": round(published - t_publish, 2), "published": published,
-                "publication": pub.stats})
+            checking_at = time.time()
             result = selfcheck(conn, card.doc_id, lambda k, n: update_job(job_id, done=k, total=n))
         finished = time.time()
         update_job(job_id, status="ready", stage="ready", selfcheck_result=result,
-                   stats={"finished": finished, "selfcheck_sec": round(finished - published, 2)})
-    except Exception as exc:  # noqa: BLE001 - stored for the expert, never swallowed silently
+                   stats={"finished": finished, "selfcheck_sec": round(finished - checking_at, 2)})
+    except Exception as exc:  # noqa: BLE001 - stored for the expert
         update_job(job_id, status="failed", error=f"{type(exc).__name__}: {exc}", stats={"finished": time.time()})
 
 
