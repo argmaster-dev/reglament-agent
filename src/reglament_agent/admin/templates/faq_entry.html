@@ -12,7 +12,8 @@
 {% if b.now %}{% if b.now.state == 'changed' %}<span class="badge bad">пункт изменён</span>{% elif b.now.state == 'removed' %}<span class="badge bad">пункт удалён</span>{% elif b.now.state == 'renumbered' %}<span class="badge">перенумерован → {{ b.now.number }}</span>{% endif %}{% endif %}</summary>
 <p class="muted">Раздел: {{ b.section_path }}{% if b.column %} · столбец: {{ b.column }}{% endif %} · хеш при ответе: {{ b.sha256[:12] }}…</p>
 {% if b.now and b.now.text %}<p><b>Текст сейчас:</b></p><pre class="pt2">{{ b.now.text }}</pre>{% else %}<p class="muted">Пункта в действующей версии нет.</p>{% endif %}</details>{% endfor %}</div>{% endif %}
-{% if e.status != 'deleted' %}<form method="post" style="display:flex;gap:12px">
+{% if review_path %}<a class="btn" href="{{ review_path }}">Проверить</a>
+{% elif e.status != 'deleted' %}<form method="post" style="display:flex;gap:12px">
 {% if e.status == 'review' %}<button formaction="/admin/faq/{{ e.id }}/confirm">Подтвердить (вернуть в поиск)</button>{% endif %}
 <button class="sec" formaction="/admin/faq/{{ e.id }}/delete">Удалить</button></form>{% endif %}
 {% endblock %}

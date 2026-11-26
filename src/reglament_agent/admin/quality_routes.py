@@ -1,17 +1,20 @@
 """Expert pages: tickets and FAQ."""
 from __future__ import annotations
 
+import asyncio
 import re
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from psycopg.rows import dict_row
+from starlette.routing import NoMatchFound
 
 from reglament_agent.admin import jobs
 from reglament_agent.admin.routes import render
 from reglament_agent.answer import SourceRef
 from reglament_agent.chat import session as S
 from reglament_agent.ingest.embedding import make_embedder
+from reglament_agent.model.ollama import ModelError
 from reglament_agent.quality import faq as F
 from reglament_agent.quality.mail import REASONS
 from reglament_agent.quality.tickets import get_ticket, get_ticket_for_user
@@ -106,11 +109,15 @@ def ticket_page(request: Request, number: str):
 
 @expert_router.post("/tickets/{number}", response_class=HTMLResponse)
 async def ticket_submit(request: Request, number: str):
-    f = await request.form()
+    form = await request.form()
+    return await asyncio.to_thread(_submit_ticket, request, number, form)
+
+
+def _submit_ticket(request: Request, number: str, f):
     ident = S.identity_from_headers(request.headers, _import_secret())
     action = f.get("action", "answer")
     form = {"answer": f.get("answer", ""), "basis_kind": f.get("basis_kind", "points"),
-            "extra_points": f.get("extra_points", ""), "visibility": f.get("visibility", "faq"),
+            "extra_points": f.get("extra_points", ""), "visibility": f.get("visibility", "private"),
             "faq_question": f.get("faq_question", ""), "alt_questions": f.get("alt_questions", ""),
             "dup_ref": f.get("dup_ref", ""), "cand": f.getlist("cand")}
     with jobs.connect() as conn:
@@ -128,7 +135,12 @@ async def ticket_submit(request: Request, number: str):
                 conn, number=number, expert_email=ident.email, answer=form["answer"],
                 basis_kind=form["basis_kind"], basis_points=points, visibility=form["visibility"],
                 faq_question=form["faq_question"],
-                alt_questions=form["alt_questions"].splitlines(), embedder=make_embedder())
+                alt_questions=form["alt_questions"].splitlines(),
+                embedder=make_embedder() if form["visibility"] == "faq" else None,
+            )
+        except ModelError:
+            return _ticket_page(request, conn, number, status_code=503,
+                                error="Индекс FAQ недоступен. Повторите отправку.", form=form)
         except F.TicketError as exc:
             return _ticket_page(request, conn, number, status_code=400, error=str(exc), form=form)
     return RedirectResponse(f"/admin/tickets/{number}", status_code=303)
@@ -158,8 +170,14 @@ def faq_page(request: Request, faq_id: int, error: str = ""):
             if st and st["state"] != "removed":
                 st["text"] = (view_text(conn, b["doc_id"], st["number"]) or {}).get("text", st["text"])
             items.append({**b, "now": st})
+    review_path = None
+    if e["status"] == "review":
+        try:
+            review_path = request.app.url_path_for("review_page", faq_id=faq_id)
+        except NoMatchFound:
+            pass
     return render("faq_entry.html", request, nav="faq", e=e, items=items, error=error,
-                  status_text=FAQ_STATUS.get(e["status"], e["status"]),
+                  review_path=review_path, status_text=FAQ_STATUS.get(e["status"], e["status"]),
                   label=F.basis_label(e["basis_kind"], e["basis"]))
 
 
@@ -187,11 +205,19 @@ def ticket_status(request: Request, number: str):
             response = _ticket_page(request, conn, number)
         else:
             ticket = get_ticket_for_user(conn, number, identity.email)
+            answer = None
+            if ticket:
+                answer = conn.cursor(row_factory=dict_row).execute(
+                    "SELECT expert_email,answer,created_at,visibility,basis_kind,basis "
+                    "FROM ticket_answers WHERE ticket_id=%s", (ticket["id"],),
+                ).fetchone()
             response = render(
                 "employee_ticket.html",
                 request,
                 200 if ticket else 404,
                 ticket=ticket,
+                answer=answer,
+                answer_basis=F.basis_label(answer["basis_kind"], answer["basis"]) if answer else None,
                 status=STATUS.get(ticket["status"], ticket["status"]) if ticket else None,
                 delivery=MAIL.get(ticket["delivery"], ticket["delivery"]) if ticket else None,
             )
