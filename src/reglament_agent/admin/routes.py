@@ -5,6 +5,7 @@ import hashlib
 import os
 import time
 from collections import Counter
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -62,8 +63,20 @@ def install(app) -> None:
                 return RedirectResponse("/start", status_code=303)
             if ident.role != "expert":
                 return render("forbidden.html", request, 403)
-            jobs.ensure_runner()
         return await call_next(request)
+
+    app_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(application):
+        async with app_lifespan(application) as state:
+            jobs.ensure_runner()
+            try:
+                yield state
+            finally:
+                await jobs.stop_runner()
+
+    app.router.lifespan_context = lifespan
 
     try:  # make sure ingest_jobs exists; a down DB must not stop the chat from starting
         jobs.ensure_schema()

@@ -193,3 +193,35 @@ def test_faq_publication_waits_for_replacement_and_pins_committed_version(env):
     assert env.execute("SELECT status, version_id FROM faq_entries WHERE id=%s", (faq["faq_id"],)).fetchone() == (
         "active", latest.version_id,
     )
+
+
+def test_application_restart_consumes_queued_job_without_admin_request(env, monkeypatch):
+    from contextlib import asynccontextmanager
+    from threading import Event
+
+    previous = client("expert")
+    job = job_id_of(upload(previous).text)
+    previous.post(f"/admin/jobs/{job}/publish", data={})
+    assert env.execute("SELECT status FROM ingest_jobs").fetchone() == ("queued",)
+
+    ran = Event()
+    preserved = []
+
+    @asynccontextmanager
+    async def parent_lifespan(app):
+        preserved.append("start")
+        yield
+        preserved.append("stop")
+
+    def finish(id_):
+        jobs.update_job(id_, status="ready", stage="ready")
+        ran.set()
+
+    monkeypatch.setattr(jobs, "run_job", finish)
+    monkeypatch.setenv("ADMIN_BACKGROUND", "1")
+    app = FastAPI(lifespan=parent_lifespan)
+    routes.install(app)
+    with TestClient(app):
+        assert ran.wait(5), "No queued job was picked up during application startup"
+        assert env.execute("SELECT status FROM ingest_jobs").fetchone() == ("ready",)
+    assert preserved == ["start", "stop"]

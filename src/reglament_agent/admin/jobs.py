@@ -19,7 +19,7 @@ from reglament_agent.storage.publish import Publication, publish
 
 
 def connect() -> psycopg.Connection:
-    return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True)
+    return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, connect_timeout=5)
 
 
 def ensure_schema() -> None:
@@ -113,18 +113,28 @@ def claim_next() -> int | None:
     return row[0] if row else None
 
 
-async def runner_loop(poll: float = 0.5) -> None:
-    # A restart leaves 'running' rows nobody works on: fail them honestly.
-    await asyncio.to_thread(lambda: update_orphans())
-    while True:
+async def runner_loop(stop: asyncio.Event, poll: float = 0.5) -> None:
+    initialized = False
+    while not stop.is_set():
+        delay = poll
         try:
+            if not initialized:
+                await asyncio.to_thread(ensure_schema)
+                # A restart leaves 'running' rows nobody works on. Queued rows remain eligible.
+                await asyncio.to_thread(update_orphans)
+                initialized = True
+            if stop.is_set():
+                return
             job_id = await asyncio.to_thread(claim_next)
-            if job_id is None:
-                await asyncio.sleep(poll)
+            if job_id is not None:
+                await asyncio.to_thread(run_job, job_id)
                 continue
-            await asyncio.to_thread(run_job, job_id)
-        except Exception:  # noqa: BLE001 - keep the loop alive (e.g. DB briefly down)
-            await asyncio.sleep(2)
+        except Exception:  # noqa: BLE001 - retry after transient database failures
+            delay = 2
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+        except TimeoutError:
+            pass
 
 
 def update_orphans() -> None:
@@ -134,12 +144,23 @@ def update_orphans() -> None:
 
 
 _task: asyncio.Task | None = None
+_stop: asyncio.Event | None = None
 
 
 def ensure_runner() -> None:
-    """Start the background runner on the running event loop (idempotent)."""
-    global _task
-    if os.environ.get("ADMIN_BACKGROUND") == "0":
+    """Start the background runner on the application loop."""
+    global _task, _stop
+    if os.environ.get("ADMIN_BACKGROUND") == "0" or not os.environ.get("DATABASE_URL"):
         return
     if _task is None or _task.done():
-        _task = asyncio.get_running_loop().create_task(runner_loop())
+        _stop = asyncio.Event()
+        _task = asyncio.create_task(runner_loop(_stop))
+
+
+async def stop_runner() -> None:
+    """Finish any current job before closing the application loop."""
+    global _task, _stop
+    if _task is not None and _stop is not None:
+        _stop.set()
+        await _task
+        _task, _stop = None, None
