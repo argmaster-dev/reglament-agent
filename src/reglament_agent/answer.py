@@ -71,6 +71,7 @@ class Statement:
 class Variant:
     department: str
     statements: list[Statement]  # empty list = «в регламенте не указано»
+    note: str | None = None  # explicit reason shown instead of the empty-variant text
 
 
 @dataclass(frozen=True)

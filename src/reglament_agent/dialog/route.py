@@ -137,6 +137,21 @@ class Dialog:
         finally:
             _records.reset(token)
 
+    @staticmethod
+    def _merge_variants(named, faqs, assembled):
+        by_department = {v.department: v for v in assembled}
+        merged = []
+        for d in named:
+            faq = faqs.get(d)
+            if faq:
+                refs = [faq.source] + ([faq.basis] if faq.basis else [])
+                merged.append(Variant(d, [Statement(faq.answer, refs)]))
+            elif d in by_department and by_department[d].statements:
+                merged.append(by_department[d])
+            else:
+                merged.append(Variant(d, [], "в регламентах этого подразделения нет основания"))
+        return merged
+
     def _ticket(self, conn, user, message, question, reason, topic, trace):
         profile = state.get_profile(conn, user.email)
         return create_ticket(
@@ -356,15 +371,19 @@ class Dialog:
                 )
                 for d in named
             ]
-            found = Candidates([p for part in parts for p in part.points], parts[0].faq)
-            departments = named
+            # A published answer settles only its own department; the others are assembled from the points.
+            faqs = {d: match_published(question, part.faq) for d, part in zip(named, parts)}
+            departments = [d for d in named if not faqs[d]]
+            found = Candidates(
+                [p for d, part in zip(named, parts) if d in departments for p in part.points], []
+            )
         else:
             found = await asyncio.to_thread(
                 self.search, conn, question, vector, department=dept, stage=stage, limit=28,
                 faq=PublishedFaqStore(),
             )
         trace["candidates"] = describe(found.points)
-        faq = match_published(question, found.faq)
+        faq = None if multi else match_published(question, found.faq)
         if faq is not None:
             refs = [faq.source] + ([faq.basis] if faq.basis else [])
             reply = Answer(
@@ -376,6 +395,11 @@ class Dialog:
             )
             trace["steps"].append("published_faq")
             return reply, question, key
+        if multi and not departments:
+            reply = Answer(Outcome.VARIANTS, scope=scope, profile_note=note)
+            reply.variants = self._merge_variants(named, faqs, [])
+            trace["steps"].append("published_faq")
+            return reply, question, None
         rows = grounding.anchors(found.points)
         if not departments:
             departments = sorted({p.department for p in found.points})
@@ -423,6 +447,12 @@ class Dialog:
                 for code, label in context.STAGE_LABELS.items()
             ]
         trace["steps"].append("verify")
+        if multi and (result.outcome == Outcome.VARIANTS or any(faqs.values())):
+            # A department without a basis is marked in its variant; it does not open a ticket.
+            own = result.variants if result.outcome == Outcome.VARIANTS else []
+            result = Answer(
+                Outcome.VARIANTS, variants=self._merge_variants(named, faqs, own), caveat=result.caveat
+            )
         result.scope, result.profile_note = scope, note
         if result.outcome in _ESCALATE:
             result.ticket = self._ticket(conn, user, message, question, result.outcome.value, topic, trace)
