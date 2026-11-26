@@ -2,11 +2,14 @@
 import asyncio
 import hashlib
 import math
+import os
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Protocol
 
 from reglament_agent.model import OllamaClient
+from reglament_agent.model.settings import ModelSettings
 
 DIMENSION = 1024
 
@@ -44,14 +47,42 @@ class FakeEmbedder:
         return result
 
 
+@contextmanager
+def open_embedder(kind: str | None = None, *, env=None) -> Iterator[Embedder]:
+    """Share the Ollama connection and event loop across embedding batches."""
+    env = os.environ if env is None else env
+    kind = (kind or env.get("EMBEDDER") or "ollama").lower()
+    if kind == "fake":
+        yield FakeEmbedder()
+        return
+    if kind != "ollama":
+        raise ValueError(f"Unknown EMBEDDER: {kind}")
+    settings = ModelSettings(ollama_url=env.get("MODEL_OLLAMA_URL")
+                             or env.get("OLLAMA_URL") or ModelSettings().ollama_url)
+    with asyncio.Runner() as runner:
+        client = OllamaClient(settings)
+        try:
+            yield OllamaEmbedder(client, runner)
+        finally:
+            runner.run(client.aclose())
+
+
+class _SingleUseOllamaEmbedder:
+    """Support callers that need one embedding operation without a context manager."""
+
+    def __init__(self, env):
+        self.env = env
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        with open_embedder("ollama", env=self.env) as embedder:
+            return embedder.embed(texts)
+
+
 def make_embedder(env=None) -> Embedder:
-    """EMBEDDER=ollama|fake (default ollama); OLLAMA_URL for the Ollama endpoint."""
-    import os
-    env = env if env is not None else os.environ
+    env = os.environ if env is None else env
     kind = (env.get("EMBEDDER") or "ollama").lower()
     if kind == "fake":
         return FakeEmbedder()
-    if kind != "ollama":
-        raise ValueError(f"Unknown EMBEDDER: {kind}")
-    client = httpx.Client(base_url=env.get("OLLAMA_URL", "http://localhost:11434"), timeout=300)
-    return OllamaEmbedder(client)
+    if kind == "ollama":
+        return _SingleUseOllamaEmbedder(env)
+    raise ValueError(f"Unknown EMBEDDER: {kind}")

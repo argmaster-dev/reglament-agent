@@ -1,6 +1,7 @@
 """Atomically publish a whole source file and its point vectors."""
 import hashlib
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -28,7 +29,9 @@ def _existing(conn, doc_id, digest):
 
 
 def publish(conn: Connection, card: DocumentCard, data: bytes, embedder: Embedder,
-            uploaded_by: str) -> Publication:
+            uploaded_by: str, *, on_publish_start: Callable[[], None] | None = None,
+            before_commit: Callable[[Connection, Publication], None] | None = None) -> Publication:
+    """Prepare the embeddings, then commit a complete version and its dependent writes."""
     digest = hashlib.sha256(data).hexdigest()
     parsed = parse_docx(data)
     if not parsed.points or len({p.number for p in parsed.points}) != len(parsed.points):
@@ -52,6 +55,8 @@ def publish(conn: Connection, card: DocumentCard, data: bytes, embedder: Embedde
              "warnings": parsed.warnings, "vectors_computed": len(missing),
              "vectors_reused": len(hashes) - len(missing)}
 
+    if on_publish_start is not None:
+        on_publish_start()
     with conn.transaction():
         # Serialize competing publishers even when no row exists yet for this document.
         conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 7))", (card.doc_id,))
@@ -78,4 +83,7 @@ def publish(conn: Connection, card: DocumentCard, data: bytes, embedder: Embedde
                    p.position, h, cached[h]) for p, h in zip(parsed.points, hashes)))
         conn.execute("UPDATE documents SET active_version_id=%s,status='active' WHERE doc_id=%s",
                      (vid, card.doc_id))
-    return Publication(vid, number, stats, created=True)
+        publication = Publication(vid, number, stats, created=True)
+        if before_commit is not None:
+            before_commit(conn, publication)
+    return publication
