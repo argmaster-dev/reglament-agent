@@ -253,3 +253,32 @@ def test_dropped_codes_in_russian(data):
     eco = client("expert").get("/admin/analytics?period=all").text
     assert "включают embed" in eco and "Чат-вызовов (ср.)" in eco
     assert rows(client("expert").get("/admin/analytics/economics.csv?period=all").text)[0]["avg_chat_calls"] == "1.0"
+
+
+# --- round 3 ---------------------------------------------------------------------------------
+
+def test_feedback_ticket_links_to_journal(data):
+    import asyncio
+    import os
+
+    from reglament_agent.answer import UserContext
+    from reglament_agent.dialog.route import Dialog
+    rid = add(data, "Правило оплаты", sources=["14.1"], calls=[call(41, 7)])
+    n = asyncio.run(Dialog(os.environ["DATABASE_URL"]).rate(
+        UserContext("u@x.local", "employee", "d", "feedback-ui"), rid, False, "Неполно", True)).number
+    c = client("expert")
+    card = c.get("/admin/tickets/" + n)
+    assert "/admin/analytics/journal/by-ticket/" + n in card.text
+    r = c.get("/admin/analytics/journal/by-ticket/" + n)
+    assert r.status_code == 303 and r.headers["location"] == f"/admin/analytics/journal/{rid}"
+
+
+def test_negation_keeps_groups_apart(data):
+    add(data, "Договор подписан?")
+    add(data, "Договор не подписан?")
+    assert A.summary(data, "all")["repeated"] == []
+    for q in ("Кто подписывает договор?", "договор кто подписывает", "Кто подписывает договор!!"):
+        add(data, q)
+    g = A.summary(data, "all")["repeated"]
+    assert len(g) == 1 and g[0]["count"] == 3
+    assert "не" not in A._STOP and "нет" not in A._STOP and "без" not in A._STOP and "ни" not in A._STOP

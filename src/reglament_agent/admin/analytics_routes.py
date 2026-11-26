@@ -60,6 +60,11 @@ def journal_by_ticket(request: Request, number: str):
     with jobs.connect() as conn:
         row = conn.execute("SELECT id FROM dialog_requests WHERE answer->'ticket'->>'number' = %s "
                            "ORDER BY created_at DESC LIMIT 1", (number,)).fetchone()
+        if row is None:  # ticket from a 👎 with forwarding: message_id = "feedback:<request id>"
+            row = conn.execute(
+                "SELECT r.id FROM tickets t JOIN dialog_requests r ON r.user_email=t.user_email AND "
+                "(t.message_id = 'feedback:' || r.id::text OR (r.dialog_id=t.dialog_id AND r.message_id=t.message_id)) "
+                "WHERE t.number = %s ORDER BY r.created_at DESC LIMIT 1", (number,)).fetchone()
     if row is None:
         return render("forbidden.html", request, 404, message="Запрос по этому обращению не найден")
     return RedirectResponse(f"/admin/analytics/journal/{row[0]}", status_code=303)
