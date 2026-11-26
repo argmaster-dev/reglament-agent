@@ -12,6 +12,13 @@ import httpx
 import psycopg
 from fastapi import APIRouter, Response
 
+from reglament_agent.model.settings import (
+    DEFAULT_CHAT_MODEL,
+    DEFAULT_EMBED_MODEL,
+    DEFAULT_OLLAMA_URL,
+    ModelSettings,
+)
+
 from .provenance import (
     build_details,
     deployment_image_digests,
@@ -23,9 +30,9 @@ from .provenance import (
 @dataclass(frozen=True)
 class Settings:
     database_url: str = ""
-    ollama_url: str = "http://127.0.0.1:11434"
-    chat_model: str = "qwen3.5:9b-q4_K_M"
-    embed_model: str = "bge-m3"
+    ollama_url: str = DEFAULT_OLLAMA_URL
+    chat_model: str = DEFAULT_CHAT_MODEL
+    embed_model: str = DEFAULT_EMBED_MODEL
     mail_host: str = "127.0.0.1"
     mail_port: int = 1025
     timeout: float = 3.0
@@ -34,10 +41,15 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         e = os.environ.get
-        return cls(database_url=e("DATABASE_URL", ""),
-                   ollama_url=e("MODEL_OLLAMA_URL", cls.ollama_url),
-                   chat_model=e("MODEL_CHAT", cls.chat_model), embed_model=e("MODEL_EMBED", cls.embed_model),
-                   mail_host=e("MAIL_HOST", cls.mail_host), mail_port=int(e("MAIL_PORT", cls.mail_port)))
+        model = ModelSettings()
+        return cls(
+            database_url=e("DATABASE_URL", ""),
+            ollama_url=model.ollama_url,
+            chat_model=model.chat_model,
+            embed_model=model.embed_model,
+            mail_host=e("MAIL_HOST", cls.mail_host),
+            mail_port=int(e("MAIL_PORT", cls.mail_port)),
+        )
 
 
 @cache
