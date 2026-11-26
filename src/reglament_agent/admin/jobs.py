@@ -11,6 +11,7 @@ from psycopg.types.json import Jsonb
 from reglament_agent.admin.selfcheck import selfcheck
 from reglament_agent.ingest.embedding import Embedder, make_embedder
 from reglament_agent.ingest.model import DocumentCard
+from reglament_agent.quality.faq import recheck_faq_after_publication
 from reglament_agent.storage.migrate import migrate
 from reglament_agent.storage.publish import publish
 
@@ -75,6 +76,8 @@ def run_job(job_id: int, embedder: Embedder | None = None) -> None:
             t_publish = time.time()
             pub = publish(conn, card, bytes(data), ProgressEmbedder(inner, job_id), created_by)
             published = time.time()
+            # Also for a duplicate upload: the re-check is idempotent and covers a crashed earlier run.
+            faq_review = recheck_faq_after_publication(conn, card.doc_id)
             if not pub.created:
                 update_job(job_id, status="duplicate", stage="publish",
                            stats={"version": pub.number, "finished": published})
@@ -82,7 +85,7 @@ def run_job(job_id: int, embedder: Embedder | None = None) -> None:
             with connect() as c2:
                 total = c2.execute("SELECT done, total FROM ingest_jobs WHERE id=%s", (job_id,)).fetchone()
             update_job(job_id, stage="selfcheck", done=0, total=pub.stats["points"], stats={
-                "version": pub.number, "embed": {"done": total[0], "total": total[1]},
+                "version": pub.number, "faq_review": faq_review, "embed": {"done": total[0], "total": total[1]},
                 "publish_sec": round(published - t_publish, 2), "published": published,
                 "publication": pub.stats})
             result = selfcheck(conn, card.doc_id, lambda k, n: update_job(job_id, done=k, total=n))

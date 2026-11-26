@@ -24,10 +24,16 @@ form.f .row label{display:inline;font-weight:400;margin-right:16px}
 .todo{color:#aaa}.active{font-weight:600}
 progress{width:220px;vertical-align:middle}
 details{margin:4px 0 4px 16px}summary{cursor:pointer}.pt{margin:2px 0 2px 32px;font-size:14px}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;background:#eef1f6;font-size:13px}.badge.review{background:#fff3d6}.badge.bad{background:#fde3e3}
+pre.pt2{white-space:pre-wrap;background:#f6f6f6;padding:8px 12px;border-radius:6px;font:inherit}
+form.f textarea{width:100%;font:inherit;padding:8px}
 .ready{font-size:20px;color:var(--ok);font-weight:600}
 </style></head><body>
 <header><b>Служба качества</b>
-<a href="/admin/documents" class="on">Документы</a>
-<span class="off" title="Скоро">Обращения</span><span class="off" title="Скоро">FAQ</span><span class="off" title="Скоро">Аналитика</span>
+<a href="/admin/documents" class="{{ 'on' if nav == 'documents' }}">Документы</a>
+<a href="/admin/tickets" class="{{ 'on' if nav == 'tickets' }}">Обращения{% if open_tickets is not none %} ({{ open_tickets }} открытых){% endif %}</a>
+<a href="/admin/faq" class="{{ 'on' if nav == 'faq' }}">FAQ</a>
+{% if mail_ui_url %}<a href="{{ mail_ui_url }}" target="_blank" rel="noopener">Почта службы</a>{% endif %}
+<span class="off" title="Скоро">Аналитика</span>
 <span class="sp">{% if identity %}{{ identity.email }} · <a href="/start">сменить роль</a>{% endif %}</span></header>
 <main>{% block content %}{% endblock %}</main></body></html>

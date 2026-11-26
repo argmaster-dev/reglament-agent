@@ -1,0 +1,12 @@
+{% extends "base.html" %}{% block content %}
+<h1>FAQ службы качества</h1>
+<form method="get" class="f" style="display:flex;gap:12px;align-items:end;margin-bottom:16px">
+<div><label>Статус</label><select name="status"><option value="">все (без удалённых)</option>
+{% for k, v in statuses.items() %}<option value="{{ k }}" {{ 'selected' if k == status }}>{{ v }}</option>{% endfor %}</select></div>
+<button class="sec" type="submit">Показать</button></form>
+{% if rows %}<table><tr><th>№</th><th>Вопрос</th><th>Основание</th><th>Автор</th><th>Обращение</th><th>Статус</th></tr>
+{% for r in rows %}<tr><td><a href="/admin/faq/{{ r.id }}">{{ r.id }}</a></td><td>{{ r.question }}</td>
+<td>{{ 'вне регламентов' if r.basis_kind == 'outside' else r.doc_id }}</td><td>{{ r.author_email }}</td>
+<td>{% if r.ticket_number %}<a href="/admin/tickets/{{ r.ticket_number }}">{{ r.ticket_number }}</a>{% else %}—{% endif %}</td>
+<td><span class="badge {{ r.status }}">{{ statuses.get(r.status, r.status) }}</span></td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Записей нет.</p>{% endif %}{% endblock %}

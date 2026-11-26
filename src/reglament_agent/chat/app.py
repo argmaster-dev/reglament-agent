@@ -32,6 +32,7 @@ from reglament_agent.chat import session as S  # noqa: E402
 from reglament_agent.chat import start_page  # noqa: E402
 from reglament_agent.admin import routes as admin_routes  # noqa: E402
 from reglament_agent.chat.services import build_services  # noqa: E402
+from reglament_agent.chat import notifications as N  # noqa: E402
 
 services = build_services()
 start_page.install(fastapi_app)
@@ -55,6 +56,34 @@ def _user(message_id: str | None = None) -> UserContext:
     return UserContext(u.identifier, u.metadata.get("role", "employee"), cl.user_session.get("id"), message_id)
 
 
+def _fetch_notifications(email: str) -> list[dict]:
+    import psycopg
+
+    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
+        return N.pending_notifications(conn, email)
+
+
+def _mark_delivered(ids: list[int]) -> None:
+    import psycopg
+
+    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
+        N.mark_delivered(conn, ids)
+
+
+async def deliver_notifications() -> None:
+    """Show expert answers to the user's tickets; never blocks the chat if the DB is unavailable."""
+    u = cl.user_session.get("user")
+    if u is None or not os.environ.get("DATABASE_URL"):
+        return
+    try:
+        items = await asyncio.to_thread(_fetch_notifications, u.identifier)
+        for n in items:
+            await cl.Message(content=N.notification_markdown(n)).send()
+            await asyncio.to_thread(_mark_delivered, [n["id"]])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @cl.on_chat_start
 async def start() -> None:
     cl.user_session.set("busy", False)
@@ -64,6 +93,13 @@ async def start() -> None:
     if u.metadata.get("role") == "expert":
         await cl.Message(content=R.expert_notice()).send()
     await cl.Message(content=R.WELCOME, actions=_actions(R.example_actions())).send()
+    await deliver_notifications()
+
+
+@cl.on_chat_resume
+async def resume(thread) -> None:
+    cl.user_session.set("busy", False)
+    await deliver_notifications()
 
 
 async def _run(call, text: str, message_id: str) -> None:
@@ -116,6 +152,7 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
+    await deliver_notifications()
     text = message.content.strip()
     if not 3 <= len(text) <= 2000:
         await cl.Message(content="Введите вопрос длиной от 3 до 2000 символов.").send()
