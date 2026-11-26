@@ -11,6 +11,7 @@
 | HTTPX (PyPI) | 0.28.1 | BSD-3-Clause | Клиент Ollama |
 | Pydantic / pydantic-settings (PyPI) | 2.14.4 / 2.16.3 | MIT | Модели и настройки приложения |
 | pytest / pgserver (PyPI, разработка) | 9.2.0 / 0.1.4 | MIT / Apache-2.0 | Проверки и временная БД |
+| aiosmtpd (PyPI, разработка) | 1.4.6 | Apache-2.0 | Локальный SMTP-сервер в тестах очереди писем |
 
 ## Модели
 
