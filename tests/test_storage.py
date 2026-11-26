@@ -65,10 +65,19 @@ def test_versions_reuse_and_rollback(isolated):
     conn, _ = isolated
     card = CARDS[0]
     data = (CORPUS / card.file).read_bytes()
-    fake = FakeEmbedder()
+    class CountingEmbedder(FakeEmbedder):
+        def __init__(self):
+            self.batches = []
+
+        def embed(self, texts):
+            self.batches.append(len(texts))
+            return super().embed(texts)
+
+    fake = CountingEmbedder()
     first = publish(conn, card, data, fake, "tester")
     again = publish(conn, card, data, fake, "tester")
     assert first.created and not again.created and first.version_id == again.version_id
+    assert fake.batches == [first.stats["points"]]
     conn.execute("ALTER TABLE points ADD CONSTRAINT inject_failure CHECK (version_id=1 OR number <> '16.1')")
     changed = new_revision(data)
     with pytest.raises(psycopg.errors.CheckViolation):
@@ -78,6 +87,8 @@ def test_versions_reuse_and_rollback(isolated):
     conn.execute("ALTER TABLE points DROP CONSTRAINT inject_failure")
     updated = publish(conn, card, changed, fake, "tester")
     assert updated.number == 2 and updated.stats["vectors_computed"] == 1
+    # Both the failed and retried revision embed only its changed point.
+    assert fake.batches == [first.stats["points"], 1, 1]
     assert updated.stats["vectors_reused"] == first.stats["points"] - 1
     assert conn.execute("SELECT source_docx FROM document_versions WHERE version_id=%s",
                         (updated.version_id,)).fetchone()[0] == changed
