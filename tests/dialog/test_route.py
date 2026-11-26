@@ -394,3 +394,33 @@ def test_swapped_column_from_generator_escalates_without_publishing_it(isolated)
     assert result.outcome == Outcome.NO_BASIS and result.ticket and not result.statements
     trace = conn.execute("SELECT trace FROM dialog_requests WHERE id=%s", (result.answer_id,)).fetchone()[0]
     assert "column_mismatch" in trace["dropped"]
+
+
+def test_permission_to_start_retains_alternative_conditions_and_their_scope():
+    from dataclasses import replace
+
+    from reglament_agent.dialog.grounding import anchors, assemble, vocabulary
+
+    question = "Можно ли начать работы без договора?"
+    intro = "Исполнение проекта начинается при выполнении одного из условий:"
+    rule = replace(
+        hit("Отдел", intro), sentences=[intro, "подписан договор;", "получено разрешение владельца."]
+    )
+    later = replace(
+        hit("Отдел", "Не позднее трёх дней с даты подписания договора оператор создаёт заказ."), number="6.2"
+    )
+    rows = anchors([later, rule])
+    items = vocabulary(question, rows)
+    assert all(a.ref.point != "6.2" for a in items.values())
+    k = next(k for k, a in items.items() if "разрешение" in a.text)
+    result = assemble(
+        question,
+        {"outcome": "answer", "claims": [{"ref": model_ref(k, items[k]), "text": items[k].text}]},
+        items,
+        ["Отдел"],
+        False,
+        {},
+        rows,
+    )
+    assert result.outcome == Outcome.ANSWER and len(result.statements) == 3
+    assert [s.sources[0].sentence for s in result.statements] == [0, 1, 2]

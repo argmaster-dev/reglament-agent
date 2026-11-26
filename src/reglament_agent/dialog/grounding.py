@@ -122,10 +122,32 @@ def external_reference(a):
     )
 
 
+def start_permission(question):
+    return bool(
+        re.search(r"можно ли|разреш|допустим", question)
+        and re.search(r"начать|начинать|старт|приступ", question)
+        and re.search(r"работ|исполн|проект", question)
+    )
+
+
+def entry_condition(text):
+    return bool(re.search(r"(?:проект|исполн|работ).{0,35}начина.{0,45}услови", text))
+
+
 def matches_request(question, anchor):
     q, sentence, context = map(fold, (question, anchor.text, anchor.context))
     if _ADVANCE.search(q):
         return bool(_INTERVAL.search(sentence))
+    if start_permission(q):
+        if entry_condition(context) or entry_condition(sentence):
+            return True
+        # A downstream action due after signature does not grant permission to start.
+        if re.search(r"с (?:момента|даты|дня) подписания|не позднее.{0,65}до начала", sentence):
+            return False
+        return bool(
+            re.search(r"(запрещ|согласован|разреш|услови|исключени|гарант|допуск|только при)", sentence)
+            and re.search(r"нач[аи]|старт|приступ|работ", sentence + " " + context)
+        )
     if asks_signer(q):
         if not _SIGN_ROLE.search(sentence):
             return False
@@ -156,6 +178,10 @@ def score(question, anchor):
         value += 5
     if _PRIORITY.search(fold(question)) and _PRIORITY.search(fold(anchor.text)):
         value += 4
+    if start_permission(fold(question)) and (
+        entry_condition(fold(anchor.context)) or entry_condition(fold(anchor.text))
+    ):
+        value += 10
     if asks_amount(fold(question)) and external_reference(anchor):
         value += 8
     return value + 2 / (1 + anchor.rank)
@@ -370,6 +396,25 @@ def assemble(question, data, items, departments, variants, trace, rows=()):
         if refs and not any(re.search(r"\d", s.text) and "формул" in fold(s.text) for s in statements):
             statements = [Statement(a.text, [a.ref]) for a in refs[:1]]
             out = Outcome.EXTERNAL_DOC
+    if data["outcome"] == Outcome.ANSWER and start_permission(fold(question)):
+        # A heading introducing alternatives is inseparable from the list it governs.
+        # Return the whole point, including qualifications on individual alternatives.
+        intros = [a for a in items.values() if entry_condition(fold(a.text)) and a.ref.sentence == 0]
+        if intros:
+            source = intros[0].ref
+            if all(a.ref.doc_id == source.doc_id and a.ref.point == source.point for a in intros):
+                complete = [a for a in rows if a.ref.doc_id == source.doc_id and a.ref.point == source.point]
+                # The optional prerequisite named by the user must occur in this same provision.
+                prerequisite = re.search(r"\bбез\s+([\w-]+)", fold(question))
+                if complete and (
+                    not prerequisite or word_key(prerequisite[1]) in terms(" ".join(a.text for a in complete))
+                ):
+                    statements = [Statement(a.text, [a.ref]) for a in complete]
+                    for a in complete:
+                        anchor = SentenceRef(a.ref.doc_id, a.ref.point, a.ref.sentence)
+                        result = verify_claims([Claim(a.text, anchor)], {anchor: Evidence(anchor, a.text)})
+                        kept.extend(result.kept)
+                    out = Outcome.ANSWER
     if statements and out in (Outcome.ANSWER, Outcome.VARIANTS):
         statements = companion_sentences(
             expand_selected(question, statements, items, rows or items.values()), rows
