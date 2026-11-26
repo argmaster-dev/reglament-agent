@@ -130,3 +130,19 @@ def test_stub_scenarios():
         assert e1.outcome is Outcome.ERROR and e2.outcome is not Outcome.ERROR
 
     asyncio.run(run())
+
+
+def test_switching_demo_identity_expires_prior_chat_session(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from reglament_agent.chat.start_page import install
+
+    monkeypatch.setenv('CHAINLIT_APP_ROOT', str(tmp_path))
+    monkeypatch.setenv('CHAINLIT_AUTH_SECRET', SECRET)
+    app = FastAPI()
+    install(app)
+    with TestClient(app, follow_redirects=False) as client:
+        for method, path in [('get', '/start'), ('post', '/start/employee')]:
+            r = getattr(client, method)(path, headers={'Cookie': 'access_token=old; access_token_1=part'})
+            expired = [v.split('=', 1)[0] for v in r.headers.get_list('set-cookie') if 'Max-Age=0' in v]
+            assert {'access_token', 'access_token_1'} <= set(expired)

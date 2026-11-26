@@ -38,8 +38,11 @@ def render_page(error: bool = False) -> str:
     return PAGE.format(options=opts, error=err)
 
 
-def _redirect(identity: S.Identity) -> RedirectResponse:
+def _redirect(request: Request, identity: S.Identity) -> RedirectResponse:
+    from chainlit.auth.cookie import clear_auth_cookie
+
     r = RedirectResponse("/", status_code=303)
+    clear_auth_cookie(request, r)
     r.set_cookie(S.COOKIE_NAME, S.sign_identity(identity, secret()), max_age=S.COOKIE_TTL, httponly=True, samesite="lax")
     return r
 
@@ -52,19 +55,22 @@ def install(app) -> None:
         if S.trusted_header():
             return RedirectResponse("/", status_code=303)
         resp = HTMLResponse(render_page(request.query_params.get("error") == "1"))
+        from chainlit.auth.cookie import clear_auth_cookie
+
+        clear_auth_cookie(request, resp)
         resp.delete_cookie(S.COOKIE_NAME)  # opening the start page = changing role
         return resp
 
-    async def employee(department: str = Form("")):
+    async def employee(request: Request, department: str = Form("")):
         if S.trusted_header():
             return RedirectResponse("/", status_code=303)
         dep = department if department in S.DEPARTMENTS else None
-        return _redirect(S.Identity(S.demo_email(), "employee", dep))
+        return _redirect(request, S.Identity(S.demo_email(), "employee", dep))
 
-    async def expert(password: str = Form("")):
+    async def expert(request: Request, password: str = Form("")):
         if S.trusted_header() or not S.check_expert_password(password):
             return RedirectResponse("/start?error=1", status_code=303)
-        return _redirect(S.Identity(S.demo_email().replace("demo-", "expert-"), "expert"))
+        return _redirect(request, S.Identity(S.demo_email().replace("demo-", "expert-"), "expert"))
 
     from fastapi.routing import APIRoute
 
