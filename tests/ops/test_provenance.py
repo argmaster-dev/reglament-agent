@@ -40,6 +40,13 @@ def test_digest_tracks_file_paths_and_bytes_in_any_creation_order(tmp_path):
     assert source_inventory(second).digest != expected
 
 
+def test_digest_includes_migration_file_bytes(tmp_path):
+    root = make_tree(tmp_path / "tree")
+    before = source_inventory(root).digest
+    (root / "migrations/0001_initial.sql").write_bytes(b"SELECT 2;\n")
+    assert source_inventory(root).digest != before, "editing migration bytes must change source digest"
+
+
 def test_cli_manifest_rejects_missing_or_changed_file(tmp_path):
     root = make_tree(tmp_path / "tree")
     script = Path(__file__).resolve().parents[2] / "scripts" / "source_digest.py"
