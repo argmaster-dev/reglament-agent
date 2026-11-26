@@ -1,0 +1,33 @@
+[project]
+name = "reglament-agent"
+version = "0.1.0"
+description = "Агент поиска ответов по регламентам"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pgserver>=0.1.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reglament_agent"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "reglament_agent/storage/migrations"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
