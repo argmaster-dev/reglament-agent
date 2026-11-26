@@ -17,6 +17,7 @@ DEFAULT_PERIOD = "7"
 # Пороги рекомендаций (меняются здесь).
 REC_MIN_SECTION_EVENTS = 5   # обращений + 👎 + уточнений по одному разделу за период
 REC_MIN_REPEATS = 5          # одинаковых по смыслу вопросов за период
+SERVICE_DOMAIN = "@service.local"  # служебные прогоны (проверочные вопросы) не попадают в аналитику
 TOP_CANDIDATES = 3           # сколько первых кандидатов поиска считать «затронутыми» разделами
 
 OUTCOMES = {
@@ -58,14 +59,39 @@ def period_start(period: str, now: datetime | None = None) -> datetime | None:
 def fetch(conn, period: str, limit: int | None = None) -> list[dict]:
     since = period_start(period)
     sql = ("SELECT id, user_email, dialog_id, question, restated, answer, trace, created_at, rating, feedback, "
-           "cache_key FROM dialog_requests " + ("WHERE created_at >= %s " if since else "")
+           "cache_key FROM dialog_requests WHERE user_email NOT LIKE '%%" + SERVICE_DOMAIN + "' "
+           + ("AND created_at >= %s " if since else "")
            + "ORDER BY created_at DESC, id" + (f" LIMIT {int(limit)}" if limit else ""))
     rows = conn.cursor(row_factory=dict_row).execute(sql, (since,) if since else ()).fetchall()
     attach_tickets(conn, rows, since)
     return rows
 
 
-def attach_tickets(conn, rows: list[dict], since) -> None:
+def ticket_only_requests(conn, rows: list[dict], period: str) -> list[dict]:
+    """Requests older than the period whose tickets were created inside it: used only to count tickets and
+    attribute them to sections (questions, outcomes, ratings and economics stay filtered by request date)."""
+    since = period_start(period)
+    if since is None:
+        return []
+    known = [r["id"] for r in rows]
+    extra = conn.cursor(row_factory=dict_row).execute(
+        "SELECT DISTINCT r.id, r.user_email, r.dialog_id, r.question, r.restated, r.answer, r.trace, r.created_at, "
+        "r.rating, r.feedback, r.cache_key FROM dialog_requests r JOIN tickets t ON t.user_email=r.user_email AND "
+        "(t.message_id = 'feedback:' || r.id::text OR (r.dialog_id=t.dialog_id AND r.message_id=t.message_id)) "
+        "WHERE t.created_at >= %s AND r.created_at < %s AND r.user_email NOT LIKE '%%" + SERVICE_DOMAIN
+        + "' AND NOT (r.id = ANY(%s))", (since, since, known)).fetchall()
+    attach_tickets(conn, extra, since, only_linked=True)
+    seen = {n for r in rows for n in r["tickets"]}
+    out = []
+    for r in extra:
+        r["tickets"] = [n for n in r["tickets"] if n not in seen]
+        seen.update(r["tickets"])
+        if r["tickets"]:
+            out.append(r)
+    return out
+
+
+def attach_tickets(conn, rows: list[dict], since, only_linked: bool = False) -> None:
     """r["tickets"]: numbers of all tickets of the request, deduplicated: the one named in the answer plus
     tickets linked by the same message or by a forwarded 👎 (`feedback:<id>`), created within the period."""
     linked: dict = defaultdict(list)
@@ -78,7 +104,7 @@ def attach_tickets(conn, rows: list[dict], since) -> None:
         for rid, number in found:
             linked[rid].append(number)
     for r in rows:
-        own = ticket_number(r)
+        own = None if only_linked else ticket_number(r)
         r["tickets"] = list(dict.fromkeys([*([own] if own else []), *linked.get(r["id"], [])]))
 
 
@@ -197,11 +223,11 @@ def unanswered(rows: list[dict]) -> dict[str, list[dict]]:
     return {o: out[o] for o in UNANSWERED if o in out}
 
 
-def sections_stats(conn, rows: list[dict]) -> tuple[list[dict], list[dict]]:
+def sections_stats(conn, rows: list[dict], extra: list[dict] = ()) -> tuple[list[dict], list[dict]]:
     """(problem sections, demand) — both keyed by document and section."""
     per_req = []  # (request, set(refs) shown in answer, set(refs) of candidates)
     all_refs: set[tuple] = set()
-    for r in rows:
+    for r in [*rows, *extra]:  # extra: only for their tickets
         shown = {_ref(s) for s in _sources(r["answer"] or {})}
         cands = {_ref(c) for c in _candidates(r)}
         per_req.append((r, shown, cands))
@@ -214,16 +240,18 @@ def sections_stats(conn, rows: list[dict]) -> tuple[list[dict], list[dict]]:
     demand: Counter = Counter()
     problems: dict[tuple, Counter] = defaultdict(Counter)
     for r, shown, cands in per_req:
-        for k in {key(x) for x in shown}:
-            demand[k] += 1
+        in_period = not any(r is e for e in extra)
+        if in_period:
+            for k in {key(x) for x in shown}:
+                demand[k] += 1
         o = outcome(r)
         touched = {key(x) for x in (shown if r["rating"] is False and shown else cands if r["rating"] is False else ())}
-        for k in touched:
+        for k in touched if in_period else ():
             problems[k]["down"] += 1
         n = n_tickets(r)
         for k in {key(x) for x in (cands or shown)}:
             problems[k]["tickets"] += n
-            if o == "clarify":
+            if o == "clarify" and in_period:
                 problems[k]["clarify"] += 1
     prob = [{"doc_id": k[0], "section": k[1], "doc_title": k[2], "title": k[3], "tickets": c["tickets"],
              "down": c["down"], "clarify": c["clarify"], "total": c["tickets"] + c["down"] + c["clarify"]}
@@ -273,13 +301,14 @@ def summary(conn, period: str) -> dict:
     rows = fetch(conn, period)
     counts = Counter(outcome(r) for r in rows)
     ms = [e for e in map(elapsed, rows) if e is not None]
-    problems, demand = sections_stats(conn, rows)
+    extra = ticket_only_requests(conn, rows, period)
+    problems, demand = sections_stats(conn, rows, extra)
     rep = repeated(rows)
     all_tk = [tokens(r) for r in rows]
     return {
         "period": period, "period_label": PERIODS[period][0], "total": len(rows), "counts": counts,
         "outcome_rows": [(k, OUTCOMES[k], counts.get(k, 0)) for k in OUTCOMES],
-        "ticket_outcomes": sum(map(n_tickets, rows)),
+        "ticket_outcomes": sum(map(n_tickets, [*rows, *extra])),
         "median_ms": median(ms), "up": sum(1 for r in rows if r["rating"] is True),
         "down": sum(1 for r in rows if r["rating"] is False),
         "repeated": rep, "unanswered": unanswered(rows), "problems": problems, "demand": demand,
