@@ -2,7 +2,7 @@
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from reglament_agent.answer import Answer, Outcome, SourceRef, Statement, Variant
 
@@ -180,6 +180,16 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         )
         evidence = {ref: Evidence(ref, a.text, a.ref.column)}
         check = verify_claims([claim], evidence)
+        if (
+            check.dropped
+            and not claim.actor
+            and check.dropped[0].reasons == ["action_missing"]
+            and not guards.asks_executor(question)
+        ):
+            # A claim that names no performer and a question that asks for none: the verb adds no binding,
+            # the verbatim sentence carries the fact.
+            claim = replace(claim, action=None)
+            check = verify_claims([claim], evidence)
         if check.dropped:
             dropped.extend(check.dropped)
             continue

@@ -145,11 +145,11 @@ class Dialog:
             faq = faqs.get(d)
             if faq:
                 refs = [faq.source] + ([faq.basis] if faq.basis else [])
-                merged.append(Variant(d, [Statement(faq.answer, refs)]))
+                merged.append(Variant(d, [Statement(faq.answer, refs)], faq.attribution or None))
             elif d in by_department and by_department[d].statements:
                 merged.append(by_department[d])
             else:
-                merged.append(Variant(d, [], "в регламентах этого подразделения нет основания"))
+                merged.append(Variant(d, [], f"в регламентах {d} нет основания"))
         return merged
 
     def _ticket(self, conn, user, message, question, reason, topic, trace):
@@ -372,7 +372,14 @@ class Dialog:
                 for d in named
             ]
             # A published answer settles only its own department; the others are assembled from the points.
-            faqs = {d: match_published(question, part.faq) for d, part in zip(named, parts)}
+            # Only an answer based on this department's own document may stand for it. An answer without such
+            # a basis (outside the regulations) belongs to no department row and is not shown in the comparison.
+            faqs = {
+                d: match_published(
+                    question, [f for f in part.faq if f.basis and f.basis.department == d]
+                )
+                for d, part in zip(named, parts)
+            }
             departments = [d for d in named if not faqs[d]]
             found = Candidates(
                 [p for d, part in zip(named, parts) if d in departments for p in part.points], []
@@ -447,7 +454,7 @@ class Dialog:
                 for code, label in context.STAGE_LABELS.items()
             ]
         trace["steps"].append("verify")
-        if multi and (result.outcome == Outcome.VARIANTS or any(faqs.values())):
+        if multi and (result.outcome in (Outcome.VARIANTS, Outcome.NO_BASIS) or any(faqs.values())):
             # A department without a basis is marked in its variant; it does not open a ticket.
             own = result.variants if result.outcome == Outcome.VARIANTS else []
             result = Answer(

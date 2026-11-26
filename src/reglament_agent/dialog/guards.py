@@ -148,3 +148,10 @@ def premise_caveat(question, sentences):
         if wrong_number or wrong_actor:
             return f"В регламенте указано иначе: «{sentence}»"
     return None
+
+
+_EXECUTOR = re.compile(r"\bкто\b|\bкем\b|\bкому\b|\bкого\b|\bчь[яеиё]\w*|ответственн|исполнител|\bна ком\b")
+
+
+def asks_executor(question):
+    return bool(_EXECUTOR.search(fold(question)))

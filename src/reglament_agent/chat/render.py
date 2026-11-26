@@ -125,6 +125,8 @@ def statements_md(statements: list[Statement], names: dict[SourceRef, str]) -> s
 
 def variant_md(v: Variant, names: dict[SourceRef, str]) -> str:
     body = statements_md(v.statements, names) if v.statements else f"_{v.note or EMPTY_VARIANT}_"
+    if v.statements and v.note:
+        body = f"_{v.note}_\n{body}"
     return f"**{v.department}**\n{body}"
 
 
@@ -147,7 +149,7 @@ def evidence_groups(answer: Answer, names: dict[SourceRef, str]) -> list[dict]:
 
     groups = [{"label": "", "items": items(answer.statements)}] if answer.statements else []
     groups.extend(
-        {"label": v.department, "items": items(v.statements), "empty": v.note or EMPTY_VARIANT} for v in answer.variants
+        {"label": v.department, "items": items(v.statements), "empty": v.note or EMPTY_VARIANT, "note": v.note if v.statements else None} for v in answer.variants
     )
     return groups
 
