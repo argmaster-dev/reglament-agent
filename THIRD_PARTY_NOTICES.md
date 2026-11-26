@@ -12,6 +12,7 @@
 | Pydantic / pydantic-settings (PyPI) | 2.14.4 / 2.16.3 | MIT | Модели и настройки приложения |
 | pytest / pgserver (PyPI, разработка) | 9.2.0 / 0.1.4 | MIT / Apache-2.0 | Проверки и временная БД |
 | Chainlit (с FastAPI, Starlette, Uvicorn) | 2.12.0 (0.165.0, 1.10.0, 0.54.0) | Apache-2.0 (MIT, BSD-3-Clause, BSD-3-Clause) | Веб-интерфейс чата |
+| Jinja2 / python-multipart (PyPI) | 3.1.6 / 0.0.34 | BSD-3-Clause / Apache-2.0 | Страницы админки и приём загружаемых файлов |
 
 ## Модели
 

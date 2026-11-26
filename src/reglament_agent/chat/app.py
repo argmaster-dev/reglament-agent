@@ -30,10 +30,12 @@ from reglament_agent.answer import Answer, Outcome, UserContext  # noqa: E402
 from reglament_agent.chat import render as R  # noqa: E402
 from reglament_agent.chat import session as S  # noqa: E402
 from reglament_agent.chat import start_page  # noqa: E402
+from reglament_agent.admin import routes as admin_routes  # noqa: E402
 from reglament_agent.chat.services import build_services  # noqa: E402
 
 services = build_services()
 start_page.install(fastapi_app)
+admin_routes.install(fastapi_app)
 
 
 @cl.header_auth_callback
