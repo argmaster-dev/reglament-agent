@@ -1,6 +1,5 @@
+import asyncio
 import io
-import os
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from zipfile import ZipFile
@@ -8,14 +7,12 @@ from zipfile import ZipFile
 import httpx
 import psycopg
 import pytest
-from psycopg import sql
-from psycopg.conninfo import make_conninfo
 
 from reglament_agent.ingest.embedding import FakeEmbedder, OllamaEmbedder, vector_literal
 from reglament_agent.ingest.parser import load_cards
-from reglament_agent.storage.migrate import migrate
+from reglament_agent.model import ModelSettings, OllamaClient
 from reglament_agent.storage.publish import publish
-from reglament_agent.storage.search import search
+from reglament_agent.storage.search import lexical_query, search
 
 CORPUS = Path(__file__).resolve().parents[1] / "docx"
 CARDS = load_cards(CORPUS)
@@ -101,7 +98,7 @@ def test_scoped_search(isolated):
                tsv @@ q FROM points p JOIN documents d ON p.version_id=d.active_version_id
         CROSS JOIN websearch_to_tsquery('russian', %s) q
         WHERE d.department=%s AND %s=ANY(d.stages) AND d.status='active'
-        """, (vector_literal(vector), query, opts["department"], opts["stage"])).fetchall()
+        """, (vector_literal(vector), lexical_query(query), opts["department"], opts["stage"])).fetchall()
     by_vector = sorted(eligible, key=lambda r: (r[1], r[0]))[:32]
     by_words = sorted((r for r in eligible if r[3]), key=lambda r: (-r[2], r[0]))[:32]
     scores = {}
@@ -123,8 +120,12 @@ def test_ollama_batches_on_cpu():
         assert payload["options"]["num_gpu"] == 0 and payload["model"] == "bge-m3"
         calls.append(payload["input"])
         return httpx.Response(200, json={"embeddings": FakeEmbedder().embed(payload["input"])})
-    with httpx.Client(base_url="http://localhost", transport=httpx.MockTransport(handler)) as client:
-        assert len(OllamaEmbedder(client, batch_size=2).embed(["a","b","c"])) == 3
+    client = OllamaClient(ModelSettings(embed_batch=2), transport=httpx.MockTransport(handler))
+    with asyncio.Runner() as runner:
+        try:
+            assert len(OllamaEmbedder(client, runner).embed(["a", "b", "c"])) == 3
+        finally:
+            runner.run(client.aclose())
     assert calls == [["a", "b"], ["c"]]
 
 
@@ -141,3 +142,24 @@ def test_large_corpus_with_filtered_vector_candidates(isolated):
     hits = search(conn, query, fake.embed([query])[0], department=card.department)
     assert len(hits) == 10 and all(h.doc_id.startswith("large-") for h in hits)
     assert any(h.number == "16.1" for h in hits)
+
+
+def test_source_url_keeps_original_revision_and_validates_highlight(isolated):
+    from dataclasses import replace
+    from reglament_agent.answer import SourceRef
+    from reglament_agent.storage.sources import point_view
+
+    conn, _ = isolated
+    card = CARDS[0]
+    raw = (CORPUS / card.file).read_bytes()
+    fake = FakeEmbedder()
+    publish(conn, card, raw, fake, "test")
+    publish(conn, card, new_revision(raw), fake, "test")
+    ref = SourceRef(card.doc_id, card.title, card.department, 1, "16.1", sentence=1)
+    view = point_view(conn, ref)
+    assert view.version_no == 1 and "Логист" in view.sentences[view.highlight]
+    with pytest.raises(ValueError):
+        point_view(conn, replace(ref, sentence=100))
+    conn.execute("UPDATE documents SET status='inactive' WHERE doc_id=%s", (card.doc_id,))
+    with pytest.raises(LookupError):
+        point_view(conn, ref)

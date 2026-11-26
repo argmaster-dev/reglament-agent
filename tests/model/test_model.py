@@ -193,3 +193,34 @@ def test_jsonl_sink(tmp_path):
     assert len(lines) == 2
     d = json.loads(lines[0])
     assert d["request_id"] == "r" and d["prompt_tokens"] == 5 and "started_at" in d
+
+
+async def test_failing_position_callback_does_not_stall_slot():
+    from reglament_agent.model.queue import GenerationSlot
+
+    slot = GenerationSlot(1)
+
+    def broken(_position):
+        raise RuntimeError("UI gone")
+
+    async with slot.acquire():
+        waiter = asyncio.create_task(_hold_briefly(slot, broken))
+        await asyncio.sleep(0.01)
+        assert slot.waiting == 1
+    await asyncio.wait_for(waiter, 1)
+    assert slot.active == 0 and slot.waiting == 0
+
+
+async def _hold_briefly(slot, callback):
+    async with slot.acquire(on_position=callback):
+        await asyncio.sleep(0)
+
+
+def test_client_ignores_system_proxy(monkeypatch):
+    from reglament_agent.model.ollama import OllamaClient
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("ALL_PROXY", "socks5://proxy.invalid:1080")
+    client = OllamaClient()
+    assert client._http._trust_env is False

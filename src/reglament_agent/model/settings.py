@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,4 +13,4 @@ class ModelSettings(BaseSettings):
     embed_num_gpu: int = 0
     keep_alive: str = "30m"
     timeout_s: float = 120
-    embed_batch: int = 32
+    embed_batch: int = Field(default=32, ge=1)
