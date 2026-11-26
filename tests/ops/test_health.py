@@ -27,6 +27,7 @@ def test_db_ok_others_down(fresh_db):
     s = settings(fresh_db, httpx.MockTransport(refuse))
     body = asyncio.run(health(s))
     assert not body["ok"] and body["checks"]["db"]["ok"] and "4 active documents" in body["checks"]["db"]["detail"]
+    assert body["schema_version"] == max(path.name for path in DOCX.with_name("migrations").glob("*.sql"))
     assert not body["checks"]["ollama"]["ok"] and not body["checks"]["smtp"]["ok"]
     app = FastAPI()
     app.include_router(make_router(s))
@@ -37,10 +38,14 @@ def test_db_ok_others_down(fresh_db):
 def test_ollama_models(fresh_db):
     def handler(request):
         if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "qwen3.5:9b-q4_K_M"}, {"name": "bge-m3:latest"}]})
+            return httpx.Response(200, json={"models": [
+                {"name": "qwen3.5:9b-q4_K_M", "digest": "a" * 64},
+                {"model": "bge-m3:latest", "digest": "b" * 64},
+            ]})
         return httpx.Response(200, json={"models": [{"name": "bge-m3:latest"}]})
     body = asyncio.run(health(settings(fresh_db, httpx.MockTransport(handler))))
     assert body["checks"]["ollama"]["ok"] and "bge-m3" in body["checks"]["ollama"]["detail"]
+    assert body["model_digests"] == {"qwen3.5:9b-q4_K_M": "a" * 64, "bge-m3": "b" * 64}
 
 
 def test_db_down_503():
