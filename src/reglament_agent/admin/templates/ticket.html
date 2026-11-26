@@ -8,7 +8,7 @@
 <p><b>Повод:</b> {{ reason_text }}</p>
 <p><b>Сотрудник:</b> {{ t.user_email }}{% if t.profile %} · профиль: {% for k, v in t.profile.items() if v %}{{ k }}: {{ v }}{% if not loop.last %}, {% endif %}{% else %}не указан{% endfor %}{% endif %}</p>
 {% if t.clarifications %}<p><b>Уточнения:</b></p><ol>{% for c in t.clarifications %}<li>{{ c.question }} — {{ c.answer }}</li>{% endfor %}</ol>{% endif %}
-<p><b>Доставка письма:</b> {% for m in mails %}{{ 'сотруднику' if m.kind == 'expert_answer' else 'службе' }}: {{ mail_text.get(m.status, m.status) }}{% if m.last_error %} ({{ m.last_error }}){% endif %}{% if not loop.last %}; {% endif %}{% else %}—{% endfor %}</p>
+<p><b>Доставка письма:</b> {% for m in mails %}{{ 'сотруднику' if m.kind == 'expert_answer' else 'службе' }}: {{ mail_text.get(m.status, m.status) }} (попыток: {{ m.attempts }}){% if m.last_error %} · {{ m.last_error }}{% endif %}{% if not loop.last %}; {% endif %}{% else %}—{% endfor %}</p>
 </div>
 <div class="card"><b>Найденные кандидаты</b>
 {% for c in candidates %}<details><summary>{{ c.title or c.doc_id }}, п. {{ c.point }}{% if c.version_no %} (версия {{ c.version_no }}){% endif %}</summary>

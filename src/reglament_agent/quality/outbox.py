@@ -22,15 +22,19 @@ class OutboxSender:
         """Send due rows; returns the number actually sent."""
         return await asyncio.to_thread(self._run_once, batch)
 
-    async def run_forever(self, interval: float = 5.0) -> None:
-        while True:
+    async def run_forever(self, interval: float = 5.0, *, stop: asyncio.Event | None = None) -> None:
+        stop = stop if stop is not None else asyncio.Event()
+        while not stop.is_set():
+            # One attempt at a time lets shutdown await the current SMTP transaction.
             try:
-                await self.run_once()
-            except asyncio.CancelledError:
-                raise
+                if await self.run_once(batch=1):
+                    continue
             except Exception:
                 log.exception("outbox iteration failed")
-            await asyncio.sleep(interval)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except TimeoutError:
+                pass
 
     def _send(self, row: dict) -> None:
         s = self.settings
@@ -46,14 +50,14 @@ class OutboxSender:
         with psycopg.connect(self.dsn) as conn:
             # One transaction per row keeps the row lock while sending, so a concurrent
             # sender skips it (SKIP LOCKED) and never mails the same row twice.
-            while True:
+            while batch > 0:
                 with conn.transaction():
                     row = conn.cursor(row_factory=dict_row).execute(
                         "SELECT * FROM mail_outbox WHERE status IN ('pending','error') "
                         "AND attempts < %s AND next_attempt_at <= now() "
                         "ORDER BY next_attempt_at, id LIMIT 1 FOR UPDATE SKIP LOCKED",
                         (self.settings.max_attempts,)).fetchone()
-                    if row is None or batch <= 0:
+                    if row is None:
                         return sent
                     batch -= 1
                     try:
@@ -70,3 +74,4 @@ class OutboxSender:
                             "UPDATE mail_outbox SET status='sent', attempts=attempts+1, "
                             "last_error=NULL, sent_at=now() WHERE id=%s", (row["id"],))
                         sent += 1
+        return sent

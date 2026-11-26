@@ -140,3 +140,25 @@ def test_close_as_duplicate(env):
     r = c.post(f"/admin/tickets/{n}", data={"action": "duplicate", "dup_ref": "2026-0001"})
     assert r.status_code == 303
     assert env.execute("SELECT status FROM tickets").fetchone()[0] == "closed_duplicate"
+
+
+def test_employee_ticket_owner_sees_delivery_but_not_expert_context(env):
+    number = make_ticket(env, email="employee@x.local")
+    env.execute("UPDATE mail_outbox SET status='error', attempts=1, last_error='internal SMTP detail'")
+    url = f"/tickets/{number}"
+    assert client().get(url).headers["location"] == "/start"
+    stranger = client("employee")
+    stranger.cookies.set(S.COOKIE_NAME, S.sign_identity(S.Identity("other@x.local", "employee"), SECRET))
+    assert stranger.get(url).status_code == 404
+    assert stranger.get(url + "?role=expert&email=employee@x.local").status_code == 404
+
+    own = client("employee").get(url)
+    assert own.status_code == 200
+    assert own.headers["cache-control"] == "no-store"
+    assert "не доставлено" in own.text and "попыток: 1" in own.text
+    assert "internal SMTP detail" not in own.text
+    assert "Найденные кандидаты" not in own.text and "Почта службы" not in own.text
+    assert client("expert").get(url).status_code == 200
+    detail = client("expert").get(f"/admin/tickets/{number}")
+    assert detail.status_code == 200
+    assert "internal SMTP detail" in detail.text and "попыток: 1" in detail.text

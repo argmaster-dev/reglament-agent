@@ -133,6 +133,7 @@ def ticket_card(t: TicketInfo) -> str:
     lines = [f"> ✉ **Обращение № {t.number}** · {delivery[0].upper() + delivery[1:]}", f"> {t.reason}"]
     if t.transferred:
         lines.append(f"> Передано: {', '.join(t.transferred)}")
+    lines.append(f"> [Проверить статус обращения](/tickets/{t.number})")
     lines.append("> Ответ придёт в этот диалог и на ваш адрес.")
     return "\n".join(lines)
 

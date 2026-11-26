@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% if ticket %}Обращение №{{ ticket.number }}{% else %}Обращение не найдено{% endif %} · Агент по регламентам</title>
+<style>
+body{max-width:44rem;margin:2rem auto;padding:0 1rem;font-family:system-ui,sans-serif;line-height:1.5}
+h1{font-size:1.5rem}dt{font-weight:600}dd{margin:0 0 1rem;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<main>
+<p><a href="/">Вернуться в чат</a></p>
+{% if ticket %}
+<h1>Обращение №{{ ticket.number }}</h1>
+<dl>
+<dt>Вопрос</dt><dd>{{ ticket.question }}</dd>
+<dt>Состояние</dt><dd>{{ status }}</dd>
+<dt>Доставка письма</dt>
+<dd>{{ delivery or 'нет данных' }}{% if ticket.delivery_attempts is not none %} (попыток: {{ ticket.delivery_attempts }}){% endif %}</dd>
+</dl>
+{% else %}
+<h1>Обращение не найдено</h1>
+{% endif %}
+</main>
+</body>
+</html>
