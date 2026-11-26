@@ -466,8 +466,9 @@ def test_department_follow_up_during_clarification_is_temporary(isolated):
     from reglament_agent.ingest.parser import load_cards
     from pathlib import Path
 
-    for card in load_cards(Path("docx")):
-        publish(conn, card, (Path("docx") / card.file).read_bytes(), FakeEmbedder(), "test")
+    docs = Path(__file__).resolve().parents[2] / "docx"
+    for card in load_cards(docs):
+        publish(conn, card, (docs / card.file).read_bytes(), FakeEmbedder(), "test")
     model = Model()
     model.result = {"outcome": "no_basis", "claims": []}
     points = [
@@ -625,7 +626,7 @@ def test_stage_clarification_preserves_the_scoped_department(isolated):
     from reglament_agent.storage.publish import publish
 
     conn, dsn = isolated
-    docs = Path("docx")
+    docs = Path(__file__).resolve().parents[2] / "docx"
     department = "Дирекция ИБ"
     for card in load_cards(docs):
         if card.department == department:
