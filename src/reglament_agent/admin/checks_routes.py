@@ -30,7 +30,8 @@ def _page(request: Request, doc_id: str):
     rows = [{"r": r, "old": old.get(r["question"])} for r in (latest["results"] if latest else [])]
     return render("checks_page.html", request, nav="documents", doc=doc, cs=cs, latest=latest, previous=previous,
                   rows=rows, outcomes=OUTCOMES, refresh=bool(latest and latest["status"] == "running"),
-                  passed=sum(1 for r in rows if r["r"]["passed"]))
+                  passed=sum(1 for r in rows if r["r"]["passed"]),
+                  changed=sum(1 for r in rows if r["r"].get("status") == "changed"))
 
 
 @router.get("/documents/{doc_id}/checks", response_class=HTMLResponse)

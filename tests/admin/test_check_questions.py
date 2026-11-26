@@ -66,29 +66,27 @@ def point_text(conn, doc_id, number, version=None):
 
 
 class OverlapAnswerer:
-    """Answers with the active point of the user's department that shares most words with the question."""
+    """A correct agent: answers a check question from the ACTIVE version of the point it belongs to."""
 
     def __init__(self, dsn):
-        import psycopg
         self.dsn, self.dept, self.calls = dsn, {}, []
-        self.psycopg = psycopg
 
     async def answer(self, user, message, on_status):
-        self.calls.append((user, message))
         import psycopg
+        self.calls.append((user, message))
+        dept = self.dept.get(user.email)
+        point = next((q.point for doc in DOC_IDS for q in C.load_questions(doc).questions if q.question == message),
+                     None)
         with psycopg.connect(self.dsn) as conn:
-            rows = conn.execute(
+            row = conn.execute(
                 "SELECT d.doc_id,d.title,d.department,v.version_number,p.number,p.text FROM documents d "
                 "JOIN document_versions v ON v.version_id=d.active_version_id "
-                "JOIN points p ON p.version_id=v.version_id WHERE d.status='active' AND d.department=%s",
-                (self.dept.get(user.email),)).fetchall()
-        stems = lambda t: {w[:5] for w in re.findall(r"\w{4,}", norm(t))}  # noqa: E731
-        words = stems(message)
-        best = max(rows, key=lambda r: len(words & stems(r[5])))
-        if len(words & stems(best[5])) < 4:
+                "JOIN points p ON p.version_id=v.version_id WHERE d.status='active' AND d.department=%s "
+                "AND p.number=%s", (dept, point)).fetchone() if point else None
+        if row is None:
             return Answer(Outcome.NO_BASIS, "В регламентах нет ответа.")
-        ref = SourceRef(best[0], best[1], best[2], best[3], best[4], 0)
-        return Answer(Outcome.ANSWER, "", [Statement(best[5].split("\n")[0], [ref])])
+        ref = SourceRef(row[0], row[1], row[2], row[3], row[4], 0)
+        return Answer(Outcome.ANSWER, "", [Statement(row[5].split("\n")[0], [ref])])
 
 
 class FakeProfiles:
@@ -138,14 +136,35 @@ def test_dbrct_has_presale_deadline_question_pointing_to_1_5():
     assert "3 рабочих дня" not in q.question  # not a copy of the point text
 
 
+@pytest.mark.parametrize("outcome", ["no_basis", "external_doc", "conflict", "low_confidence"])
+@pytest.mark.parametrize("key", ["outcome", "expected_outcome"])
+def test_loader_rejects_outcomes_that_open_a_ticket(tmp_path, outcome, key):
+    (tmp_path / "x.toml").write_text(
+        f'doc_id = "x"\ndepartment = "Отдел"\n[[question]]\nquestion = "Про отпуск?"\n{key} = "{outcome}"\n',
+        encoding="utf-8")
+    with pytest.raises(C.CheckFileError, match="обращени"):
+        C.load_questions("x", tmp_path)
+
+
+def test_shipped_check_files_never_expect_a_ticket():
+    for doc_id in DOC_IDS:
+        assert all(q.outcome not in C.TICKET_OUTCOMES for q in C.load_questions(doc_id).questions)
+
+
+def test_question_version_defaults_to_1(tmp_path):
+    (tmp_path / "x.toml").write_text('doc_id = "x"\ndepartment = "О"\n[[question]]\nquestion = "?"\npoint = "1.1"\n'
+                                     '[[question]]\nquestion = "??"\npoint = "1.2"\nversion = 3\n', encoding="utf-8")
+    assert [q.version for q in C.load_questions("x", tmp_path).questions] == [1, 3]
+
+
 def test_unknown_document_has_no_questions():
     assert C.load_questions("nope") is None
 
 
 # --- task 2: pass/fail computation ----------------------------------------------------------------
 
-def mkq(point="1.5", outcome="answer", phrase="3 рабочих дня"):
-    return C.Question("Вопрос?", point, outcome, phrase)
+def mkq(point="1.5", outcome="answer", phrase="3 рабочих дня", version=1):
+    return C.Question("Вопрос?", point, outcome, phrase, version)
 
 
 def ans(point, version=1, outcome=Outcome.ANSWER, doc="dbrct-project", text="Срок 3 рабочих дня."):
@@ -174,6 +193,21 @@ def test_evaluate_pass_and_each_failure_mode(env):
     assert fromdb["passed"] and fromdb["phrase_found"] is True
     nophrase = ev(mkq(phrase=None), ans("1.5", text="x"))
     assert nophrase["passed"] and nophrase["phrase_found"] is None
+
+
+def test_changed_status_only_when_newer_version_lacks_phrase(env):
+    load_corpus(env)
+    ev = lambda q, a: C.evaluate(env, "dbrct-project", q, a, 0)  # noqa: E731
+    same = ev(mkq(phrase="7 рабочих дней"), ans("1.5", version=1, text="x"))
+    assert same["status"] == "failed" and not same["passed"]  # same version: a real failure
+    newer = ev(mkq(phrase="7 рабочих дней"), ans("1.5", version=2, text="x"))  # v2 not in DB: no excerpt text
+    assert newer["status"] == "changed" and not newer["passed"]
+    assert ev(mkq(version=2, phrase="7 рабочих дней"), ans("1.5", version=2, text="x"))["status"] == "failed"
+    assert ev(mkq(), ans("1.5"))["status"] == "passed"
+    wrong_outcome = ev(mkq(phrase="7 рабочих дней"), ans("1.5", version=2, outcome=Outcome.LOW_CONFIDENCE))
+    assert wrong_outcome["status"] == "failed"
+    wrong_point = ev(mkq(phrase="7 рабочих дней"), ans("1.6", version=2))
+    assert wrong_point["status"] == "failed"
 
 
 def test_evaluate_no_basis_expectation(env):
@@ -298,9 +332,14 @@ def test_d12_answer_changes_after_replacing_with_demo_v2(env, monkeypatch):
     assert old["version_no"] == 1 and "3 рабочих дня" in pick(old)["answer_text"] and pick(old)["passed"]
     assert new["version_no"] == 2 and pick(new)["version_no"] == 2
     assert "5 рабочих дней" in pick(new)["answer_text"] and "3 рабочих дня" not in pick(new)["answer_text"]
-    assert pick(new)["found_points"] == ["1.5"] and not pick(new)["passed"]  # expected phrase no longer holds
+    assert pick(new)["found_points"] == ["1.5"] and not pick(new)["passed"]
+    assert pick(new)["status"] == "changed" and "5 рабочих дней" in pick(new)["changed_excerpt"]
+    assert pick(old)["status"] == "passed"
     others = [r for r in new["results"] if r["expected_point"] not in ("1.5", None)]
+    assert others and all(r["status"] == "passed" for r in others), [(r["question"], r["found_points"], r["outcome"]) for r in others if r["status"] != "passed"]
     assert all(r["version_no"] == 2 for r in others if r["found_points"])
     html = c.get("/admin/documents/dbrct-project/checks").text
     assert "Предыдущий прогон" in html and "версия 2" in html and "версия 1" in html
     assert "5 рабочих дней" in html and "3 рабочих дня" in html
+    assert "Изменилось: ожидалось «3 рабочих дня» (версия 1), найдено в версии 2" in html
+    assert "изменилось — обновите ожидание: 1" in html and "Пройдено 6 из 7" not in html

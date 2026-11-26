@@ -42,7 +42,3 @@ question = "ДБРЦТ: в какой срок РП заводит смету п
 point = "10.2"
 outcome = "answer"
 phrase = "в течение 3 рабочих дней"
-
-[[question]]
-question = "Я в ДБРЦТ. Как оформить командировку в другой город?"
-outcome = "no_basis"

@@ -10,7 +10,8 @@
 <p class="card">
 {% if latest.status == 'running' %}Идёт проверка: {{ latest.results|length }} из {{ latest.total }}…
 {% elif latest.status == 'failed' %}<span class="err">Проверка прервана: {{ latest.error }}</span>
-{% else %}<b>Пройдено {{ passed }} из {{ rows|length }}</b>{% endif %}
+{% else %}<b>Пройдено {{ passed }} из {{ rows|length }}</b>
+{% if changed %} · <b style="color:#b36b00">изменилось — обновите ожидание: {{ changed }}</b>{% endif %}{% endif %}
 · версия {{ latest.version_no }} · {{ latest.started_at.strftime("%d.%m.%Y %H:%M") }} · запустил {{ latest.started_by }}
 {% if previous %}<br><span class="muted">Предыдущий прогон: версия {{ previous.version_no }}, {{ previous.started_at.strftime("%d.%m.%Y %H:%M") }}</span>{% endif %}</p>
 <table><tr><th>Вопрос</th><th>Ожидалось</th><th>Найдено</th><th>Исход</th><th>Результат</th><th>Предыдущий прогон</th><th></th></tr>
@@ -20,9 +21,9 @@
 <td>{% if r.found_points %}{% for p in r.found_points %}п. {{ p }}{% if not loop.last %}, {% endif %}{% endfor %}, версия {{ r.version_no }}{% else %}—{% endif %}
 <br><span class="muted">{{ r.answer_text[:220] }}</span></td>
 <td>{{ outcomes.get(r.outcome, r.outcome) }}<br><span class="muted">{{ r.seconds }} с</span></td>
-<td>{% if r.passed %}<span class="ok">пройдено</span>{% else %}<span class="err">не пройдено</span>
+<td>{% if r.passed %}<span class="ok">пройдено</span>{% elif r.status == 'changed' %}<span style="color:#b36b00">Изменилось: ожидалось «{{ r.expected_phrase }}» (версия {{ r.expected_version }}), найдено в версии {{ r.version_no }}: «{{ r.changed_excerpt }}»</span>{% else %}<span class="err">не пройдено</span>
 <br><span class="muted">{% if not r.point_ok %}нет ожидаемого пункта{% elif not r.outcome_ok %}другой исход{% elif r.phrase_found is false %}нет фразы «{{ r.expected_phrase }}»{% endif %}{% if r.error %} {{ r.error }}{% endif %}</span>{% endif %}</td>
-<td>{% if o %}{% if o.passed %}<span class="ok">пройдено</span>{% else %}<span class="err">не пройдено</span>{% endif %}, версия {{ o.version_no }}
+<td>{% if o %}{% if o.passed %}<span class="ok">пройдено</span>{% elif o.status == 'changed' %}<span style="color:#b36b00">изменилось</span>{% else %}<span class="err">не пройдено</span>{% endif %}, версия {{ o.version_no }}
 <br><span class="muted">{{ o.answer_text[:220] }}</span>{% else %}—{% endif %}</td>
 <td><a href="/" target="_blank" rel="noopener">Спросить в чате</a><br>
 <button type="button" class="sec" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.dataset.q)" data-q="{{ r.question }}">Копировать вопрос</button></td></tr>{% endfor %}</table>

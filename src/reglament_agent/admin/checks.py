@@ -24,12 +24,20 @@ SERVICE_EMAIL = "quality-checks@service.local"
 STALE_MINUTES = 30  # a «running» run older than this is shown as interrupted (server restart)
 
 
+TICKET_OUTCOMES = {"no_basis", "external_doc", "conflict", "low_confidence"}  # the agent opens a ticket + mail
+
+
+class CheckFileError(ValueError):
+    """A check file cannot be used (shown to the expert as is)."""
+
+
 @dataclass(frozen=True)
 class Question:
     question: str
     point: str | None  # expected point number; None = no point of this document must be cited
     outcome: str  # expected Outcome value
     phrase: str | None = None  # must occur in the answer or in the cited point text
+    version: int = 1  # document version the expected phrase was written against
 
 
 @dataclass(frozen=True)
@@ -50,8 +58,13 @@ def load_questions(doc_id: str, directory: Path | None = None) -> CheckSet | Non
     if not path.is_file():
         return None
     data = tomllib.loads(path.read_text(encoding="utf-8"))
-    questions = [Question(q["question"], q.get("point"), q.get("outcome", "answer"), q.get("phrase"))
-                 for q in data.get("question", [])]
+    questions = []
+    for q in data.get("question", []):
+        outcome = q.get("outcome", q.get("expected_outcome", "answer"))
+        if outcome in TICKET_OUTCOMES:
+            raise CheckFileError(f"{path.name}: вопрос «{q['question']}» ожидает исход «{outcome}», а он создаёт "
+                                 "обращение и письмо службе качества; проверочные вопросы не должны вести к обращению")
+        questions.append(Question(q["question"], q.get("point"), outcome, q.get("phrase"), int(q.get("version", 1))))
     return CheckSet(data.get("doc_id", doc_id), data["department"], questions)
 
 
@@ -91,10 +104,18 @@ def evaluate(conn, doc_id: str, q: Question, answer: Answer, seconds: float, err
     point_ok = (q.point in found) if q.point else not found
     outcome = str(answer.outcome.value if isinstance(answer.outcome, Outcome) else answer.outcome)
     outcome_ok = outcome == q.outcome
+    passed = bool(point_ok and outcome_ok and phrase_found is not False and error is None)
+    changed = bool(not passed and error is None and q.point and point_ok and outcome_ok and phrase_found is False
+                   and version_no is not None and version_no > q.version)
+    excerpt = None
+    if changed:
+        cited = _point_text(conn, doc_id, q.point, version_no) or " ".join(texts)
+        excerpt = norm(cited)[:160] + ("…" if len(norm(cited)) > 160 else "")
     return {"question": q.question, "expected_point": q.point, "expected_outcome": q.outcome,
             "expected_phrase": q.phrase, "found_points": found, "outcome": outcome, "version_no": version_no,
             "phrase_found": phrase_found, "point_ok": point_ok, "outcome_ok": outcome_ok,
-            "passed": bool(point_ok and outcome_ok and phrase_found is not False and error is None),
+            "passed": passed, "status": "passed" if passed else "changed" if changed else "failed",
+            "changed_excerpt": excerpt, "expected_version": q.version,
             "seconds": round(seconds, 2), "answer_text": " ".join(t for t in texts if t), "error": error}
 
 
