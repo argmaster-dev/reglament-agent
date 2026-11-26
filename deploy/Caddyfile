@@ -13,6 +13,9 @@
 	handle /mail/* {
 		forward_auth app:8000 {
 			uri /_ops/mail-session
+			# The authorization endpoint is HTTP-only. Mailpit receives the original upgrade.
+			header_up -Connection
+			header_up -Upgrade
 		}
 		reverse_proxy mailpit:8025 {
 			header_up -Cookie

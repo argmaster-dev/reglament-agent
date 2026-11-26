@@ -1,6 +1,6 @@
 # Финальный стенд на ноутбуке
 
-Финальная конфигурация публикует один порт на loopback для Tailscale Funnel. Caddy передаёт запросы приложения и WebSocket в Chainlit. Маршрут `/mail/` открывается после входа в службу качества, включая API и WebSocket Mailpit. В роли сотрудника и без сеанса этот маршрут возвращает 403. Служба проверки сеанса доступна Caddy во внутренней сети.
+Финальная конфигурация публикует один порт на loopback для Tailscale Funnel. Caddy передаёт запросы приложения и WebSocket в Chainlit. Маршрут `/mail/` открывается после входа в службу качества, включая API и WebSocket Mailpit. В роли сотрудника и без сеанса этот маршрут возвращает 403. Служба проверки сеанса доступна Caddy во внутренней сети. Caddy проверяет сеанс обычным HTTP-запросом, затем передаёт исходный WebSocket upgrade в Mailpit для обновления списка писем.
 
 ## Подготовка
 
@@ -34,10 +34,13 @@ sudo loginctl enable-linger "$(id -un)"
 Команды выполнять из каталога этой копии репозитория. Имя проекта Compose отделяет тома и сети стенда от стендов разработки.
 
 ```sh
+export REGULATIONS_CADDYFILE_SHA256="$(sha256sum deploy/Caddyfile | cut -d ' ' -f 1)"
 docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml up -d --build --wait
 docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml ps --all
 curl -fsS http://127.0.0.1:18800/health
 ```
+
+После обновления `deploy/Caddyfile` пересчитайте `REGULATIONS_CADDYFILE_SHA256`. При необходимости примените новую конфигурацию командой `docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml up -d --no-deps --force-recreate gateway`. Она пересоздаёт только прокси. Тома базы и Mailpit остаются на месте.
 
 При первом запуске `migrate` должен завершиться с кодом 0. Compose дожидается доступности очереди PostgreSQL и ответа SMTP на NOOP у почтового процесса. Отправку письма проверяйте отдельно через новое обращение. Уже созданные данные сохраняются в томах PostgreSQL и Mailpit. Для первичного наполнения чистой БД можно запустить обычный импорт выданных материалов внутри контейнера.
 

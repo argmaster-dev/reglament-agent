@@ -17,6 +17,8 @@ services:
     environment:
       MP_WEBROOT: /mail/
   gateway:
+    labels:
+      dev.reglament.caddyfile.sha256: ${REGULATIONS_CADDYFILE_SHA256:-unrecorded}
     image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
     restart: unless-stopped
     depends_on:
