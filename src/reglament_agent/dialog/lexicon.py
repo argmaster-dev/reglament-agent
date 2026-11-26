@@ -34,22 +34,64 @@ def word_key(word: str) -> str:
     return word[:KEY_LEN]
 
 
-# canonical role -> surface forms (abbreviations and full names)
-ROLES: dict[str, list[str]] = {
-    "рп": ["РП", "руководитель проекта"],
-    "ам": ["АМ", "аккаунт-менеджер"],
-    "ss": ["SS", "менеджер по продаже решений"],
-    "па": ["ПА", "пресейл-архитектор"],
-    "tps": ["TPS", "технический пресейл-специалист"],
-    "bdm": ["BDM"],
-    "tss": ["TSS"],
-    "гип": ["ГИП", "главный инженер проекта"],
-    "ап": ["АП", "архитектор проекта"],
+# --- glossary ---------------------------------------------------------------
+
+import os
+from functools import lru_cache
+from pathlib import Path
+
+_DEFAULT_GLOSSARY = Path(__file__).resolve().parents[3] / "docx" / "glossary.tsv"
+_glossary_path: Path | None = None
+
+
+def set_glossary_path(path: str | Path | None) -> None:
+    """Override the glossary file (None restores env/default) and drop caches."""
+    global _glossary_path
+    _glossary_path = Path(path) if path else None
+    _load.cache_clear()
+    _patterns.cache_clear()
+
+
+def glossary_path() -> Path:
+    if _glossary_path:
+        return _glossary_path
+    env = os.environ.get("GLOSSARY_PATH")
+    return Path(env) if env else _DEFAULT_GLOSSARY
+
+
+@lru_cache(maxsize=1)
+def _load() -> tuple[tuple[tuple[str, ...], str], ...]:
+    """Rows of (abbreviation variants, expansion)."""
+    rows: list[tuple[tuple[str, ...], str]] = []
+    for i, line in enumerate(glossary_path().read_text(encoding="utf-8").splitlines()):
+        if i == 0 or not line.strip() or "\t" not in line:
+            continue
+        abbr, exp = line.split("\t", 1)
+        variants = tuple(v.strip() for v in abbr.split(",") if v.strip())
+        rows.append((variants, exp.strip()))
+    return tuple(rows)
+
+
+def glossary() -> dict[str, str]:
+    """abbreviation (every variant) -> expansion."""
+    return {v: exp for variants, exp in _load() for v in variants}
+
+
+def _clean(exp: str) -> str:
+    return re.sub(r"\s*\(.*?\)", "", exp).strip()
+
+
+# Glossary abbreviations that denote roles (everything else is not an actor).
+ROLE_ABBREVIATIONS = ["АМ", "АП", "BDM", "ГИП", "ПА", "РП", "РМ", "РСП", "SS", "TSS"]
+
+# Extra hand-written role forms used in the regulation texts.
+EXTRA_ROLE_FORMS: dict[str, list[str]] = {
+    "SS": ["менеджер по продаже решений"],
+    "TPS": ["TPS", "технический пресейл-специалист"],
     "архитектор": ["Архитектор"],
     "логист": ["Логист"],
     "координатор департамента": ["Координатор департамента"],
     "директор направления": ["Директор направления"],
-    "ресурс-менеджер": ["Ресурс-менеджер"],
     "специалист по работе с подрядчиками": ["Специалист по работе с подрядчиками"],
     "менеджер по работе с договорами": ["Менеджер по работе с договорами"],
     "владелец бюджета": ["Владелец бюджета"],
@@ -63,12 +105,27 @@ def _keys(form: str) -> tuple[str, ...]:
     return tuple(word_key(w) for w in words(form))
 
 
-PATTERNS: Pattern = {c: [_keys(f) for f in forms] for c, forms in ROLES.items()}
+@lru_cache(maxsize=1)
+def _patterns() -> Pattern:
+    gl = glossary()
+    pats: Pattern = {}
+    for abbr in ROLE_ABBREVIATIONS:
+        forms = [abbr] + ([_clean(gl[abbr])] if abbr in gl else [])
+        pats[abbr.lower()] = [_keys(f) for f in forms]
+    for canon, forms in EXTRA_ROLE_FORMS.items():
+        pats.setdefault(canon.lower(), []).extend(_keys(f) for f in forms)
+    return pats
+
+
+def __getattr__(name: str):
+    if name == "PATTERNS":
+        return _patterns()
+    raise AttributeError(name)
 
 
 def find_roles(tokens: list[str], patterns: Pattern | None = None) -> list[tuple[int, int, str]]:
     """Greedy longest role matches: (start, end_exclusive, canon)."""
-    pats = patterns or PATTERNS
+    pats = patterns or _patterns()
     keys = [word_key(t) for t in tokens]
     out: list[tuple[int, int, str]] = []
     i = 0
@@ -93,13 +150,34 @@ def canonical_role(text: str) -> tuple[str, Pattern]:
     toks = words(text)
     found = find_roles(toks)
     if found:
-        # prefer the span covering most of the text
         s, e, canon = max(found, key=lambda m: m[1] - m[0])
-        return canon, PATTERNS
+        return canon, _patterns()
     canon = " ".join(toks)
-    pats = dict(PATTERNS)
+    pats = dict(_patterns())
     pats[canon] = [tuple(word_key(t) for t in toks)]
     return canon, pats
+
+
+def _seq_in(seq: list[str], sub: list[str]) -> bool:
+    n = len(sub)
+    return n > 0 and any(seq[i : i + n] == sub for i in range(len(seq) - n + 1))
+
+
+def expand_query(text: str) -> str:
+    """Append expansions of abbreviations found in the query and abbreviations
+    of expansions found in it."""
+    toks = words(text)
+    keys = [word_key(t) for t in toks]
+    low = text.lower()
+    extra: list[str] = []
+    for variants, exp in _load():
+        clean = _clean(exp)
+        if any(_seq_in(toks, words(v)) for v in variants):
+            if fold(clean) not in fold(text):
+                extra.append(clean)
+        elif _seq_in(keys, [word_key(w) for w in words(clean)]):
+            extra.extend(v for v in variants if v.lower() not in low)
+    return " ".join([text, *extra]) if extra else text
 
 
 # action prefixes -> canonical stem

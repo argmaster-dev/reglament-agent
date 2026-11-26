@@ -101,3 +101,18 @@ def test_limit_phrases_not_negation():
     s = "Не позднее чем за 5 рабочих дней до встречи РП запрашивает согласование."
     assert run(s, actor="РП", action="запрашивает") == []
     assert "negation_mismatch" in run("РП не вправе подписывать договор.", actor="РП", action="подписывает")
+
+
+def test_glossary_roles():
+    from reglament_agent.dialog.lexicon import expand_query, glossary
+    assert glossary()["КСУП"] == glossary()["ИСУП"]
+    assert find_roles(words("администратор проекта"))[0][2] == "ап"
+    assert canonical_role("АП")[0] == "ап"
+    assert find_roles(words("архитектор проекта"))[0][2] == "архитектор"
+    assert canonical_role("РМ")[0] == find_roles(words("ресурс-менеджером"))[0][2] == "рм"
+    for t in ("Solution Sales", "менеджер по продаже решений", "SS"):
+        assert find_roles(words(t))[0][2] == "ss"
+    assert "заявка на пресейл" in expand_query("что такое ЗНП").lower()
+    assert "ЗНП" in expand_query("сроки по заявке на пресейл")
+    assert run("Администратор проекта согласует план.", actor="АП", action="согласует") == []
+    assert "actor_missing" in run("Архитектор проекта согласует план.", actor="АП", action="согласует")
