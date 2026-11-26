@@ -10,6 +10,7 @@
 | pgvector (PyPI) | 0.5.1 | MIT | Адаптер pgvector в окружении |
 | HTTPX (PyPI) | 0.28.1 | BSD-3-Clause | Клиент Ollama |
 | Pydantic / pydantic-settings (PyPI) | 2.14.4 / 2.16.3 | MIT | Модели и настройки приложения |
+| FastAPI (PyPI) | 0.165.0 | MIT | Маршрут `/health` |
 | pytest / pgserver (PyPI, разработка) | 9.2.0 / 0.1.4 | MIT / Apache-2.0 | Проверки и временная БД |
 
 ## Модели
@@ -30,3 +31,5 @@
 | PostgreSQL / pgvector (образ pgvector/pgvector) | 16 / 0.8.7, digest в compose.yaml | PostgreSQL License | Хранилище, полнотекстовый и векторный поиск |
 | Mailpit (axllent/mailpit) | digest `ed9b00c609e7…` в compose.yaml | MIT | Приём почты на стенде |
 | Ollama (ollama/ollama) | 0.40.2 на проверочном стенде | MIT | Локальный сервер моделей |
+| python:3.12-slim (Docker Official Image) | 3.12 | PSF-2.0 (Python), лицензии Debian | Базовый образ приложения (Dockerfile) |
+| uv (ghcr.io/astral-sh/uv) | 0.8 | MIT / Apache-2.0 | Установка зависимостей при сборке образа |
