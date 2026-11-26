@@ -164,13 +164,47 @@ def test_typos_are_repaired_before_retrieval(isolated):
     assert "командировку" in route.seen[0][0].lower() and "согласует" in route.seen[0][0].lower()
 
 
-def test_action_only_mismatch_keeps_the_exact_source_with_a_caveat(isolated):
-    conn, dsn = isolated
-    model = Model(actor="Менеджер проекта", action="утверждает")
-    route = make(dsn, model, [hit("Отдел", "Исполнителя привлекает Менеджер проекта.")])
-    result = asyncio.run(route.answer(user(), "Кто привлекает исполнителя проекта?", status))
-    assert result.outcome == Outcome.ANSWER and result.caveat
-    assert result.statements[0].text == "Исполнителя привлекает Менеджер проекта."
+def _two_sentence_point():
+    from reglament_agent.answer import SourceRef
+    from reglament_agent.dialog.grounding import Anchor
+
+    def anchor(i, text):
+        return Anchor(SourceRef("d", "Т", "Отдел", 1, "7.1", sentence=i), text, "", i)
+
+    return {"S1": anchor(0, "Архитектор создаёт заявку на допуск."),
+            "S2": anchor(1, "За подписание допуска отвечает Логист.")}
+
+
+def _claim(items, key, actor, action):
+    from reglament_agent.dialog.grounding import model_ref
+
+    a = items[key]
+    return {"ref": model_ref(key, a), "actor": actor, "action": action, "text": a.text}
+
+
+def _assemble(items, claims, question="Кто подписывает заявку на допуск?"):
+    from reglament_agent.dialog.grounding import assemble
+
+    data = {"outcome": "answer", "claims": claims}
+    return assemble(question, data, items, ["Отдел"], False, {})
+
+
+def test_action_absent_from_the_cited_sentence_is_dropped_even_when_the_role_is_there():
+    items = _two_sentence_point()
+    wrong = _assemble(items, [_claim(items, "S1", "Архитектор", "подписывает")])
+    assert wrong.outcome == Outcome.NO_BASIS and not wrong.statements
+    right = _assemble(items, [_claim(items, "S2", "Логист", "подписывает")])
+    assert right.outcome == Outcome.ANSWER and [s.sources[0].sentence for s in right.statements] == [1]
+
+
+def test_a_lexicon_synonym_of_the_action_is_accepted():
+    from reglament_agent.answer import SourceRef
+    from reglament_agent.dialog.grounding import Anchor
+
+    items = {"S1": Anchor(SourceRef("d", "Т", "Отдел", 1, "7.1", sentence=0), "Архитектор оформляет заявку на допуск.", "", 0)}
+    result = _assemble(items, [_claim(items, "S1", "Архитектор", "создаёт")],
+                       "Кто создаёт заявку на допуск?")
+    assert result.outcome == Outcome.ANSWER and not result.caveat
 
 
 @pytest.mark.parametrize("text", ["ab", "   ", "я" * 2001])

@@ -2,7 +2,7 @@
 
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from reglament_agent.answer import Answer, Outcome, SourceRef, Statement, Variant
 
@@ -182,11 +182,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         check = verify_claims([claim], evidence)
         if check.dropped:
             dropped.extend(check.dropped)
-            # The statement is composed from the source itself. A verb that differs from the source wording
-            # only weakens the binding when the cited role is present: keep it, flagged as partly verified.
-            soft = claim.actor and check.dropped[0].reasons == ["action_missing"]
-            if not (soft and not verify_claims([replace(claim, action=None)], evidence).dropped):
-                continue
+            continue
         kept.append(claim)
         claims_by_ref[a.ref] = claim
         # Compose from the exact source. Free-form generator output cannot introduce another rule.
