@@ -17,6 +17,11 @@ QUESTION_WORDS = set("какой какая какие какое каких к�
 
 # These forms widen retrieval only; the answer must still cite the actual wording.
 _ABBREVIATION = re.compile(r"\b[A-ZА-ЯЁ][A-ZА-ЯЁ0-9]+\b")
+_ADVANCE_QUESTION = re.compile(r"\b(?:заранее|за сколько|за какое время|за какой срок)\b", re.I)
+# PostgreSQL word boundaries. A duration before an event is different from an SLA after submission.
+_ADVANCE_INTERVAL = (r"\mза\s+(?:[[:alnum:]-]+\s+){0,4}"
+                     r"(?:минут[а-я]*|час(?:а|ов)?|день|дня|дней|сутки|суток|"
+                     r"недел[а-я]*|месяц[а-я]*|год(?:а|ов)?|лет)\s+до\M")
 _RETRIEVAL_FORMS = (
     (re.compile(r"\bподпис\w*"), "подписание подписывать"),
     (re.compile(r"\bсоглашени\w*"), "договор"),
@@ -48,7 +53,7 @@ _RANK = """
            p.tsv @@ q.terms
     FROM domains dom CROSS JOIN q CROSS JOIN LATERAL (
         WITH eligible AS NOT MATERIALIZED (
-            SELECT point_id, embedding, tsv FROM points WHERE version_id=ANY(dom.versions)
+            SELECT point_id, embedding, tsv, text FROM points WHERE version_id=ANY(dom.versions)
         ), ann AS MATERIALIZED (
             SELECT point_id, embedding <=> %(vec)s::vector dist FROM eligible WHERE dom.use_ann
             ORDER BY embedding <=> %(vec)s::vector LIMIT %(pool)s
@@ -61,15 +66,17 @@ _RANK = """
              WHERE NOT (SELECT ready FROM strategy)
              ORDER BY (embedding <=> %(vec)s::vector) + 0,point_id LIMIT %(pool)s)
         ), f AS (
-            SELECT point_id, ts_rank_cd(tsv,q.terms) * (1 + coalesce((tsv @@ q.abbr)::int,0)) relev
+            SELECT point_id, ts_rank_cd(tsv,q.terms) * (1 + coalesce((tsv @@ q.abbr)::int,0)) relev,
+                   %(advance)s AND text ~* %(interval)s AS has_interval
             FROM eligible WHERE tsv @@ q.terms
-            ORDER BY relev DESC,point_id LIMIT %(pool)s
+            ORDER BY has_interval DESC,relev DESC,point_id LIMIT %(pool)s
         ), phrases AS (
             SELECT point_id,ts_rank_cd(tsv,q.phrase) relev FROM eligible
             WHERE numnode(q.phrase)>1 AND tsv @@ q.phrase ORDER BY relev DESC,point_id LIMIT %(pool)s
         ), ranks AS (
             SELECT point_id,row_number() OVER (ORDER BY dist,point_id) r FROM v
-            UNION ALL SELECT point_id,row_number() OVER (ORDER BY relev DESC,point_id) FROM f
+            UNION ALL SELECT point_id,row_number() OVER (ORDER BY has_interval DESC,relev DESC,point_id) FROM f
+            UNION ALL SELECT point_id,row_number() OVER (ORDER BY relev DESC,point_id) FROM f WHERE has_interval
             UNION ALL SELECT point_id,row_number() OVER (ORDER BY relev DESC,point_id) FROM phrases
         )
         SELECT point_id,sum(1.0::float8 / (60 + r)) score FROM ranks GROUP BY point_id
@@ -89,6 +96,7 @@ def search(conn: Connection, query: str, vector: list[float], *, department: str
     pool = max(32, 4 * limit)
     params = {"vec": vector_literal(vector), "query": lexical_query(query), "original": query,
               "dept": department, "stage": stage, "pool": pool, "limit": limit, "exact": exact,
+              "advance": bool(_ADVANCE_QUESTION.search(query)), "interval": _ADVANCE_INTERVAL,
               "abbr": " ".join(_ABBREVIATION.findall(query))}
     with conn.transaction():
         if not exact:

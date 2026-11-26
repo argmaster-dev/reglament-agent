@@ -8,7 +8,7 @@ from reglament_agent.ingest.embedding import FakeEmbedder, vector_literal
 from reglament_agent.ingest.parser import load_cards
 from reglament_agent.storage.publish import publish
 from reglament_agent.storage.retrieve import FAQHit, retrieve
-from reglament_agent.storage.search import search
+from reglament_agent.storage.search import lexical_query, search
 from reglament_agent.storage.sources import point_view
 
 CORPUS = Path(__file__).resolve().parents[2] / "docx"
@@ -83,3 +83,24 @@ def test_retrieve_published_faq_with_scope(isolated):
                      faq=Published())
     assert not batch.points and [r.source.faq_id for r in batch.faq] == [7]
     assert retrieve(conn, "Без поставщика FAQ", vector).faq == []
+
+
+def test_presale_deadlines_without_profile(isolated):
+    conn, _ = isolated
+    embedder = FakeEmbedder()
+    for card in CARDS:
+        publish(conn, card, (CORPUS / card.file).read_bytes(), embedder, "tests")
+
+    for question in ("За сколько нужно подать заявку на пресейл?", "За сколько подавать заявку на пресейл?"):
+        hits = search(conn, question, embedder.embed([question])[0])
+        matched = {(hit.doc_id, hit.number) for hit in hits if hit.lexical_match}
+        assert {("td-project", "1.5"), ("dbrct-project", "1.5")} <= matched
+
+
+@pytest.mark.parametrize(("short", "long"), [
+    ("ЗНП", "заявка на пресейл"),
+    ("ТКП", "технико-коммерческое предложение"),
+])
+def test_search_terms_include_both_glossary_forms(short, long):
+    assert short.lower() in lexical_query(long).split(" OR ")
+    assert set(long.replace("-", " ").split()) <= set(lexical_query(short).split(" OR "))
