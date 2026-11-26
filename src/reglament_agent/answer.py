@@ -106,6 +106,7 @@ class UserContext:
     email: str
     role: str  # "employee" | "expert"
     dialog_id: str
+    message_id: str | None = None  # stable id of the user message; a retry reuses it (no duplicate ticket)
 
 
 StatusCallback = Callable[[str], Awaitable[None]]  # «Ищу в 4 регламентах…», «В очереди: 1»
@@ -118,8 +119,9 @@ class Answerer(Protocol):
         """User pressed a clarification button (or «Не знаю»)."""
         ...
 
-    async def rate(self, user: UserContext, answer_id: str, good: bool, reason: str | None) -> TicketInfo | None:
-        """👍/👎; returns a ticket if the user asked to forward a wrong answer."""
+    async def rate(self, user: UserContext, answer_id: str, good: bool, reason: str | None, forward: bool = False
+    ) -> TicketInfo | None:
+        """👍/👎; with forward=True (user pressed «Передать в службу качества») returns a ticket."""
         ...
 
 

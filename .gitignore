@@ -25,7 +25,9 @@ reports/
 !.env.example
 
 # Chainlit
-.chainlit/translations/
+# Chainlit copies stock translations here; only our Russian one is committed
+.chainlit/translations/*
+!.chainlit/translations/ru-RU.json
 .files/
 
 # OS / editors

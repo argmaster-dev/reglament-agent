@@ -1,0 +1,88 @@
+"""Start page `/start` with two role cards, served by the same FastAPI app as Chainlit."""
+
+from __future__ import annotations
+
+import html
+import os
+
+from fastapi import Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from reglament_agent.chat import session as S
+
+PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Агент по регламентам</title><style>
+body{{font-family:system-ui,sans-serif;max-width:760px;margin:6vh auto;padding:0 16px;color:#1b1b1b}}
+.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}}
+.card{{border:1px solid #c9c9c9;border-radius:12px;padding:20px}} h2{{margin-top:0}}
+button,select,input{{font:inherit;padding:8px 12px;margin-top:8px;width:100%;box-sizing:border-box}}
+button{{cursor:pointer;background:#1f5fbf;color:#fff;border:0;border-radius:8px}} .err{{color:#b00020}}
+</style></head><body><h1>Агент по регламентам</h1><p>Выберите, как вы хотите войти.</p><div class="cards">
+<form class="card" method="post" action="/start/employee"><h2>Сотрудник</h2>
+<p>Пароль не нужен. Диалог и профиль видны только вам.</p>
+<label>Подразделение (необязательно)<select name="department"><option value="">Без профиля</option>{options}</select></label>
+<button type="submit">Войти как сотрудник</button></form>
+<form class="card" method="post" action="/start/expert"><h2>Служба качества</h2>
+<p>Для экспертов: отвечают на обращения и пополняют базу.</p>{error}
+<label>Пароль<input type="password" name="password" required autocomplete="current-password"></label>
+<button type="submit">Войти как служба качества</button></form></div></body></html>"""
+
+
+def secret() -> str:
+    return os.environ["CHAINLIT_AUTH_SECRET"]
+
+
+def render_page(error: bool = False) -> str:
+    opts = "".join(f'<option value="{html.escape(d)}">{html.escape(d)}</option>' for d in S.DEPARTMENTS)
+    err = '<p class="err">Неверный пароль.</p>' if error else ""
+    return PAGE.format(options=opts, error=err)
+
+
+def _redirect(identity: S.Identity) -> RedirectResponse:
+    r = RedirectResponse("/", status_code=303)
+    r.set_cookie(S.COOKIE_NAME, S.sign_identity(identity, secret()), max_age=S.COOKIE_TTL, httponly=True, samesite="lax")
+    return r
+
+
+def install(app) -> None:
+    """Add routes and a redirect middleware in front of Chainlit's catch-all route."""
+    from starlette.routing import Route
+
+    async def start(request: Request):
+        if S.trusted_header():
+            return RedirectResponse("/", status_code=303)
+        resp = HTMLResponse(render_page(request.query_params.get("error") == "1"))
+        resp.delete_cookie(S.COOKIE_NAME)  # opening the start page = changing role
+        return resp
+
+    async def employee(department: str = Form("")):
+        if S.trusted_header():
+            return RedirectResponse("/", status_code=303)
+        dep = department if department in S.DEPARTMENTS else None
+        return _redirect(S.Identity(S.demo_email(), "employee", dep))
+
+    async def expert(password: str = Form("")):
+        if S.trusted_header() or not S.check_expert_password(password):
+            return RedirectResponse("/start?error=1", status_code=303)
+        return _redirect(S.Identity(S.demo_email().replace("demo-", "expert-"), "expert"))
+
+    from fastapi.routing import APIRoute
+
+    routes = [
+        APIRoute("/start", start, methods=["GET"], response_class=HTMLResponse),
+        APIRoute("/start/employee", employee, methods=["POST"]),
+        APIRoute("/start/expert", expert, methods=["POST"]),
+    ]
+    for i, r in enumerate(routes):
+        app.router.routes.insert(i, r)
+
+    @app.middleware("http")
+    async def need_start(request: Request, call_next):
+        if (
+            request.method == "GET"
+            and (request.url.path == "/" or request.url.path.startswith("/thread/"))
+            and not S.trusted_header()
+            and S.identity_from_headers(request.headers, secret()) is None
+        ):
+            return RedirectResponse("/start", status_code=303)
+        return await call_next(request)
