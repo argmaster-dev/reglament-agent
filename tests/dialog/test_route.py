@@ -347,3 +347,50 @@ def test_user_scope_is_not_taken_from_another_conversation(isolated):
         asyncio.run(route.answer(user, "А в Дирекции ИБ?", status))
         assert notes[-1] == (question, "Дирекция ИБ")
     assert asyncio.run(route.profiles.get(users[0].email)).department is None
+
+
+def test_swapped_column_from_generator_escalates_without_publishing_it(isolated):
+    import json
+    from dataclasses import replace
+
+    from reglament_agent.ingest.model import Block, BlockKind, Table
+
+    conn, dsn = isolated
+    cells = Table(["Обязательно", "При наличии"], [["Акт", "Пояснительная записка"]])
+    source = replace(
+        hit("Отдел", "Карточка проекта требует документов."),
+        sentences=[
+            "Карточка проекта требует документов.",
+            "Обязательно: Акт | При наличии: Пояснительная записка",
+        ],
+        blocks=[Block(BlockKind.TABLE, "", cells)],
+    )
+
+    class SwappedColumn(Model):
+        async def chat_json(self, messages, schema, **kw):
+            rows = json.loads(messages[1]["content"])["источники"]
+            optional = next(row for row in rows if row["колонка"] == "При наличии")
+            return SimpleNamespace(
+                data={
+                    "outcome": "answer",
+                    "claims": [
+                        {
+                            "ref": optional["ref"],
+                            "qualifier": "Обязательно",
+                            "text": "Пояснительная записка обязательна.",
+                        }
+                    ],
+                }
+            )
+
+    route = Dialog(dsn, SwappedColumn(), search=lambda *a, **kw: Candidates([source], []))
+    result = asyncio.run(
+        route.answer(
+            UserContext("user@example.org", "employee", "dlg", "1"),
+            "Какие документы обязательны для карточки проекта?",
+            status,
+        )
+    )
+    assert result.outcome == Outcome.NO_BASIS and result.ticket and not result.statements
+    trace = conn.execute("SELECT trace FROM dialog_requests WHERE id=%s", (result.answer_id,)).fetchone()[0]
+    assert "column_mismatch" in trace["dropped"]
