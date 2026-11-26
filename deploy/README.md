@@ -39,23 +39,30 @@ sudo loginctl enable-linger "$(id -un)"
 
 ## Запуск и публикация
 
-Команды выполнять из каталога этой копии репозитория. Имя проекта Compose отделяет тома и сети стенда от стендов разработки.
+Для выпуска возьмите имя опубликованного тега и полный SHA утверждённого коммита. Положите конфигурацию стенда в отдельный файл с правами 600. Если стенд уже работает, укажите его текущий файл с паролями. Сценарий клонирует тег из публичного репозитория, проверяет SHA и чистоту исходников и собирает образ. Без флага `--start` он завершится после сравнения контрольных сумм исходников в клоне и в собранном контейнере.
 
 ```sh
-export REGULATIONS_CADDYFILE_SHA256="$(sha256sum deploy/Caddyfile | cut -d ' ' -f 1)"
-docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml up -d --build --wait
-docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml ps --all
+python3 deploy/release.py "$RELEASE_TAG" "$APPROVED_SHA"
+```
+
+Для обновления запустите ту же команду с параметрами запуска. Сценарий использует имя проекта `reglament-stand`, существующие тома PostgreSQL и Mailpit и переданный файл конфигурации. Для нового стенда Compose создаст именованные тома при первом запуске.
+
+```sh
+python3 deploy/release.py "$RELEASE_TAG" "$APPROVED_SHA" --start --env-file "$STAND_ENV_FILE"
+docker ps --filter label=com.docker.compose.project=reglament-stand
 curl -fsS --user stand http://127.0.0.1:18800/health
 ```
 
-В примере `curl` предложит ввести пароль без отображения. Если вы изменили `STAND_BASIC_USER`, укажите своё имя вместо `stand`. Запросы без общего пароля получают 401. Прокси ограничивает multipart-запрос загрузки 21 МиБ с учётом метаданных формы. Сам файл DOCX приложение принимает до 20 МиБ.
+В разделе `build` ответа проверьте тег, SHA, время UTC, `dirty=false` и `source_digest`. Команда `python3 scripts/source_digest.py --root .` в независимом клоне того же тега должна вывести ту же сумму. Поле `image_digests` содержит идентификаторы конфигураций образов Docker (`image_id`). Для внешних образов также сохраняется закреплённая в Compose сумма манифеста реестра (`manifest_digest`). После запуска сценарий сверяет идентификаторы с фактическими контейнерами, включая завершившуюся миграцию. Квитанции `build.json` и `images.json` лежат в каталоге выпуска, путь к нему печатается на экране.
 
-После обновления `deploy/Caddyfile` пересчитайте `REGULATIONS_CADDYFILE_SHA256`. При необходимости примените новую конфигурацию командой `docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml up -d --no-deps --force-recreate gateway`. Она пересоздаёт только прокси. Тома базы и Mailpit остаются на месте.
+Каталоги выпусков по умолчанию сохраняются в `~/.local/share/reglament-stand/releases`. Текущий каталог нужен Caddy для подключения конфигурации. Для восстановления приложения на предыдущем выпуске выполните команду запуска с его тегом и SHA. Откат схемы PostgreSQL требует совместимости со старой версией приложения либо восстановления заранее подготовленной резервной копии.
+
+В примере `curl` предложит ввести пароль без отображения. Для изменённого `STAND_BASIC_USER` укажите своё имя. Запросы без общего пароля получают 401. Прокси ограничивает multipart-запрос загрузки 21 МиБ с учётом метаданных формы. Сам файл DOCX приложение принимает до 20 МиБ.
 
 При первом запуске `migrate` должен завершиться с кодом 0. Compose дожидается доступности очереди PostgreSQL и ответа SMTP на NOOP у почтового процесса. Отправку письма проверяйте отдельно через новое обращение. Один сотрудник может выполнять один ход одновременно во всех своих вкладках. По умолчанию приложение принимает до четырёх параллельных ходов, 12 ходов в минуту на сотрудника и 36 ходов в минуту на процесс. У модели один активный слот и до трёх запросов в очереди. Значения заданы в `.env.example`. Уже созданные данные сохраняются в томах PostgreSQL и Mailpit. Для первичного наполнения чистой БД можно запустить обычный импорт выданных материалов внутри контейнера.
 
 ```sh
-docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml exec -T app python -m reglament_agent.ingest load docx/
+docker exec reglament-stand-app-1 python -m reglament_agent.ingest load docx/
 ```
 
 Владелец tailnet авторизуется через браузер командой `sudo tailscale up`. Для публикации может потребоваться включить HTTPS и разрешить Funnel в tailnet. Перед публикацией проверьте `tailscale funnel status`, чтобы не заменить работающий маршрут на том же порту tailnet. Проверьте 401 без общего пароля на `/`, `/health`, `/admin` и WebSocket чата. Введите общий пароль и проверьте чат, ограничения запросов и загрузку DOCX.
@@ -65,7 +72,7 @@ sudo tailscale funnel --bg http://127.0.0.1:18800
 tailscale funnel status
 ```
 
-Впишите выданный HTTPS-адрес в `MAIL_PUBLIC_BASE_URL` и повторите `docker compose ... up -d` с теми же именем проекта и файлами. Тогда письма содержат точный адрес карточки обращения. Для проверки с телефона отключите VPN и Wi-Fi, откройте HTTPS-адрес, задайте вопрос и откройте источник. Войдите экспертом, откройте `/mail/` и проверьте доставку обращения.
+Впишите выданный HTTPS-адрес в `MAIL_PUBLIC_BASE_URL` и повторите команду запуска выпуска с теми же тегом, SHA и файлом конфигурации. Тогда письма содержат точный адрес карточки обращения. Для проверки с телефона отключите VPN и Wi-Fi, откройте HTTPS-адрес, задайте вопрос и откройте источник. Войдите экспертом, откройте `/mail/` и проверьте доставку обращения.
 
 ## После перезагрузки
 
@@ -73,11 +80,11 @@ tailscale funnel status
 systemctl is-active docker tailscaled
 systemctl --user is-active reglament-ollama.service reglament-ollama-proxy.socket
 tailscale funnel status
-docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml ps --all
+docker ps -a --filter label=com.docker.compose.project=reglament-stand
 curl -fsS --user stand http://127.0.0.1:18800/health
 ```
 
-Контейнеры с политикой `unless-stopped` запускаются вместе с Docker. `tailscale funnel --bg` сохраняет конфигурацию между перезапусками. Проверьте прежний HTTPS-адрес, запрос с источником и новое письмо. При отказе части приложения смотрите `checks` в `/health`, `docker compose ... logs --tail=100` для конкретного сервиса и `journalctl --user -u reglament-ollama.service`.
+Контейнеры с политикой `unless-stopped` запускаются вместе с Docker. `tailscale funnel --bg` сохраняет конфигурацию между перезапусками. Проверьте прежний HTTPS-адрес, запрос с источником и новое письмо. При отказе части приложения смотрите `checks` в `/health`, `docker logs --tail=100 reglament-stand-app-1` для приложения и `journalctl --user -u reglament-ollama.service`.
 
 Чтобы снять публикацию этого маршрута, используйте `sudo tailscale funnel --https=443 off`. Для остановки контейнеров с сохранением данных используйте `docker compose -p reglament-stand -f compose.yaml -f compose.stand.yaml stop`.
 
