@@ -13,12 +13,15 @@ The dialog logic is not here: this module only renders Answer objects (render.py
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
+import logging
 import os
 import secrets
 import time
 
 import chainlit as cl
 import httpx
+import psycopg
 
 # Chainlit needs a JWT secret for any auth; a random one is fine for a single dev process
 # (all sessions are dropped on restart). Set CHAINLIT_AUTH_SECRET for stable sessions.
@@ -34,11 +37,12 @@ from reglament_agent.admin import routes as admin_routes  # noqa: E402
 from reglament_agent.chat.services import build_services  # noqa: E402
 from reglament_agent.chat import notifications as N  # noqa: E402
 
+from reglament_agent.chat.history import router as history_router
 from reglament_agent.ops.health import router as health_router
 
 services = build_services()
 # Chainlit already registers /health. Give the dependency check precedence over its liveness handler.
-for route in reversed(health_router.routes):
+for route in reversed([*history_router.routes, *health_router.routes]):
     fastapi_app.router.routes.insert(0, route)
 start_page.install(fastapi_app)
 admin_routes.install(fastapi_app)
@@ -114,41 +118,68 @@ async def resume(thread) -> None:
     await deliver_notifications()
 
 
-async def _run(call, text: str, message_id: str) -> None:
-    """Run one answerer call with a progress message, then render the Answer."""
+TURN_TIMEOUT = 60
+
+
+async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
     if cl.user_session.get("busy"):
         await cl.Message(content=R.ERROR_TEXTS["busy"]).send()
         return
     cl.user_session.set("busy", True)
-    cl.user_session.set("last_text", text)
-    progress = cl.Message(content="⏳ Обрабатываю вопрос…")
-    await progress.send()
+    phase = "Обрабатываю вопрос…"
+    started = time.monotonic()
+    progress = cl.Message(content=f"⏳ {phase}")
+    lock = asyncio.Lock()
 
-    async def on_status(s: str) -> None:
-        progress.content = f"⏳ {s}"
-        await progress.update()
+    async def update_status(label=None):
+        nonlocal phase
+        async with lock:
+            if label is not None:
+                phase = label
+            progress.content = f"⏳ {phase} · {int(time.monotonic() - started)} с"
+            await progress.update()
 
+    async def heartbeat():
+        while True:
+            await asyncio.sleep(2)
+            await update_status()
+
+    clock = None
     try:
-        answer: Answer = await call(on_status)
-        await progress.remove()
-        await _show(answer, text, message_id)
-    except httpx.TimeoutException:
-        await _fail(progress, "timeout")
-    except httpx.HTTPStatusError:
-        await _fail(progress, "http")
-    except httpx.RequestError:
-        await _fail(progress, "unavailable")
+        await progress.send()
+        clock = asyncio.create_task(heartbeat())
+        method = services.answerer.choose if choice else services.answerer.answer
+        try:
+            async with asyncio.timeout(TURN_TIMEOUT):
+                answer = await method(_user(message_id), text, update_status)
+            error = "unavailable" if answer.outcome == Outcome.ERROR else None
+        except (TimeoutError, httpx.TimeoutException):
+            error = "timeout"
+        except (httpx.RequestError, httpx.HTTPStatusError, psycopg.Error):
+            logging.getLogger(__name__).exception("Chat request failed")
+            error = "unavailable"
+        finally:
+            clock.cancel()
+            with suppress(asyncio.CancelledError):
+                await clock
+        if error:
+            progress.content = f"⚠️ {R.ERROR_TEXTS[error]} · {int(time.monotonic() - started)} с"
+            spec = R.ActionSpec(
+                "retry", "🔁 Повторить", {"text": text, "message_id": message_id, "choice": choice}
+            )
+            progress.actions = _actions([spec])
+            await progress.update()
+        else:
+            await progress.remove()
+            await _show(answer, text, message_id)
     except asyncio.CancelledError:
-        await _fail(progress, "cancelled")
+        if clock:
+            clock.cancel()
+        progress.content = R.ERROR_TEXTS["cancelled"]
+        await progress.update()
         raise
     finally:
         cl.user_session.set("busy", False)
-
-
-async def _fail(progress: cl.Message, kind: str) -> None:
-    progress.content = R.ERROR_TEXTS[kind]
-    progress.actions = _actions(R.answer_actions(Answer(Outcome.ERROR), cl.user_session.get("last_text", ""), cl.user_session.get("last_mid", "")))
-    await progress.update()
 
 
 async def clear_clarification():
@@ -162,11 +193,23 @@ async def clear_clarification():
 async def _show(answer: Answer, text: str, message_id: str) -> None:
     await clear_clarification()
     names = R.assign_chip_names(answer)
-    specs = R.source_actions(names) + R.clarify_actions(answer) + R.answer_actions(answer, text, message_id)
+    specs = R.clarify_actions(answer) + R.answer_actions(answer, text, message_id)
     if answer.outcome is Outcome.CLARIFY:
         specs = R.clarify_actions(answer)
-    msg = cl.Message(content=R.answer_markdown(answer, names), actions=_actions(specs))
+    evidence = R.evidence_groups(answer, names)
+    elements = (
+        [cl.CustomElement(name="AnswerEvidence", display="inline", props={"groups": evidence})]
+        if evidence
+        else []
+    )
+    msg = cl.Message(content="", elements=elements)
+    # Only verified statements reach the stream; raw model tokens may still lose their basis.
+    for part in R.answer_markdown(answer, names, separate_evidence=bool(evidence)).splitlines(keepends=True):
+        await msg.stream_token(part)
+    msg.actions = _actions(specs)
     await msg.send()
+    if answer.answer_id and answer.outcome != Outcome.CLARIFY:
+        cl.user_session.set("last_answer_id", answer.answer_id)
     if answer.outcome is Outcome.CLARIFY:
         cl.user_session.set("clarify_msg", msg)
 
@@ -175,11 +218,14 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
 async def on_message(message: cl.Message) -> None:
     await deliver_notifications()
     text = message.content.strip()
+    if text == "/feedback":
+        await open_feedback(cl.user_session.get("last_answer_id"))
+        return
     if not 3 <= len(text) <= 2000:
         await cl.Message(content="Введите вопрос длиной от 3 до 2000 символов.").send()
         return
     cl.user_session.set("last_mid", message.id)
-    await _run(lambda st: services.answerer.answer(_user(message.id), text, st), text, message.id)
+    await _run(text, message.id)
 
 
 @cl.action_callback("example")
@@ -188,14 +234,18 @@ async def example(action: cl.Action) -> None:
     msg = cl.Message(content=text, author="user", type="user_message")
     await msg.send()
     cl.user_session.set("last_mid", msg.id)
-    await _run(lambda st: services.answerer.answer(_user(msg.id), text, st), text, msg.id)
+    await _run(text, msg.id)
 
 
 @cl.action_callback("retry")
 async def retry(action: cl.Action) -> None:
+    if cl.user_session.get("busy"):
+        return
     text, mid = action.payload["text"], action.payload["message_id"]
     await action.remove()
-    await _run(lambda st: services.answerer.answer(_user(mid), text, st), text, mid)  # same message id
+    if action.forId:
+        await cl.Message(content="", id=action.forId).remove()
+    await _run(text, mid, choice=action.payload.get("choice", False))
 
 
 @cl.action_callback("choose")
@@ -206,7 +256,7 @@ async def choose(action: cl.Action) -> None:
         return
     await clear_clarification()
     await cl.Message(content=option, author="user", type="user_message").send()
-    await _run(lambda st: services.answerer.choose(_user(action.id), option, st), option, action.id)
+    await _run(option, action.id, choice=True)
 
 
 @cl.action_callback("open_source")
@@ -217,7 +267,9 @@ async def open_source(action: cl.Action) -> None:
     except (ValueError, LookupError):
         await cl.Message(content="Источник обновлён или недоступен. Задайте вопрос ещё раз.").send()
         return
-    await cl.ElementSidebar.set_elements([cl.Text(name=ref.label, content=R.point_markdown(pv), display="side")])
+    await cl.ElementSidebar.set_elements(
+        [cl.CustomElement(name="SourcePoint", props=R.point_panel(pv), display="side")]
+    )
     await cl.ElementSidebar.set_title(ref.label)
 
 
@@ -228,51 +280,86 @@ async def rate_up(action: cl.Action) -> None:
     await cl.Message(content="Спасибо за оценку.").send()
 
 
+async def open_feedback(answer_id):
+    if not answer_id:
+        await cl.Message(content="Сначала задайте вопрос. Отзыв относится к конкретному ответу.").send()
+        return
+    panel = cl.CustomElement(
+        name="AnswerFeedback", display="side", props={"answer_id": answer_id, "reasons": R.DOWN_REASONS}
+    )
+    await cl.ElementSidebar.set_elements([panel])
+    await cl.ElementSidebar.set_title("Отзыв об ответе")
+
+
 @cl.action_callback("rate_down")
 async def rate_down(action: cl.Action) -> None:
-    await action.remove()
-    await cl.Message(content="Что не так с ответом?", actions=_actions(R.reason_actions(action.payload["answer_id"]))).send()
+    await open_feedback(action.payload["answer_id"])
 
 
-@cl.action_callback("rate_reason")
-async def rate_reason(action: cl.Action) -> None:
-    aid, reason = action.payload["answer_id"], action.payload["reason"]
-    await services.answerer.rate(_user(), aid, False, reason)
-    await action.remove()
-    await cl.Message(
-        content=f"Записал: «{reason}». Могу передать вопрос в службу качества.",
-        actions=_actions([R.forward_action(aid, reason)]),
-    ).send()
+@cl.action_callback("save_feedback")
+async def save_feedback(action: cl.Action):
+    data = action.payload
+    reason, comment = data.get("reason"), data.get("comment", "")
+    if reason not in R.DOWN_REASONS or not isinstance(comment, str) or len(comment) > 1500:
+        raise ValueError("Проверьте причину и длину комментария.")
+    full = reason if not comment.strip() else f"{reason}. {comment.strip()}"
+    await services.answerer.rate(_user(), data["answer_id"], False, full)
+    if reason in ("Неверно", "Неполно"):
+        await cl.Message(
+            content="Отзыв сохранён. Передать вопрос службе качества?",
+            actions=_actions([R.forward_action(data["answer_id"], full)]),
+        ).send()
 
 
 @cl.action_callback("rate_forward")
 async def rate_forward(action: cl.Action) -> None:
-    ticket = await services.answerer.rate(_user(), action.payload["answer_id"], False, action.payload["reason"], forward=True)
+    ticket = await services.answerer.rate(
+        _user(), action.payload["answer_id"], False, action.payload["reason"], forward=True
+    )
     await action.remove()
-    await cl.Message(content=R.ticket_card(ticket) if ticket else "Не удалось создать обращение, попробуйте позже.").send()
+    await cl.Message(
+        content=R.ticket_card(ticket) if ticket else "Не удалось создать обращение, попробуйте позже."
+    ).send()
 
 
 @cl.action_callback("change_scope")
 async def change_scope(action: cl.Action) -> None:
-    specs = [R.ActionSpec("set_department", d, {"department": d, "text": action.payload["text"]}) for d in S.DEPARTMENTS]
+    if not current_scope_action(action):
+        await cl.Message(content="Чтобы вернуться к прежнему вопросу, задайте его ещё раз.").send()
+        return
+    specs = [
+        R.ActionSpec("set_department", d, {"department": d, "answer_id": action.payload["answer_id"]})
+        for d in S.DEPARTMENTS
+    ]
     await cl.Message(content="Для какого подразделения ответить?", actions=_actions(specs)).send()
+
+
+def current_scope_action(action: cl.Action) -> bool:
+    return bool(
+        action.payload.get("answer_id")
+        and action.payload["answer_id"] == cl.user_session.get("last_answer_id")
+        and not cl.user_session.get("clarify_msg")
+        and not cl.user_session.get("busy")
+    )
 
 
 @cl.action_callback("set_department")
 async def set_department(action: cl.Action) -> None:
-    u = _user()
-    await services.profiles.set_department(u.email, action.payload["department"])
+    department = action.payload.get("department")
+    if department not in S.DEPARTMENTS or not current_scope_action(action):
+        return
     await action.remove()
-    text = action.payload["text"]
-    await cl.Message(content=f"Подразделение: {action.payload['department']}. Отвечаю заново.").send()
-    mid = f"{cl.user_session.get('last_mid', '')}:{secrets.token_hex(3)}"  # new id: this is a new request
-    await _run(lambda st: services.answerer.answer(_user(mid), text, st), text, mid)
+    msg = cl.Message(content=f"А в подразделении {department}?", author="user", type="user_message")
+    await msg.send()
+    await _run(msg.content, msg.id)
 
 
 @cl.action_callback("show_profile")
 async def show_profile(action: cl.Action) -> None:
     p = await services.profiles.get(_user().email)
-    await cl.Message(content=R.profile_markdown(p), actions=_actions([R.ActionSpec("reset_profile", "Сбросить", {})])).send()
+    await cl.Message(
+        content=R.profile_markdown(p), actions=_actions([R.ActionSpec("reset_profile", "Сбросить", {})])
+    ).send()
 
 
 @cl.action_callback("reset_profile")

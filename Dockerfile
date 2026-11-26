@@ -7,6 +7,7 @@ RUN useradd --create-home --uid 10001 app
 WORKDIR /app
 
 COPY pyproject.toml uv.lock LICENSE README.md ./
+COPY public ./public
 COPY .chainlit ./.chainlit
 COPY chainlit.md chainlit_ru.md ./
 COPY src ./src

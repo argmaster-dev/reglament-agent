@@ -83,3 +83,23 @@ class GenerationSlot:
         finally:
             self.active -= 1
             self._grant()
+
+
+@asynccontextmanager
+async def generation_progress(send):
+    """Deliver slot events in order, in the requesting session's async context."""
+    positions = asyncio.Queue()
+
+    async def deliver():
+        while (position := await positions.get()) is not None:
+            try:
+                await send(f"В очереди: {position}" if position else "Формирую ответ…")
+            except Exception:
+                log.exception("Could not display generation progress")
+
+    task = asyncio.create_task(deliver())
+    try:
+        yield positions.put_nowait
+    finally:
+        positions.put_nowait(None)
+        await task

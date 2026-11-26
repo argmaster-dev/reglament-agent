@@ -17,6 +17,7 @@ from reglament_agent.answer import (
     Statement,
     Variant,
 )
+from reglament_agent.model.queue import generation_progress
 from reglament_agent.model.ollama import ModelError, ModelOutputError, OllamaClient
 from reglament_agent.quality.faq import PublishedFaqStore
 from reglament_agent.quality.mail import MailSettings
@@ -254,13 +255,16 @@ class Dialog:
         messages, schema = grounding.prompt(question, items, variants)
         await status("Проверяю ответ по найденным пунктам…")
         trace["steps"].append("select")
-        response = await self.model.chat_json(
-            messages,
-            schema,
-            step="select",
-            request_id=request_id,
-            options={"num_predict": 1400, "temperature": 0},
-        )
+        async with generation_progress(status) as notify:
+            response = await self.model.chat_json(
+                messages,
+                schema,
+                step="select",
+                request_id=request_id,
+                on_position=notify,
+                on_start=lambda: notify(0),
+                options={"num_predict": 1400, "temperature": 0},
+            )
         data = response.data
         if (
             data.get("outcome") not in grounding.MODEL_OUTCOMES

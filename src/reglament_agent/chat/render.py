@@ -46,7 +46,7 @@ WELCOME = (
     "Здравствуйте! Я помогаю найти ответ в регламентах компании: отвечаю коротко и даю ссылки на пункты.\n\n"
     "Если ответ зависит от подразделения, я уточню. Если в регламентах ответа нет, "
     "передам вопрос в службу качества, а ответ придёт в этот диалог.\n\n"
-    "Напишите вопрос или выберите пример:"
+    "Напишите вопрос или выберите пример. [Мои диалоги](/history) · Отзыв о последнем ответе: /feedback"
 )
 
 
@@ -68,11 +68,20 @@ def outcome_label(answer: Answer) -> str:
 
 
 def scope_line(scope: Scope) -> str | None:
-    if not scope.department:
+    labels = [
+        s
+        for s in (
+            scope.department,
+            {"project": "реализация", "presale": "пресейл"}.get(scope.stage, scope.stage),
+        )
+        if s
+    ]
+    if not labels:
         return None
     origin = ORIGIN_TEXT.get(scope.origin)
     where = f" ({origin})" if origin else ""
-    return f"Отвечаю для: {scope.department}{where} · Изменить"
+    change = " · Изменить" if scope.department else ""
+    return f"Отвечаю для: {', '.join(labels)}{where}{change}"
 
 
 def chip(ref: SourceRef) -> str:
@@ -128,7 +137,23 @@ def ticket_card(t: TicketInfo) -> str:
     return "\n".join(lines)
 
 
-def answer_markdown(answer: Answer, names: dict[SourceRef, str] | None = None) -> str:
+def evidence_groups(answer: Answer, names: dict[SourceRef, str]) -> list[dict]:
+    def items(statements):
+        return [
+            {"text": s.text, "refs": [{"label": names[ref], "source": ref_payload(ref)} for ref in s.sources]}
+            for s in statements
+        ]
+
+    groups = [{"label": "", "items": items(answer.statements)}] if answer.statements else []
+    groups.extend(
+        {"label": v.department, "items": items(v.statements), "empty": EMPTY_VARIANT} for v in answer.variants
+    )
+    return groups
+
+
+def answer_markdown(
+    answer: Answer, names: dict[SourceRef, str] | None = None, *, separate_evidence=False
+) -> str:
     names = names if names is not None else assign_chip_names(answer)
     parts: list[str] = []
     if answer.outcome is Outcome.LOW_CONFIDENCE:
@@ -141,6 +166,9 @@ def answer_markdown(answer: Answer, names: dict[SourceRef, str] | None = None) -
         parts.append("Не удалось получить ответ, вопрос сохранён. Нажмите «Повторить».")
     elif answer.outcome is Outcome.CLARIFY and answer.clarification:
         parts.append(answer.clarification.question)
+    elif separate_evidence:
+        if answer.summary and not any(answer.summary == s.text for s in _all_statements(answer)):
+            parts.append(answer.summary)
     else:
         remaining = answer.statements
         if remaining and answer.summary == remaining[0].text:
@@ -161,15 +189,53 @@ def answer_markdown(answer: Answer, names: dict[SourceRef, str] | None = None) -
     return "\n\n".join(parts)
 
 
-def point_markdown(pv: PointView) -> str:
-    sents = [f"**▌{s}▐**" if i == pv.highlight else s for i, s in enumerate(pv.sentences)]
-    lines = [f"**{pv.doc_title}** ({pv.department})", " › ".join(pv.path), "", " ".join(sents)]
-    if pv.column:
-        lines += ["", f"Столбец таблицы: {pv.column}"]
-    lines += ["", f"Версия {pv.version_no}, загружена {pv.uploaded_at}"]
-    if pv.neighbours:
-        lines += ["", "Рядом:"] + [f"- {n}: {t}" for n, t in pv.neighbours]
-    return "\n".join(lines)
+def point_panel(pv: PointView) -> dict:
+    """Keep the precise sentence and table cell separate from surrounding context."""
+    stages = {"project": "реализация", "presale": "пресейл"}
+    tables = [block.table for block in pv.blocks if block.table]
+    entries = []
+    for index, sentence in enumerate(pv.sentences):
+        selected = index == pv.highlight
+        if any(sentence == " | ".join(t.headers) for t in tables):
+            continue
+        cells = []
+        for table in tables:
+            row = next(
+                (
+                    row
+                    for row in table.rows
+                    if any(cell.strip() for cell in row)
+                    and all(
+                        f"{header}: {cell}" in sentence
+                        for header, cell in zip(table.headers, row)
+                        if cell.strip()
+                    )
+                ),
+                None,
+            )
+            if row is not None:
+                cells = [
+                    {
+                        "header": header,
+                        "text": cell,
+                        "selected": selected and (not pv.column or header == pv.column),
+                    }
+                    for header, cell in zip(table.headers, row)
+                    if cell.strip()
+                ]
+                break
+        entries.append({"text": sentence, "selected": selected and not pv.column, "cells": cells})
+    return {
+        "title": pv.doc_title,
+        "path": pv.path,
+        "department": pv.department,
+        "stages": [stages.get(stage, stage) for stage in pv.stages],
+        "version": pv.version_no,
+        "uploaded": pv.uploaded_at[:10],
+        "column": pv.column,
+        "entries": entries,
+        "neighbours": pv.neighbours,
+    }
 
 
 def clarify_actions(answer: Answer) -> list[ActionSpec]:
@@ -188,8 +254,8 @@ def answer_actions(answer: Answer, message_text: str, message_id: str) -> list[A
             ActionSpec("rate_up", "👍", {"answer_id": answer.answer_id}),
             ActionSpec("rate_down", "👎", {"answer_id": answer.answer_id}),
         ]
-    if answer.scope.department:
-        acts.append(ActionSpec("change_scope", "Изменить подразделение", {"text": message_text}))
+    if answer.scope.department and answer.answer_id:
+        acts.append(ActionSpec("change_scope", "Изменить подразделение", {"answer_id": answer.answer_id}))
     return acts
 
 
@@ -221,10 +287,7 @@ def profile_markdown(p: Profile) -> str:
 
 
 def expert_notice() -> str:
-    return (
-        "Вы вошли как служба качества. Страницы администрирования (журнал, очередь обращений, FAQ) "
-        "появятся позже: [/admin](/admin). Пока вы можете пользоваться чатом как сотрудник."
-    )
+    return "Служба качества · [Обращения](/admin/tickets) · [FAQ](/admin/faq) · [Документы](/admin/documents)"
 
 
 def ref_payload(ref: SourceRef) -> dict:
@@ -242,9 +305,9 @@ def source_actions(names: dict[SourceRef, str]) -> list[ActionSpec]:
 
 
 ERROR_TEXTS = {
-    "timeout": "Ответ не получен за отведённое время. Попробуйте задать вопрос ещё раз.",
+    "timeout": "Ответ не получен за отведённое время. Вопрос сохранён для повтора. Нажмите «Повторить».",
     "http": "Сервис не смог обработать запрос. Повторите попытку позже.",
-    "unavailable": "Сервис ответов сейчас недоступен. Повторите вопрос чуть позже.",
+    "unavailable": "Сервис ответов сейчас недоступен. Вопрос сохранён для повтора. Нажмите «Повторить».",
     "cancelled": "Запрос остановлен.",
     "busy": "Дождитесь ответа на предыдущий вопрос.",
 }

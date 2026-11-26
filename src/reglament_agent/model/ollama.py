@@ -153,6 +153,7 @@ class OllamaClient:
         request_id: str | None = None,
         options: dict | None = None,
         on_position: Callable[[int], None] | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> ChatResult:
         s = self.settings
         rec = CallRecord(request_id, step, "chat", s.chat_model)
@@ -175,6 +176,8 @@ class OllamaClient:
         try:
             async with self.slot.acquire(on_position) as ticket:
                 rec.queue_ms = ticket.queue_ms
+                if on_start:
+                    on_start()
                 body = await self._post("/api/chat", payload)
             raw = (body.get("message") or {}).get("content") or ""
             rec.prompt_tokens = body.get("prompt_eval_count") or 0

@@ -9,6 +9,7 @@ from fastapi import Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from reglament_agent.chat import session as S
+from reglament_agent.chat.render import EXAMPLES
 
 PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Агент по регламентам</title><style>
@@ -17,15 +18,16 @@ body{{font-family:system-ui,sans-serif;max-width:760px;margin:6vh auto;padding:0
 .card{{border:1px solid #c9c9c9;border-radius:12px;padding:20px}} h2{{margin-top:0}}
 button,select,input{{font:inherit;padding:8px 12px;margin-top:8px;width:100%;box-sizing:border-box}}
 button{{cursor:pointer;background:#1f5fbf;color:#fff;border:0;border-radius:8px}} .err{{color:#b00020}}
-</style></head><body><h1>Агент по регламентам</h1><p>Выберите, как вы хотите войти.</p><div class="cards">
+@media(max-width:560px){{.cards{{grid-template-columns:minmax(0,1fr)}} body{{margin:16px}}}} li{{margin:.45em 0}}
+</style></head><body><h1>Агент по регламентам</h1><p>Ответы по рабочим регламентам со ссылками на основания.</p><div class="cards">
 <form class="card" method="post" action="/start/employee"><h2>Сотрудник</h2>
 <p>Пароль не нужен. Диалог и профиль видны только вам.</p>
 <label>Подразделение (необязательно)<select name="department"><option value="">Без профиля</option>{options}</select></label>
 <button type="submit">Войти как сотрудник</button></form>
 <form class="card" method="post" action="/start/expert"><h2>Служба качества</h2>
-<p>Для экспертов: отвечают на обращения и пополняют базу.</p>{error}
+<p>Обращения сотрудников, ответы экспертов, FAQ и документы.</p>{error}
 <label>Пароль<input type="password" name="password" required autocomplete="current-password"></label>
-<button type="submit">Войти как служба качества</button></form></div></body></html>"""
+<button type="submit">Войти как служба качества</button></form></div><section><h2>Примеры вопросов</h2><ul>{examples}</ul></section><p>Для одновременной проверки роли сотрудника и эксперта откройте вторую роль в другом браузере или приватном окне.</p></body></html>"""
 
 
 def secret() -> str:
@@ -35,7 +37,8 @@ def secret() -> str:
 def render_page(error: bool = False) -> str:
     opts = "".join(f'<option value="{html.escape(d)}">{html.escape(d)}</option>' for d in S.DEPARTMENTS)
     err = '<p class="err">Неверный пароль.</p>' if error else ""
-    return PAGE.format(options=opts, error=err)
+    questions = [*EXAMPLES, "Кто подписывает договор с субподрядчиком?", "Что такое ТКП?"]
+    return PAGE.format(options=opts, error=err, examples="".join(f"<li>{html.escape(q)}</li>" for q in questions))
 
 
 def _redirect(request: Request, identity: S.Identity) -> RedirectResponse:
