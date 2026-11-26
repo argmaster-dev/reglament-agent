@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from psycopg import Connection
 
+from reglament_agent.ingest.text import normalize
 from reglament_agent.storage.search import search
 
 
@@ -26,8 +27,11 @@ def selfcheck(conn: Connection, doc_id: str, progress: Callable[[int, int], None
         if first is not None and first.point_id == point_id:
             top1 += 1
         else:
-            top1_misses.append({"number": number, "text": text, "first_number": first.number if first else None,
-                                "first_title": first.doc_title if first else None})
+            miss = {"number": number, "text": text}
+            if first:
+                miss.update(first_number=first.number, first_title=first.doc_title, first_text=first.text,
+                            same_text=normalize(first.text) == normalize(text))
+            top1_misses.append(miss)
         if progress and (i % 10 == 0 or i == total):
             progress(i, total)
     return {"found": found, "total": total, "top1": top1, "misses": misses, "top1_misses": top1_misses}

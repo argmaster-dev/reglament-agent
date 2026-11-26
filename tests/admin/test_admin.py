@@ -64,7 +64,7 @@ def test_upload_publish_selfcheck_and_duplicate(env):
     assert row[0] == "ready", env.execute("SELECT error FROM ingest_jobs").fetchone()
     check = row[3]
     assert check["total"] == 171  # level>1 points of the TD regulation; 24 section headings excluded
-    assert check["found"] >= check["total"] - 2
+    assert check["top1"] == check["found"] == check["total"]
     assert len(check["top1_misses"]) == check["total"] - check["top1"]
     assert {m["number"] for m in check["misses"]} <= {m["number"] for m in check["top1_misses"]}
     page = c.get(f"/admin/jobs/{job}").text

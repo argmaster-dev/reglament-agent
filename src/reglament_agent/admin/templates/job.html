@@ -34,7 +34,10 @@
 {% if misses %}<details><summary>{% if check.top1_misses is defined %}Пункты, которые не заняли первое место{% else %}Пункты вне первой тройки{% endif %} ({{ misses|length }})</summary>
 <ul>{% for m in misses %}<li>
 <b>Пункт {{ m.number }}</b> · {{ m.text }}
-{% if m.first_number %}<br><span class="muted">На первом месте «{{ m.first_title }}», п. {{ m.first_number }}.</span>{% endif %}
+{% if m.first_number %}<br><span class="muted">На первом месте «{{ m.first_title }}», п. {{ m.first_number }}.
+{% if m.same_text %}Текст совпадает после нормализации.
+{% elif m.first_text %}Текст первого результата: «{{ m.first_text | truncate(220) }}».
+{% endif %}</span>{% endif %}
 </li>{% endfor %}</ul></details>{% endif %}
 {% endif %}
 {% if stats.faq_review %}<p>Отправлено на проверку записей FAQ: {{ stats.faq_review }}.</p>{% endif %}
