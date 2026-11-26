@@ -296,17 +296,25 @@ def test_escalation_reasons_match_delivery(isolated):
 
 
 def test_product_entrypoint_registers_health_and_uses_product_database(isolated, monkeypatch, tmp_path):
-    from importlib import import_module
+    import subprocess
+    import sys
+    from textwrap import dedent
 
     _, dsn = isolated
     monkeypatch.setenv("CHAINLIT_APP_ROOT", str(tmp_path))
     monkeypatch.setenv("DATABASE_URL", dsn)
     monkeypatch.setenv("CHAT_SERVICES_FACTORY", "reglament_agent.dialog.services:build_services")
-    app = import_module("reglament_agent.chat.app")
-    assert isinstance(app.services.answerer, Dialog)
-    assert app.channel_storage() is None
-    first = next(r for r in app.fastapi_app.router.routes if getattr(r, "path", "") == "/health")
-    assert first.endpoint.__module__ == "reglament_agent.ops.health"
+    # Startup configuration is read once per process, including during an ordinary server restart.
+    check = dedent("""
+        from reglament_agent.chat import app
+        from reglament_agent.dialog.route import Dialog
+
+        assert isinstance(app.services.answerer, Dialog)
+        assert app.channel_storage() is None
+        health = next(r for r in app.fastapi_app.router.routes if getattr(r, "path", "") == "/health")
+        assert health.endpoint.__module__ == "reglament_agent.ops.health"
+    """)
+    subprocess.run([sys.executable, "-c", check], check=True)
 
 
 def test_user_scope_is_not_taken_from_another_conversation(isolated):
