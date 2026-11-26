@@ -9,7 +9,7 @@ services:
       - "127.0.0.1:${REGULATIONS_DB_PORT:-5432}:5432"
     volumes:
       - regulation_data:/var/lib/postgresql/data
-    networks: [backend]
+    networks: [backend, local_access]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U regulations -d regulations"]
       interval: 5s
@@ -17,11 +17,17 @@ services:
       retries: 10
   mailpit:
     image: axllent/mailpit@sha256:ed9b00c609e77e99c79b93f1178255ebc271868920f2c69a8d166bd5634ed10d
-    networks: [backend]
+    networks: [backend, local_access]
     ports:
       - "127.0.0.1:${REGULATIONS_MAIL_PORT:-8026}:8025"
 networks:
   backend:
     internal: true
+  # Docker publishes host ports only on a non-internal bridge.
+  # Every published port above binds to the host loopback interface.
+  local_access:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
 volumes:
   regulation_data:
