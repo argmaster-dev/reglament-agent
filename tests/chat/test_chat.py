@@ -75,7 +75,8 @@ def test_demo_email_unique():
 
 
 def test_expert_password():
-    assert S.check_expert_password("demo-expert", {})
+    assert not S.check_expert_password("demo-expert", {})
+    assert not S.check_expert_password("", {"CHAT_EXPERT_PASSWORD": ""})
     assert not S.check_expert_password("nope", {})
     env = {"CHAT_EXPERT_PASSWORD": "xyz"}
     assert S.check_expert_password("xyz", env) and not S.check_expert_password("demo-expert", env)

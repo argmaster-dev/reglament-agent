@@ -1,0 +1,35 @@
+# Public demo. Publish only Caddy's loopback port. Tailscale terminates TLS.
+services:
+  app:
+    ports: !reset []
+    environment:
+      CHAT_TRUSTED_HEADER: ""
+      CHAT_SECURE_COOKIES: "true"
+      CHAINLIT_COOKIE_SAMESITE: none
+      MAIL_UI_URL: /mail/
+    networks: [backend, local_access]
+  postgres:
+    ports: !reset []
+    networks: [backend]
+  mailpit:
+    ports: !reset []
+    networks: [backend]
+    environment:
+      MP_WEBROOT: /mail/
+  gateway:
+    image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${STAND_PORT:-18800}:8080"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks: [backend, local_access]
+networks:
+  local_access:
+    ipam:
+      config:
+        - subnet: ${STAND_SUBNET:-172.28.71.0/24}
+          gateway: ${STAND_GATEWAY:-172.28.71.1}

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import html
 import os
+from collections import deque
+from math import ceil
+from time import monotonic
 
 from fastapi import Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from reglament_agent.chat import session as S
 from reglament_agent.chat.render import EXAMPLES
@@ -24,21 +27,31 @@ button{{cursor:pointer;background:#1f5fbf;color:#fff;border:0;border-radius:8px}
 <p>Пароль не нужен. Диалог и профиль видны только вам.</p>
 <label>Подразделение (необязательно)<select name="department"><option value="">Без профиля</option>{options}</select></label>
 <button type="submit">Войти как сотрудник</button></form>
-<form class="card" method="post" action="/start/expert"><h2>Служба качества</h2>
+<form class="card" method="post" action="/start/expert"><h2>Служба качества</h2>{availability}
 <p>Обращения сотрудников, ответы экспертов, FAQ и документы.</p>{error}
-<label>Пароль<input type="password" name="password" required autocomplete="current-password"></label>
-<button type="submit">Войти как служба качества</button></form></div><section><h2>Примеры вопросов</h2><ul>{examples}</ul></section><p>Для одновременной проверки роли сотрудника и эксперта откройте вторую роль в другом браузере или приватном окне.</p></body></html>"""
+<label>Пароль<input type="password" name="password" required maxlength="512" autocomplete="current-password" {disabled}></label>
+<button type="submit" {disabled}>Войти как служба качества</button></form></div><section><h2>Примеры вопросов</h2><ul>{examples}</ul></section><p>Для одновременной проверки роли сотрудника и эксперта откройте вторую роль в другом браузере или приватном окне.</p></body></html>"""
 
 
 def secret() -> str:
     return os.environ["CHAINLIT_AUTH_SECRET"]
 
 
-def render_page(error: bool = False) -> str:
+def render_page(error: bool = False, expert_enabled: bool = True) -> str:
     opts = "".join(f'<option value="{html.escape(d)}">{html.escape(d)}</option>' for d in S.DEPARTMENTS)
     err = '<p class="err">Неверный пароль.</p>' if error else ""
     questions = [*EXAMPLES, "Кто подписывает договор с субподрядчиком?", "Что такое ТКП?"]
-    return PAGE.format(options=opts, error=err, examples="".join(f"<li>{html.escape(q)}</li>" for q in questions))
+    return PAGE.format(
+        options=opts,
+        error=err,
+        availability="" if expert_enabled else "<p>Вход службы качества отключён.</p>",
+        disabled="" if expert_enabled else "disabled",
+        examples="".join(f"<li>{html.escape(q)}</li>" for q in questions),
+    )
+
+
+def _secure_cookie(request: Request) -> bool:
+    return os.environ.get("CHAT_SECURE_COOKIES") == "true" or request.url.scheme == "https"
 
 
 def _redirect(request: Request, identity: S.Identity) -> RedirectResponse:
@@ -46,22 +59,27 @@ def _redirect(request: Request, identity: S.Identity) -> RedirectResponse:
 
     r = RedirectResponse("/", status_code=303)
     clear_auth_cookie(request, r)
-    r.set_cookie(S.COOKIE_NAME, S.sign_identity(identity, secret()), max_age=S.COOKIE_TTL, httponly=True, samesite="lax")
+    r.set_cookie(
+        S.COOKIE_NAME, S.sign_identity(identity, secret()), max_age=S.COOKIE_TTL,
+        httponly=True, secure=_secure_cookie(request), samesite="lax",
+    )
     return r
 
 
 def install(app) -> None:
     """Add routes and a redirect middleware in front of Chainlit's catch-all route."""
-    from starlette.routing import Route
+    failed_attempts: deque[float] = deque()
+    window_seconds = 60
+    attempts_per_window = 5
 
     async def start(request: Request):
         if S.trusted_header():
             return RedirectResponse("/", status_code=303)
-        resp = HTMLResponse(render_page(request.query_params.get("error") == "1"))
+        resp = HTMLResponse(render_page(request.query_params.get("error") == "1", bool(S.expert_password())))
         from chainlit.auth.cookie import clear_auth_cookie
 
         clear_auth_cookie(request, resp)
-        resp.delete_cookie(S.COOKIE_NAME)  # opening the start page = changing role
+        resp.delete_cookie(S.COOKIE_NAME, secure=_secure_cookie(request), httponly=True)
         return resp
 
     async def employee(request: Request, department: str = Form("")):
@@ -70,10 +88,28 @@ def install(app) -> None:
         dep = department if department in S.DEPARTMENTS else None
         return _redirect(request, S.Identity(S.demo_email(), "employee", dep))
 
-    async def expert(request: Request, password: str = Form("")):
-        if S.trusted_header() or not S.check_expert_password(password):
+    async def expert(request: Request, password: str = Form("", max_length=512)):
+        if S.trusted_header() or not S.expert_password():
+            return Response(status_code=403)
+        now = monotonic()
+        while failed_attempts and now - failed_attempts[0] >= window_seconds:
+            failed_attempts.popleft()
+        if len(failed_attempts) >= attempts_per_window:
+            retry_after = ceil(failed_attempts[0] + window_seconds - now)
+            return Response(
+                "Слишком много попыток входа. Повторите через минуту.",
+                status_code=429, headers={"Retry-After": str(retry_after)},
+                media_type="text/plain",
+            )
+        if not S.check_expert_password(password):
+            failed_attempts.append(now)
             return RedirectResponse("/start?error=1", status_code=303)
         return _redirect(request, S.Identity(S.demo_email().replace("demo-", "expert-"), "expert"))
+
+    async def mail_session(request: Request):
+        identity = S.identity_from_headers(request.headers, secret())
+        allowed = identity is not None and identity.role == "expert"
+        return Response(status_code=204 if allowed else 403)
 
     from fastapi.routing import APIRoute
 
@@ -81,6 +117,7 @@ def install(app) -> None:
         APIRoute("/start", start, methods=["GET"], response_class=HTMLResponse),
         APIRoute("/start/employee", employee, methods=["POST"]),
         APIRoute("/start/expert", expert, methods=["POST"]),
+        APIRoute("/_ops/mail-session", mail_session, methods=["GET"], include_in_schema=False),
     ]
     for i, r in enumerate(routes):
         app.router.routes.insert(i, r)

@@ -25,7 +25,6 @@ from typing import Mapping
 
 COOKIE_NAME = "ra_session"
 COOKIE_TTL = 12 * 3600
-DEFAULT_EXPERT_PASSWORD = "demo-expert"  # dev only; set CHAT_EXPERT_PASSWORD in any shared stand
 DEPARTMENTS = ["ДБРЦТ", "Дирекция ИБ", "Техническая дирекция"]
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 
@@ -41,13 +40,13 @@ def demo_email() -> str:
     return f"demo-{secrets.token_hex(4)}@demo.local"
 
 
-def expert_password() -> str:
-    return os.environ.get("CHAT_EXPERT_PASSWORD") or DEFAULT_EXPERT_PASSWORD
+def expert_password(env: Mapping[str, str] | None = None) -> str:
+    return (os.environ if env is None else env).get("CHAT_EXPERT_PASSWORD", "")
 
 
 def check_expert_password(candidate: str, env: Mapping[str, str] | None = None) -> bool:
-    expected = (env or os.environ).get("CHAT_EXPERT_PASSWORD") or DEFAULT_EXPERT_PASSWORD
-    return hmac.compare_digest(candidate.encode(), expected.encode())
+    expected = expert_password(env)
+    return bool(expected) and hmac.compare_digest(candidate.encode(), expected.encode())
 
 
 def trusted_header(env: Mapping[str, str] | None = None) -> str | None:
@@ -112,4 +111,7 @@ def identity_from_headers(headers: Mapping[str, str], secret: str, env: Mapping[
     if trusted_header(env):
         return identity_from_trusted_header(headers, env)
     token = cookie_from_headers(headers)
-    return verify_identity(token, secret) if token else None
+    identity = verify_identity(token, secret) if token else None
+    if identity and identity.role == "expert" and not expert_password(env):
+        return None
+    return identity

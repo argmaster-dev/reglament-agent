@@ -11,9 +11,6 @@ import httpx
 import psycopg
 from fastapi import APIRouter, Response
 
-CRITICAL = ("db",)
-
-
 @dataclass(frozen=True)
 class Settings:
     database_url: str = ""
@@ -75,7 +72,7 @@ async def _check_db(s: Settings):
     if not s.database_url:
         return False, "DATABASE_URL is not set"
     detail = await asyncio.to_thread(_db_sync, s.database_url, s.timeout)
-    return "pgvector missing" not in detail, detail
+    return "pgvector missing" not in detail and "schema not migrated" not in detail, detail
 
 
 async def _check_ollama(s: Settings):
@@ -105,7 +102,7 @@ async def health(settings: Settings) -> dict:
         _timed("db", _check_db(settings), settings.timeout + 1),
         _timed("ollama", _check_ollama(settings), settings.timeout + 1),
         _timed("smtp", _check_smtp(settings), settings.timeout))
-    return {"ok": all(c["ok"] for c in checks if c["name"] in CRITICAL), "version": app_version(),
+    return {"ok": all(c["ok"] for c in checks), "version": app_version(),
             "checks": {c.pop("name"): c for c in checks}}
 
 

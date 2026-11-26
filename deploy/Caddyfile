@@ -1,0 +1,27 @@
+{
+	admin off
+}
+
+:8080 {
+	@ops path /_ops/*
+	handle @ops {
+		respond 404
+	}
+	handle /mail {
+		redir /mail/ 308
+	}
+	handle /mail/* {
+		forward_auth app:8000 {
+			uri /_ops/mail-session
+		}
+		reverse_proxy mailpit:8025 {
+			header_up -Cookie
+		}
+	}
+	handle {
+		reverse_proxy app:8000 {
+			header_up -Forwarded
+			header_up -X-User-Email
+		}
+	}
+}

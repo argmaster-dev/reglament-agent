@@ -26,12 +26,12 @@ def test_db_ok_others_down(fresh_db):
     demo_reset(fresh_db, DOCX, embedder=FakeEmbedder())
     s = settings(fresh_db, httpx.MockTransport(refuse))
     body = asyncio.run(health(s))
-    assert body["ok"] and body["checks"]["db"]["ok"] and "4 active documents" in body["checks"]["db"]["detail"]
+    assert not body["ok"] and body["checks"]["db"]["ok"] and "4 active documents" in body["checks"]["db"]["detail"]
     assert not body["checks"]["ollama"]["ok"] and not body["checks"]["smtp"]["ok"]
     app = FastAPI()
     app.include_router(make_router(s))
     r = TestClient(app).get("/health")
-    assert r.status_code == 200 and r.json()["version"]
+    assert r.status_code == 503 and r.json()["version"]
 
 
 def test_ollama_models(fresh_db):

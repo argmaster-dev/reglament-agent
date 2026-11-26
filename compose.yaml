@@ -1,6 +1,12 @@
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql://regulations:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/regulations
+  MAIL_HOST: mailpit
+  MAIL_PORT: "1025"
+
 services:
   postgres:
     image: pgvector/pgvector:pg16@sha256:018b4a92e634c3a5715f613dd43497e3d8028ae051be7ba6fd127bcffb0e7957
+    restart: unless-stopped
     environment:
       POSTGRES_DB: regulations
       POSTGRES_USER: regulations
@@ -17,25 +23,57 @@ services:
       retries: 10
   mailpit:
     image: axllent/mailpit@sha256:ed9b00c609e77e99c79b93f1178255ebc271868920f2c69a8d166bd5634ed10d
+    restart: unless-stopped
+    environment:
+      MP_DATABASE: /data/mailpit.db
+    volumes:
+      - mail_data:/data
     networks: [backend, local_access]
     ports:
       - "127.0.0.1:${REGULATIONS_MAIL_PORT:-8026}:8025"
+  migrate:
+    image: reglament-agent:${REGULATIONS_IMAGE_TAG:-local}
+    build: .
+    environment: *backend-env
+    command: ["python", "-m", "reglament_agent.ops.migrate"]
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+  sender:
+    image: reglament-agent:${REGULATIONS_IMAGE_TAG:-local}
+    env_file: [.env]
+    environment:
+      <<: *backend-env
+      MAIL_USE_TLS: "false"
+    command: ["python", "-m", "reglament_agent.quality"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+    networks: [backend]
+    restart: unless-stopped
+    stop_grace_period: 20s
   app:
+    image: reglament-agent:${REGULATIONS_IMAGE_TAG:-local}
     build: .
     env_file: [.env]
     environment:
       # Override host-side values from .env: inside the container services are reached by name.
-      DATABASE_URL: postgresql://regulations:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/regulations
-      MODEL_OLLAMA_URL: http://host.docker.internal:11434
+      <<: *backend-env
+      MODEL_OLLAMA_URL: ${CONTAINER_OLLAMA_URL:-http://host.docker.internal:11434}
       CHAT_SERVICES_FACTORY: ${CHAT_SERVICES_FACTORY:-reglament_agent.dialog.services:build_services}
-      MAIL_HOST: mailpit
-      MAIL_PORT: "1025"
       CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:?Set CHAINLIT_AUTH_SECRET}
-      CHAT_EXPERT_PASSWORD: ${CHAT_EXPERT_PASSWORD:?Set CHAT_EXPERT_PASSWORD}
+      CHAT_EXPERT_PASSWORD: ${CHAT_EXPERT_PASSWORD:-}
     extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks: [backend, local_access]
     ports:
       - "127.0.0.1:${APP_PORT:-8000}:8000"
@@ -51,3 +89,4 @@ networks:
       com.docker.network.bridge.enable_ip_masquerade: "false"
 volumes:
   regulation_data:
+  mail_data:
