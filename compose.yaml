@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:018b4a92e634c3a5715f613dd43497e3d8028ae051be7ba6fd127bcffb0e7957
+    environment:
+      POSTGRES_DB: regulations
+      POSTGRES_USER: regulations
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${REGULATIONS_DB_PORT:-5432}:5432"
+    volumes:
+      - regulation_data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U regulations -d regulations"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  mailpit:
+    image: axllent/mailpit@sha256:ed9b00c609e77e99c79b93f1178255ebc271868920f2c69a8d166bd5634ed10d
+    networks: [backend]
+    ports:
+      - "127.0.0.1:${REGULATIONS_MAIL_PORT:-8026}:8025"
+networks:
+  backend:
+    internal: true
+volumes:
+  regulation_data:

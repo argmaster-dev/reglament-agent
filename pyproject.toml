@@ -25,6 +25,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/reglament_agent"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "reglament_agent/storage/migrations"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
