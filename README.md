@@ -26,6 +26,23 @@ uv run python -m reglament_agent.ingest load docx/
 
 Тесты запускаются командой `uv run pytest`. По умолчанию они используют временный PostgreSQL из pgserver. Если задан `DATABASE_URL`, тесты создают в этой базе изолированную схему.
 
+## Запуск стенда
+
+Нужны Docker, Ollama с моделями `qwen3.5:9b-q4_K_M` и `bge-m3`, файл `.env` (образец — `.env.example`).
+
+```bash
+cp .env.example .env   # заполните пароли и секрет
+docker compose up -d --build --wait
+```
+
+Приложение слушает `127.0.0.1:${APP_PORT:-8000}`, Postgres и Mailpit опубликованы только на loopback. Сеть `backend` внутренняя.
+
+**Ollama на хосте.** Контейнер обращается к ней через `host.docker.internal` (`extra_hosts: host-gateway`). Ollama должна слушать адрес, доступный с docker-моста, например `OLLAMA_HOST=0.0.0.0:11434` (при этом закройте порт 11434 файрволом от внешней сети). Альтернатива — запустить приложение на хосте: `make run` (Chainlit, `src/reglament_agent/chat/app.py`, файл появляется вместе с чатом; читает `.env`, `MODEL_OLLAMA_URL=http://127.0.0.1:11434`).
+
+**Сброс демо.** `make demo-reset` стирает всю схему БД, применяет миграции и загружает все регламенты; `make demo-reset-without-td` — без `td-project` (чтобы показать добавление регламента). Команда требует `--yes` или `DEMO_RESET_ALLOWED=1`. Переменные: `EMBEDDER=ollama|fake`, `DEMO_RESET_SCHEMA` (по умолчанию `public`). Выводит JSON: документы, пункты, секунды.
+
+**Проверка состояния.** `GET /health` (роутер `reglament_agent.ops.health.router`, подключается в приложение) возвращает JSON по БД, Ollama и SMTP; 503 только если недоступна БД.
+
 ## Структура
 
 | Путь | Что там |
