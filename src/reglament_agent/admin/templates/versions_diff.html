@@ -1,0 +1,9 @@
+{% extends "base.html" %}{% from "versions_changes.html" import faq_impact, changes %}{% block content %}
+<style>ins{background:#d9f2df;text-decoration:none}del{background:#fbdada}pre.pt2{margin:4px 0}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.cols{grid-template-columns:1fr}}</style>
+{% if job_id %}<p><a href="/admin/jobs/{{ job_id }}">← Загрузка</a></p>{% else %}<p><a href="/admin/documents/{{ doc.doc_id }}/versions">← Версии</a></p>{% endif %}
+{% if diff %}<h1>{{ doc.title }}: версия {{ old }} → {{ new }}</h1>
+{% if impact %}{{ faq_impact(impact) }}{% endif %}
+{{ changes(diff) }}
+{% else %}<h1>Что изменится</h1><p class="muted">Для этого документа ещё нет действующей версии: сравнивать не с чем.</p>{% endif %}
+{% endblock %}

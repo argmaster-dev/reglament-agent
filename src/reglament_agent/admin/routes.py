@@ -52,8 +52,9 @@ def install(app) -> None:
     """Mount routes and the role guard (expert only) in front of Chainlit's catch-all route."""
     from reglament_agent.admin.analytics_routes import router as analytics_router
     from reglament_agent.admin.quality_routes import router as quality_router
+    from reglament_agent.admin.versions_routes import router as versions_router
 
-    for i, route in enumerate([*router.routes, *quality_router.routes, *analytics_router.routes]):
+    for i, route in enumerate([*router.routes, *quality_router.routes, *analytics_router.routes, *versions_router.routes]):
         app.router.routes.insert(i, route)
 
     @app.middleware("http")
