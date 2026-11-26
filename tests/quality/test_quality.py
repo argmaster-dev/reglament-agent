@@ -147,3 +147,61 @@ def test_concurrent_senders(isolated, smtp):
     assert sum(asyncio.run(both())) == 6
     assert len(smtp.messages) == 6
     assert len({m["Message-ID"] for _, m in smtp.messages}) == 6
+
+
+def test_continuous_worker_drains_new_messages_and_stops_on_signal(isolated, smtp):
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    conn, dsn = isolated
+    first = make(conn, message_id="m1")
+    env = {
+        **os.environ,
+        "DATABASE_URL": dsn,
+        "MAIL_HOST": "127.0.0.1",
+        "MAIL_PORT": str(smtp.port),
+    }
+    with subprocess.Popen(
+        [sys.executable, "-m", "reglament_agent.quality", "--interval", "0.05"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    ) as worker:
+        def wait_for_sent(number):
+            deadline = time.monotonic() + 5
+            while get_ticket(conn, number)["delivery"] != "sent":
+                if worker.poll() is not None:
+                    pytest.fail(worker.stderr.read().decode())
+                if time.monotonic() >= deadline:
+                    pytest.fail(f"mail for {number} was not sent")
+                time.sleep(0.02)
+
+        try:
+            wait_for_sent(first.number)
+            second = make(conn, message_id="m2")
+            wait_for_sent(second.number)
+            assert len(smtp.messages) == 2
+            worker.send_signal(signal.SIGTERM)
+            assert worker.wait(3) == 0
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+
+
+def test_mail_formats_candidate_version_from_dialog_trace():
+    from reglament_agent.quality.mail import build_body
+
+    body = build_body(
+        number="2026-0001", question="Вопрос", restated=None, reason="no_basis",
+        user_email="employee@demo.local", profile={}, clarifications=[],
+        candidates=[
+            {"doc_id": "rules", "point": "3.2", "version": 4},
+            {"doc_id": "other-rules", "point": "1.1"},
+        ],
+        public_base_url="http://localhost:8000",
+    )
+    assert "rules, п. 3.2 (версия 4)" in body
+    assert "версия None" not in body

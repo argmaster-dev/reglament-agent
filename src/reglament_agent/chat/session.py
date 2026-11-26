@@ -25,7 +25,6 @@ from typing import Mapping
 
 COOKIE_NAME = "ra_session"
 COOKIE_TTL = 12 * 3600
-DEPARTMENTS = ["ДБРЦТ", "Дирекция ИБ", "Техническая дирекция"]
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 
 

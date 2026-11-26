@@ -56,6 +56,13 @@ def basis_label(basis_kind: str, basis: list[dict]) -> str:
     return f"по {pts}"
 
 
+def _lock_basis_documents(conn: Connection, doc_ids) -> None:
+    # A concurrent version switch updates the document row. Hold shared locks until
+    # the FAQ commit so publication either observes this entry or precedes its basis read.
+    conn.execute("SELECT doc_id FROM documents WHERE doc_id=ANY(%s) ORDER BY doc_id FOR SHARE",
+                 (sorted(set(doc_ids)),)).fetchall()
+
+
 def _capture_basis(conn: Connection, kind: str, points: Sequence[tuple]) -> tuple[list[dict], str | None, int | None]:
     if kind not in BASIS_KINDS:
         raise TicketError(f"Неизвестный вид основания: {kind}")
@@ -65,6 +72,7 @@ def _capture_basis(conn: Connection, kind: str, points: Sequence[tuple]) -> tupl
         return [], None, None
     if not points:
         raise TicketError("Укажите пункты регламентов или выберите «вне регламентов».")
+    _lock_basis_documents(conn, (item[0] for item in points))
     cur = conn.cursor(row_factory=dict_row)
     basis: list[dict] = []
     for item in points:
@@ -214,6 +222,7 @@ def set_faq_status(conn: Connection, faq_id: int, status: str) -> bool:
 def _repin(conn: Connection, row: dict) -> None:
     """Expert confirmed a `review` entry: pin it to the current text of its points (removed ones block it)."""
     basis = [dict(b) for b in row["basis"]]
+    _lock_basis_documents(conn, (b["doc_id"] for b in basis))
     cur = conn.cursor(row_factory=dict_row)
     for b in basis:
         if row["basis_kind"] == "document":

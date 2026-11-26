@@ -1,0 +1,12 @@
+{% extends "base.html" %}{% block content %}
+<h1>Журнал запросов</h1>
+<p>Период: {% for k, (label, _) in periods.items() %}<a class="btn {{ '' if k == period else 'sec' }}" href="?period={{ k }}">{{ label }}</a> {% endfor %}
+· <a href="/admin/analytics?period={{ period }}">К аналитике</a> · <a href="/admin/analytics/requests.csv?period={{ period }}">CSV</a></p>
+{% if items %}<table><tr><th>Дата</th><th>Сотрудник</th><th>Вопрос</th><th>Исход</th><th>Время, с</th><th>Оценка</th><th>Обращение</th></tr>
+{% for i in items %}<tr><td><a href="/admin/analytics/journal/{{ i.r.id }}">{{ i.r.created_at.strftime("%d.%m.%Y %H:%M") }}</a></td>
+<td>{{ i.r.user_email }}</td><td>{{ i.r.question[:120] }}</td><td>{{ i.outcome }}</td>
+<td>{% if i.ms is not none %}{{ (i.ms / 1000)|round(1) }}{% else %}—{% endif %}</td>
+<td>{{ '👍' if i.r.rating is true else '👎' if i.r.rating is false else '' }}</td>
+<td>{% for n in i.ticket %}<a href="/admin/tickets/{{ n }}">{{ n }}</a> {% endfor %}</td></tr>{% endfor %}</table>
+<p class="muted">Показаны последние 200 запросов; полный список — в CSV.</p>
+{% else %}<p class="muted">Запросов за период нет.</p>{% endif %}{% endblock %}

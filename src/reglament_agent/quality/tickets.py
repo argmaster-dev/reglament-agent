@@ -39,8 +39,10 @@ def _info(row: dict, delivery: str | None) -> TicketInfo:
                                                row["clarifications"]))
 
 
-_SELECT = ("SELECT t.*, (SELECT o.status FROM mail_outbox o WHERE o.ticket_id = t.id "
-           "AND o.kind = 'ticket_created') AS delivery FROM tickets t ")
+_SELECT = (
+    "SELECT t.*, o.status AS delivery, o.attempts AS delivery_attempts FROM tickets t "
+    "LEFT JOIN mail_outbox o ON o.ticket_id = t.id AND o.kind = 'ticket_created' "
+)
 
 
 def _row_info(row: dict) -> TicketInfo:
@@ -90,8 +92,9 @@ def get_ticket(conn: Connection, number: str) -> dict[str, Any] | None:
 
 
 def get_ticket_for_user(conn: Connection, number: str, email: str) -> dict[str, Any] | None:
-    row = get_ticket(conn, number)
-    return row if row is not None and row["user_email"] == email else None
+    return conn.cursor(row_factory=dict_row).execute(
+        _SELECT + "WHERE t.number = %s AND t.user_email = %s", (number, email)
+    ).fetchone()
 
 
 def list_user_tickets(conn: Connection, email: str) -> list[dict[str, Any]]:

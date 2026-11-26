@@ -6,6 +6,7 @@ from psycopg import Connection
 
 from reglament_agent.dialog.lexicon import expand_query, words
 from reglament_agent.ingest.embedding import vector_literal
+from reglament_agent.ingest.text import content_hash
 
 from .sources import Hit, read_blocks
 
@@ -51,10 +52,16 @@ _RANK = """
                     plainto_tsquery('russian', nullif(%(abbr)s, '')) abbr)
     SELECT p.point_id,p.doc_id,p.version_id,p.number,p.text,top.score,d.title,d.department,
            dv.version_number,p.sentences,p.blocks,1 - (p.embedding <=> %(vec)s::vector),
-           p.tsv @@ q.terms
+           top.literal_match OR p.tsv @@ q.terms
     FROM domains dom CROSS JOIN q CROSS JOIN LATERAL (
         WITH eligible AS NOT MATERIALIZED (
             SELECT point_id, embedding, tsv, text FROM points WHERE version_id=ANY(dom.versions)
+        ), literal_hits AS (
+            SELECT p.point_id
+            FROM document_versions dv
+            JOIN points p ON p.doc_id=dv.doc_id AND p.version_id=dv.version_id
+            WHERE dv.version_id=ANY(dom.versions) AND p.sha256=%(literal_hash)s
+            ORDER BY p.point_id LIMIT %(pool)s
         ), ann AS MATERIALIZED (
             SELECT point_id, embedding <=> %(vec)s::vector dist FROM eligible WHERE dom.use_ann
             ORDER BY embedding <=> %(vec)s::vector LIMIT %(pool)s
@@ -80,23 +87,32 @@ _RANK = """
             UNION ALL SELECT point_id,row_number() OVER (ORDER BY relev DESC,point_id) FROM f WHERE has_interval
             UNION ALL SELECT point_id,row_number() OVER (ORDER BY relev DESC,point_id) FROM phrases
         )
-        SELECT point_id,sum(1.0::float8 / (60 + r)) score FROM ranks GROUP BY point_id
-        ORDER BY score DESC,point_id LIMIT %(limit)s
+        SELECT point_id,sum(score) score,bool_or(literal_match) literal_match
+        FROM (
+            SELECT point_id,1.0::float8 / (60 + r) AS score,false AS literal_match FROM ranks
+            UNION ALL SELECT point_id,0.0::float8,true FROM literal_hits
+        ) AS candidates
+        GROUP BY point_id
+        ORDER BY literal_match DESC,score DESC,point_id LIMIT %(limit)s
     ) top JOIN points p ON p.point_id=top.point_id JOIN documents d ON d.doc_id=p.doc_id
           JOIN document_versions dv ON dv.version_id=p.version_id
-    ORDER BY top.score DESC,p.point_id
+    ORDER BY top.literal_match DESC,top.score DESC,p.point_id
 """
 
 
 def search(conn: Connection, query: str, vector: list[float], *, department: str | None = None,
-           stage: str | None = None, limit: int = 10, exact: bool = False) -> list[Hit]:
+           stage: str | None = None, limit: int = 10, exact: bool = False, literal: bool = True) -> list[Hit]:
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
     if not query.strip():
         return []
     pool = max(32, 4 * limit)
+    # The publication hash represents the full normalized point. A short exact text
+    # takes precedence over longer points that contain the same phrase.
+    literal_hash = content_hash(query) if literal else None
     params = {"vec": vector_literal(vector), "query": lexical_query(query), "original": query,
               "dept": department, "stage": stage, "pool": pool, "limit": limit, "exact": exact,
+              "literal_hash": literal_hash,
               "advance": bool(_ADVANCE_QUESTION.search(query)), "interval": _ADVANCE_INTERVAL,
               "abbr": " ".join(_ABBREVIATION.findall(query))}
     with conn.transaction():
@@ -109,7 +125,9 @@ def search(conn: Connection, query: str, vector: list[float], *, department: str
     if department is not None or len(hits) <= limit:
         return hits
     # Per-department RRF scores use local ranks. Use cosine similarity to break ties across groups.
-    hits.sort(key=lambda h: (-h.score, -h.similarity, h.point_id))
+    hits.sort(key=lambda h: (
+        literal_hash is not None and content_hash(h.text) != literal_hash, -h.score, -h.similarity, h.point_id,
+    ))
     groups = defaultdict(list)
     for hit in hits:
         groups[hit.department].append(hit)
@@ -127,14 +145,18 @@ def preview(conn: Connection, query: str, *, department=None, stage=None, limit=
         WITH terms AS (SELECT websearch_to_tsquery('russian', %(q)s) AS q),
         pool AS (SELECT p.point_id,p.doc_id,p.version_id,p.number,p.text,ts_rank_cd(p.tsv,q) AS weight,
                  d.title,d.department,v.version_number,p.sentences,p.blocks,
+                 p.sha256=%(literal_hash)s AS literal_match,
                  row_number() OVER (PARTITION BY d.department ORDER BY
-                    (%(advance)s AND p.text ~* %(interval)s) DESC,ts_rank_cd(p.tsv,q) DESC,p.point_id) AS n
+                    (p.sha256=%(literal_hash)s) DESC,(%(advance)s AND p.text ~* %(interval)s) DESC,
+                    ts_rank_cd(p.tsv,q) DESC,p.point_id) AS n
                  FROM documents d JOIN document_versions v ON v.version_id=d.active_version_id
                  JOIN points p ON p.version_id=v.version_id CROSS JOIN terms
-                 WHERE d.status='active' AND p.tsv @@ q AND (%(dept)s::text IS NULL OR d.department=%(dept)s)
+                 WHERE d.status='active' AND (p.tsv @@ q OR p.sha256=%(literal_hash)s)
+                 AND (%(dept)s::text IS NULL OR d.department=%(dept)s)
                  AND (%(stage)s::text IS NULL OR %(stage)s=ANY(d.stages)))
         SELECT point_id,doc_id,version_id,number,text,weight,title,department,version_number,sentences,blocks
-        FROM pool WHERE n<=%(limit)s ORDER BY n,point_id""",
+        FROM pool WHERE n<=%(limit)s ORDER BY literal_match DESC,n,point_id""",
         {'q':lexical_query(query),'dept':department,'stage':stage,'limit':limit,
+         'literal_hash':content_hash(query),
          'advance':bool(_ADVANCE_QUESTION.search(query)),'interval':_ADVANCE_INTERVAL}).fetchall()
     return [Hit(*row[:10],read_blocks(row[10]),0.0,True) for row in rows]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import os
 from collections import deque
+from collections.abc import Sequence
 from math import ceil
 from time import monotonic
 
@@ -13,6 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from reglament_agent.chat import session as S
 from reglament_agent.chat.render import EXAMPLES
+from reglament_agent.chat.services import available_departments
 
 PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Агент по регламентам</title><style>
@@ -37,8 +39,8 @@ def secret() -> str:
     return os.environ["CHAINLIT_AUTH_SECRET"]
 
 
-def render_page(error: bool = False, expert_enabled: bool = True) -> str:
-    opts = "".join(f'<option value="{html.escape(d)}">{html.escape(d)}</option>' for d in S.DEPARTMENTS)
+def render_page(error: bool = False, expert_enabled: bool = True, *, departments: Sequence[str] = ()) -> str:
+    opts = "".join(f'<option value="{html.escape(d)}">{html.escape(d)}</option>' for d in departments)
     err = '<p class="err">Неверный пароль.</p>' if error else ""
     questions = [*EXAMPLES, "Кто подписывает договор с субподрядчиком?", "Что такое ТКП?"]
     return PAGE.format(
@@ -75,7 +77,10 @@ def install(app) -> None:
     async def start(request: Request):
         if S.trusted_header():
             return RedirectResponse("/", status_code=303)
-        resp = HTMLResponse(render_page(request.query_params.get("error") == "1", bool(S.expert_password())))
+        departments = await available_departments()
+        resp = HTMLResponse(render_page(
+            request.query_params.get("error") == "1", bool(S.expert_password()), departments=departments,
+        ))
         from chainlit.auth.cookie import clear_auth_cookie
 
         clear_auth_cookie(request, resp)
@@ -85,7 +90,7 @@ def install(app) -> None:
     async def employee(request: Request, department: str = Form("")):
         if S.trusted_header():
             return RedirectResponse("/", status_code=303)
-        dep = department if department in S.DEPARTMENTS else None
+        dep = department if department and department in await available_departments() else None
         return _redirect(request, S.Identity(S.demo_email(), "employee", dep))
 
     async def expert(request: Request, password: str = Form("", max_length=512)):

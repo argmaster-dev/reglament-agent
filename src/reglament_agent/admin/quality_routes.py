@@ -14,13 +14,14 @@ from reglament_agent.chat import session as S
 from reglament_agent.ingest.embedding import make_embedder
 from reglament_agent.quality import faq as F
 from reglament_agent.quality.mail import REASONS
-from reglament_agent.quality.tickets import get_ticket
+from reglament_agent.quality.tickets import get_ticket, get_ticket_for_user
 from reglament_agent.storage.sources import point_view
 
-router = APIRouter(prefix="/admin")
+router = APIRouter()
+expert_router = APIRouter(prefix="/admin")
 STATUS = {"open": "открыто", "answered": "отвечено", "closed_duplicate": "закрыто: дубликат",
           "closed_offtopic": "закрыто: не по регламентам"}
-MAIL = {"pending": "в очереди", "sent": "отправлено", "error": "ошибка отправки"}
+MAIL = {"pending": "в очереди", "sent": "отправлено", "error": "не доставлено"}
 FAQ_STATUS = {"active": "опубликовано", "review": "на проверке", "deleted": "удалено"}
 _POINT = re.compile(r"([\w][\w.-]*)\s+п(?:ункт)?\.?\s*(\d+(?:\.\d+)*)", re.IGNORECASE)
 
@@ -55,13 +56,14 @@ def _ticket_context(conn, number: str) -> dict | None:
     if t is None:
         return None
     cur = conn.cursor(row_factory=dict_row)
-    mails = cur.execute("SELECT kind, status, last_error FROM mail_outbox WHERE ticket_id=%s ORDER BY id",
+    mails = cur.execute("SELECT kind, status, attempts, last_error FROM mail_outbox WHERE ticket_id=%s ORDER BY id",
                         (t["id"],)).fetchall()
     ans = cur.execute("SELECT * FROM ticket_answers WHERE ticket_id=%s", (t["id"],)).fetchone()
     cands = []
     for c in t["candidates"]:
-        view = view_text(conn, c.get("doc_id"), c.get("point"), c.get("version_no")) if c.get("point") else None
-        cands.append({**c, "view": view})
+        version = c.get("version_no") or c.get("version")
+        view = view_text(conn, c.get("doc_id"), c.get("point"), version) if c.get("point") else None
+        cands.append({**c, "version_no": version, "view": view})
     ctx = {"t": t, "mails": mails, "answer": ans, "candidates": cands, "reason_text": REASONS.get(t["reason"], t["reason"]),
            "status_text": STATUS.get(t["status"], t["status"]), "mail_text": MAIL,
            "basis_text": F.basis_label(ans["basis_kind"], ans["basis"]) if ans else None}
@@ -77,7 +79,7 @@ def _ticket_page(request, conn, number, *, status_code=200, error=None, form=Non
     return render("ticket.html", request, status_code, nav="tickets", error=error, form=form, **ctx)
 
 
-@router.get("/tickets", response_class=HTMLResponse)
+@expert_router.get("/tickets", response_class=HTMLResponse)
 def tickets(request: Request, status: str = "", reason: str = ""):
     where, params = [], []
     if status:
@@ -96,13 +98,13 @@ def tickets(request: Request, status: str = "", reason: str = ""):
                   statuses=STATUS, reasons=REASONS, mail_text=MAIL)
 
 
-@router.get("/tickets/{number}", response_class=HTMLResponse)
+@expert_router.get("/tickets/{number}", response_class=HTMLResponse)
 def ticket_page(request: Request, number: str):
     with jobs.connect() as conn:
         return _ticket_page(request, conn, number)
 
 
-@router.post("/tickets/{number}", response_class=HTMLResponse)
+@expert_router.post("/tickets/{number}", response_class=HTMLResponse)
 async def ticket_submit(request: Request, number: str):
     f = await request.form()
     ident = S.identity_from_headers(request.headers, _import_secret())
@@ -137,14 +139,14 @@ def _import_secret() -> str:
     return _secret()
 
 
-@router.get("/faq", response_class=HTMLResponse)
+@expert_router.get("/faq", response_class=HTMLResponse)
 def faq_list(request: Request, status: str = ""):
     with jobs.connect() as conn:
         rows = F.list_faq(conn, status or None)
     return render("faq.html", request, nav="faq", rows=rows, status=status, statuses=FAQ_STATUS)
 
 
-@router.get("/faq/{faq_id}", response_class=HTMLResponse)
+@expert_router.get("/faq/{faq_id}", response_class=HTMLResponse)
 def faq_page(request: Request, faq_id: int, error: str = ""):
     with jobs.connect() as conn:
         e = F.get_faq(conn, faq_id)
@@ -161,7 +163,7 @@ def faq_page(request: Request, faq_id: int, error: str = ""):
                   label=F.basis_label(e["basis_kind"], e["basis"]))
 
 
-@router.post("/faq/{faq_id}/{action}")
+@expert_router.post("/faq/{faq_id}/{action}")
 def faq_action(faq_id: int, action: str):
     status = {"confirm": "active", "delete": "deleted"}.get(action)
     if status is None:
@@ -172,3 +174,29 @@ def faq_action(faq_id: int, action: str):
         except F.TicketError as exc:
             return RedirectResponse(f"/admin/faq/{faq_id}?error={exc}", status_code=303)
     return RedirectResponse(f"/admin/faq/{faq_id}", status_code=303)
+
+
+@router.get("/tickets/{number}", response_class=HTMLResponse)
+def ticket_status(request: Request, number: str):
+    identity = S.identity_from_headers(request.headers, _import_secret())
+    if identity is None:
+        return RedirectResponse("/start", status_code=303)
+
+    with jobs.connect() as conn:
+        if identity.role == "expert":
+            response = _ticket_page(request, conn, number)
+        else:
+            ticket = get_ticket_for_user(conn, number, identity.email)
+            response = render(
+                "employee_ticket.html",
+                request,
+                200 if ticket else 404,
+                ticket=ticket,
+                status=STATUS.get(ticket["status"], ticket["status"]) if ticket else None,
+                delivery=MAIL.get(ticket["delivery"], ticket["delivery"]) if ticket else None,
+            )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+router.include_router(expert_router)
