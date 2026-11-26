@@ -14,6 +14,7 @@ from fastapi import Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from reglament_agent.chat import session as S
+from reglament_agent.chat.release_footer import render_footer
 from reglament_agent.chat.render import EXAMPLES
 from reglament_agent.chat.services import available_departments
 
@@ -21,7 +22,8 @@ if TYPE_CHECKING:
     from chainlit.user import User
 
 PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Агент по регламентам</title><style>
+<title>Агент по регламентам</title>
+<link rel="stylesheet" href="/public/release-footer.css"><style>
 body{{font-family:system-ui,sans-serif;max-width:760px;margin:6vh auto;padding:0 16px;color:#1b1b1b}}
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}}
 .card{{border:1px solid #c9c9c9;border-radius:12px;padding:20px}} h2{{margin-top:0}}
@@ -36,7 +38,7 @@ button{{cursor:pointer;background:#1f5fbf;color:#fff;border:0;border-radius:8px}
 <form class="card" method="post" action="/start/expert"><h2>Служба качества</h2>{availability}
 <p>Обращения сотрудников, ответы экспертов, FAQ и документы.</p>{error}
 <label>Пароль<input type="password" name="password" required maxlength="512" autocomplete="current-password" {disabled}></label>
-<button type="submit" {disabled}>Войти как служба качества</button></form></div><section><h2>Примеры вопросов</h2><ul>{examples}</ul></section><p>Для одновременной проверки роли сотрудника и эксперта откройте вторую роль в другом браузере или приватном окне.</p></body></html>"""
+<button type="submit" {disabled}>Войти как служба качества</button></form></div><section><h2>Примеры вопросов</h2><ul>{examples}</ul></section><p>Для одновременной проверки роли сотрудника и эксперта откройте вторую роль в другом браузере или приватном окне.</p>{release_footer}</body></html>"""
 
 
 def secret() -> str:
@@ -53,6 +55,7 @@ def render_page(error: bool = False, expert_enabled: bool = True, *, departments
         availability="" if expert_enabled else "<p>Вход службы качества отключён.</p>",
         disabled="" if expert_enabled else "disabled",
         examples="".join(f"<li>{html.escape(q)}</li>" for q in questions),
+        release_footer=render_footer(),
     )
 
 
@@ -127,6 +130,9 @@ def install(app) -> None:
         allowed = identity is not None and identity.role == "expert"
         return Response(status_code=204 if allowed else 403)
 
+    def release_footer():
+        return HTMLResponse(render_footer(), headers={"Cache-Control": "no-store"})
+
     from fastapi.routing import APIRoute
 
     routes = [
@@ -134,6 +140,7 @@ def install(app) -> None:
         APIRoute("/start/employee", employee, methods=["POST"]),
         APIRoute("/start/expert", expert, methods=["POST"]),
         APIRoute("/_ops/mail-session", mail_session, methods=["GET"], include_in_schema=False),
+        APIRoute("/ui/release-footer", release_footer, methods=["GET"], include_in_schema=False),
     ]
     for i, r in enumerate(routes):
         app.router.routes.insert(i, r)

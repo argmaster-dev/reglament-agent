@@ -11,10 +11,12 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 from psycopg.types.json import Jsonb
 
 from reglament_agent.admin import jobs
 from reglament_agent.chat import session as S
+from reglament_agent.chat.release_footer import render_footer
 from reglament_agent.ingest.model import BlockKind
 from reglament_agent.ingest.parser import parse_docx
 from reglament_agent.ingest.text import content_hash
@@ -30,6 +32,7 @@ def render(template: str, request: Request, status_code: int = 200, **ctx) -> HT
     ident = S.identity_from_headers(request.headers, _secret())
     html = env.get_template(template).render(
         identity=ident, stages=STAGES, open_tickets=_open_tickets(ident),
+        release_footer=Markup(render_footer()),
         mail_ui_url=os.environ.get("MAIL_UI_URL") if ident and ident.role == "expert" else None, **ctx)
     return HTMLResponse(html, status_code=status_code)
 
