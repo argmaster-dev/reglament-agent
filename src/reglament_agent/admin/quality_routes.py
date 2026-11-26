@@ -9,11 +9,13 @@ from psycopg.rows import dict_row
 
 from reglament_agent.admin import jobs
 from reglament_agent.admin.routes import render
+from reglament_agent.answer import SourceRef
 from reglament_agent.chat import session as S
 from reglament_agent.ingest.embedding import make_embedder
 from reglament_agent.quality import faq as F
 from reglament_agent.quality.mail import REASONS
 from reglament_agent.quality.tickets import get_ticket
+from reglament_agent.storage.sources import point_view
 
 router = APIRouter(prefix="/admin")
 STATUS = {"open": "открыто", "answered": "отвечено", "closed_duplicate": "закрыто: дубликат",
@@ -35,6 +37,19 @@ def parse_points(text: str) -> list[tuple[str, str]]:
     return out
 
 
+def view_text(conn, doc_id: str, number: str, version_no: int | None = None) -> dict | None:
+    """Point text via `point_view`; without `version_no` (or if it is gone) the active version."""
+    active = conn.execute("SELECT v.version_number FROM documents d JOIN document_versions v "
+                          "ON v.version_id=d.active_version_id WHERE d.doc_id=%s", (doc_id,)).fetchone()
+    for vno in dict.fromkeys(v for v in (version_no, active[0] if active else None) if v):
+        try:
+            pv = point_view(conn, SourceRef(doc_id, "", "", vno, number))
+        except (LookupError, ValueError):
+            continue
+        return {"heading": " › ".join(pv.path), "text": "\n".join(pv.sentences), "version_no": pv.version_no}
+    return None
+
+
 def _ticket_context(conn, number: str) -> dict | None:
     t = get_ticket(conn, number)
     if t is None:
@@ -45,9 +60,7 @@ def _ticket_context(conn, number: str) -> dict | None:
     ans = cur.execute("SELECT * FROM ticket_answers WHERE ticket_id=%s", (t["id"],)).fetchone()
     cands = []
     for c in t["candidates"]:
-        view = cur.execute("SELECT p.heading, p.text FROM documents d JOIN points p "
-                           "ON p.version_id=d.active_version_id WHERE d.doc_id=%s AND p.number=%s",
-                           (c.get("doc_id"), c.get("point"))).fetchone()
+        view = view_text(conn, c.get("doc_id"), c.get("point"), c.get("version_no")) if c.get("point") else None
         cands.append({**c, "view": view})
     ctx = {"t": t, "mails": mails, "answer": ans, "candidates": cands, "reason_text": REASONS.get(t["reason"], t["reason"]),
            "status_text": STATUS.get(t["status"], t["status"]), "mail_text": MAIL,
@@ -140,6 +153,8 @@ def faq_page(request: Request, faq_id: int, error: str = ""):
         items = []
         for b in e["basis"]:
             st = F.point_state(conn, b) if b.get("number") else None
+            if st and st["state"] != "removed":
+                st["text"] = (view_text(conn, b["doc_id"], st["number"]) or {}).get("text", st["text"])
             items.append({**b, "now": st})
     return render("faq_entry.html", request, nav="faq", e=e, items=items, error=error,
                   status_text=FAQ_STATUS.get(e["status"], e["status"]),

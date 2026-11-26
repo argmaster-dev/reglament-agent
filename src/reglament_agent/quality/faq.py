@@ -15,7 +15,9 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from reglament_agent.answer import SourceRef
 from reglament_agent.ingest.embedding import Embedder, vector_literal
+from reglament_agent.storage.retrieve import FAQHit
 
 from .mail import message_id_for
 
@@ -28,7 +30,7 @@ class TicketError(ValueError):
 
 
 @dataclass(frozen=True)
-class FaqHit:
+class FaqRow:
     faq_id: int
     question: str
     answer: str
@@ -38,6 +40,8 @@ class FaqHit:
     department: str | None
     score: float
     similarity: float
+    doc_title: str | None = None
+    version_no: int | None = None
 
 
 def basis_label(basis_kind: str, basis: list[dict]) -> str:
@@ -296,20 +300,21 @@ def recheck_faq_after_publication(conn: Connection, doc_id: str) -> int:
     return moved
 
 
-def search_published(conn: Connection, question: str, vector: list[float], *, department: str | None = None,
-                     stage: str | None = None, limit: int = 3) -> list[FaqHit]:
+def search_rows(conn: Connection, question: str, vector: list[float], *, department: str | None = None,
+                stage: str | None = None, limit: int = 3) -> list[FaqRow]:
     """Hybrid (vector + lexical) search over `active` entries only.
 
     Entries tied to a document must pin that document's active version (fail-closed); "outside"
-    entries have no department and are visible everywhere. No `PublishedFAQ` protocol exists in
-    the codebase yet; this function is the compatible entry point.
+    entries have no department and are visible everywhere. `PublishedFaqStore` adapts this to the
+    `PublishedFAQ` protocol.
     """
     if not 1 <= limit <= 50:
         raise ValueError("limit must be between 1 and 50")
     rows = conn.cursor(row_factory=dict_row).execute("""
         WITH eligible AS (
-            SELECT f.*, d.department AS dept, d.stages AS dstages
+            SELECT f.*, d.department AS dept, d.title AS dtitle, v.version_number AS vno
             FROM faq_entries f LEFT JOIN documents d ON d.doc_id = f.doc_id
+            LEFT JOIN document_versions v ON v.version_id = f.version_id
             WHERE f.status = 'active'
               AND (f.basis_kind = 'outside'
                    OR (d.status = 'active' AND d.active_version_id = f.version_id))
@@ -321,10 +326,32 @@ def search_published(conn: Connection, question: str, vector: list[float], *, de
               FROM eligible e, (SELECT websearch_to_tsquery('russian', %(query)s) AS t) q WHERE e.tsv @@ q.t),
         fused AS (SELECT id, sum(1.0 / (60 + r)) AS score FROM
                   (SELECT id, r FROM v UNION ALL SELECT id, r FROM l) x GROUP BY id)
-        SELECT e.id, e.question, e.answer, e.basis_kind, e.basis, e.doc_id, e.dept, fused.score, v.sim
+        SELECT e.id, e.question, e.answer, e.basis_kind, e.basis, e.doc_id, e.dept, fused.score, v.sim, e.dtitle, e.vno
         FROM fused JOIN eligible e ON e.id = fused.id JOIN v ON v.id = e.id
         ORDER BY fused.score DESC, e.id LIMIT %(limit)s""",
         {"vec": vector_literal(vector), "query": question, "dept": department, "stage": stage,
          "limit": limit}).fetchall()
-    return [FaqHit(r["id"], r["question"], r["answer"], r["basis_kind"], r["basis"], r["doc_id"],
-                   r["dept"], float(r["score"]), float(r["sim"])) for r in rows]
+    return [FaqRow(r["id"], r["question"], r["answer"], r["basis_kind"], r["basis"], r["doc_id"],
+                   r["dept"], float(r["score"]), float(r["sim"]), r["dtitle"], r["vno"]) for r in rows]
+
+
+class PublishedFaqStore:
+    """`storage.retrieve.PublishedFAQ` over `faq_entries`: active, current-basis entries only.
+
+    FAQHit carries one basis reference: the first basis point (all points stay in the FAQ entry).
+    """
+
+    def search_published(self, conn: Connection, question: str, vector: list[float], *,
+                         department: str | None, stage: str | None, limit: int) -> list[FAQHit]:
+        hits = []
+        for r in search_rows(conn, question, vector, department=department, stage=stage, limit=limit):
+            doc = r.doc_id is not None
+            point = next((b for b in r.basis if b.get("number")), None)
+            basis = None
+            if doc and point is not None:
+                basis = SourceRef(r.doc_id, r.doc_title or r.doc_id, r.department or "", r.version_no or 0,
+                                  point["number"], column=point.get("column"))
+            source = SourceRef(r.doc_id or "faq", "FAQ службы качества", r.department or "Служба качества",
+                               r.version_no or 0, "", faq_id=r.faq_id)
+            hits.append(FAQHit(source, r.answer, basis, r.department, stage if doc else None))
+        return hits

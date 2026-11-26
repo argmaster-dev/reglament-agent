@@ -8,7 +8,7 @@ from reglament_agent.chat import session as S
 from reglament_agent.chat.notifications import pending_notifications
 from reglament_agent.ingest.embedding import FakeEmbedder
 from reglament_agent.ingest.parser import load_cards
-from reglament_agent.quality import create_ticket, recheck_faq_after_publication, search_published
+from reglament_agent.quality import create_ticket, recheck_faq_after_publication, search_rows
 from reglament_agent.storage.publish import publish
 from tests.test_storage import CORPUS, new_revision
 
@@ -84,7 +84,7 @@ def test_outside_faq_through_ui(env):
     assert pending_notifications(env, "petr@corp.kz") == []
     entry = c.get("/admin/faq/1").text
     assert "в регламентах не закреплено" in entry and "expert@x.local" in entry
-    assert [h.faq_id for h in search_published(env, "Аванс подрядчику без договора",
+    assert [h.faq_id for h in search_rows(env, "Аванс подрядчику без договора",
                                                vec("Аванс подрядчику без договора"))] == [1]
     again = c.post(f"/admin/tickets/{n}", data={"action": "answer", "answer": "ещё", "basis_kind": "outside",
                                                 "visibility": "private"})
@@ -105,7 +105,7 @@ def test_private_and_validation(env):
                                              "visibility": "private"})
     assert ok.status_code == 303
     assert env.execute("SELECT count(*) FROM faq_entries").fetchone()[0] == 0
-    assert search_published(env, "Только вам", vec("Только вам")) == []
+    assert search_rows(env, "Только вам", vec("Только вам")) == []
 
 
 def test_point_basis_review_flow(env):
@@ -126,7 +126,7 @@ def test_point_basis_review_flow(env):
     assert recheck_faq_after_publication(env, "td-project") == 1
     entry = c.get("/admin/faq/1").text
     assert "на проверке" in entry and "пункт изменён" in entry
-    assert search_published(env, "Кто размещает заказы на HW?", vec("Кто размещает заказы на HW?")) == []
+    assert search_rows(env, "Кто размещает заказы на HW?", vec("Кто размещает заказы на HW?")) == []
     assert "Кто размещает" in c.get("/admin/faq?status=review").text
     assert c.post("/admin/faq/1/confirm").status_code == 303
     assert env.execute("SELECT status FROM faq_entries").fetchone()[0] == "active"

@@ -6,7 +6,7 @@ from reglament_agent.chat.notifications import (mark_delivered, notification_mar
 from reglament_agent.ingest.embedding import FakeEmbedder
 from reglament_agent.ingest.parser import load_cards
 from reglament_agent.quality import (TicketError, answer_ticket, close_ticket, create_ticket, list_faq,
-                                     recheck_faq_after_publication, search_published, set_faq_status)
+                                     recheck_faq_after_publication, search_rows, set_faq_status)
 from reglament_agent.storage.publish import publish
 
 from pathlib import Path
@@ -34,7 +34,7 @@ def ans(conn, number, **kw):
 
 
 def search(conn, q, **kw):
-    return search_published(conn, q, EMB.embed([q])[0], **kw)
+    return search_rows(conn, q, EMB.embed([q])[0], **kw)
 
 
 @pytest.fixture
@@ -158,3 +158,32 @@ def test_document_basis_goes_to_review_on_replacement(conn):
     publish_td(conn, revised=True)
     assert recheck_faq_after_publication(conn, "td-project") == 1
     assert list_faq(conn, "review")[0]["id"] == r["faq_id"]
+
+
+def test_retrieve_with_published_store(conn):
+    from reglament_agent.quality import PublishedFaqStore
+    from reglament_agent.storage.retrieve import retrieve
+    publish_td(conn)
+    q = "Кто размещает заказы на HW?"
+    ans(conn, ticket(conn, mid="a"), faq_question=q, alt_questions=[])
+    ans(conn, ticket(conn, mid="b", q="Секретный вопрос?"), visibility="private", answer="Приватно",
+        faq_question=None)
+    n3 = ticket(conn, mid="c")
+    ans(conn, n3, basis_kind="points", basis_points=[("td-project", "14.1")],
+        faq_question="Порядок размещения заказов", alt_questions=[])
+    for question in (q, "Секретный вопрос?", "Порядок размещения заказов"):
+        res = retrieve(conn, question, EMB.embed([question])[0], faq=PublishedFaqStore())
+        assert all(h.source.faq_id for h in res.faq)
+        assert not any("Приватно" in h.answer for h in res.faq)
+    res = retrieve(conn, q, EMB.embed([q])[0], faq=PublishedFaqStore())
+    assert res.faq[0].basis is None and res.faq[0].department is None
+    res = retrieve(conn, "Порядок размещения заказов", EMB.embed(["Порядок размещения заказов"])[0],
+                   faq=PublishedFaqStore(), department="Техническая дирекция")
+    point_hit = next(h for h in res.faq if h.basis)
+    assert point_hit.basis.point == "14.1" and point_hit.department == "Техническая дирекция"
+    publish_td(conn, revised=True)
+    recheck_faq_after_publication(conn, "td-project")
+    res = retrieve(conn, "Порядок размещения заказов", EMB.embed(["Порядок размещения заказов"])[0],
+                   faq=PublishedFaqStore())
+    assert not any(h.basis for h in res.faq)  # review entry is gone
+    assert len(res.faq) == 1  # only the outside entry remains
