@@ -2,6 +2,9 @@ x-backend-env: &backend-env
   DATABASE_URL: postgresql://regulations:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/regulations
   MAIL_HOST: mailpit
   MAIL_PORT: "1025"
+  # The gateway alone receives the bcrypt hash. Neither backend gets the cleartext.
+  STAND_BASIC_PASSWORD: ""
+  STAND_BASIC_PASSWORD_HASH: ""
 
 services:
   postgres:

@@ -17,6 +17,9 @@ services:
     environment:
       MP_WEBROOT: /mail/
   gateway:
+    environment:
+      STAND_BASIC_USER: ${STAND_BASIC_USER:?Set STAND_BASIC_USER in .env}
+      STAND_BASIC_PASSWORD_HASH: ${STAND_BASIC_PASSWORD_HASH:?Run deploy/setup-basic.py}
     labels:
       dev.reglament.caddyfile.sha256: ${REGULATIONS_CADDYFILE_SHA256:-unrecorded}
     image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17

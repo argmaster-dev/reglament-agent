@@ -4,27 +4,42 @@
 
 :8080 {
 	@ops path /_ops/*
-	handle @ops {
-		respond 404
+	@upload {
+		method POST
+		path /admin/documents /admin/documents/ /admin/documents/upload /admin/documents/upload/
 	}
-	handle /mail {
-		redir /mail/ 308
-	}
-	handle /mail/* {
-		forward_auth app:8000 {
-			uri /_ops/mail-session
-			# The authorization endpoint is HTTP-only. Mailpit receives the original upgrade.
-			header_up -Connection
-			header_up -Upgrade
+	route {
+		basic_auth {
+			{$STAND_BASIC_USER} {$STAND_BASIC_PASSWORD_HASH}
 		}
-		reverse_proxy mailpit:8025 {
-			header_up -Cookie
+		request_body @upload {
+			max_size 22020096
 		}
-	}
-	handle {
-		reverse_proxy app:8000 {
-			header_up -Forwarded
-			header_up -X-User-Email
+		handle @ops {
+			respond 404
+		}
+		handle /mail {
+			redir /mail/ 308
+		}
+		handle /mail/* {
+			forward_auth app:8000 {
+				uri /_ops/mail-session
+				# The authorization endpoint is HTTP-only. Mailpit receives the original upgrade.
+				header_up -Connection
+				header_up -Upgrade
+				header_up -Authorization
+			}
+			reverse_proxy mailpit:8025 {
+				header_up -Authorization
+				header_up -Cookie
+			}
+		}
+		handle {
+			reverse_proxy app:8000 {
+				header_up -Authorization
+				header_up -Forwarded
+				header_up -X-User-Email
+			}
 		}
 	}
 }
