@@ -31,7 +31,7 @@
 <p>Поиск находит {{ check.top1 }} из {{ check.total }} пунктов на первом месте по их собственному тексту.</p>
 <p class="muted">В первой тройке найдено {{ check.found }} из {{ check.total }}.</p>
 {% set misses = check.top1_misses if check.top1_misses is defined else check.misses %}
-{% if misses %}<details><summary>Пункты, которые не заняли первое место ({{ misses|length }})</summary>
+{% if misses %}<details><summary>{% if check.top1_misses is defined %}Пункты, которые не заняли первое место{% else %}Пункты вне первой тройки{% endif %} ({{ misses|length }})</summary>
 <ul>{% for m in misses %}<li>
 <b>Пункт {{ m.number }}</b> · {{ m.text }}
 {% if m.first_number %}<br><span class="muted">На первом месте «{{ m.first_title }}», п. {{ m.first_number }}.</span>{% endif %}
