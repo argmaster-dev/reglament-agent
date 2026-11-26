@@ -8,6 +8,7 @@ from collections import deque
 from collections.abc import Sequence
 from math import ceil
 from time import monotonic
+from typing import TYPE_CHECKING
 
 from fastapi import Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -15,6 +16,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from reglament_agent.chat import session as S
 from reglament_agent.chat.render import EXAMPLES
 from reglament_agent.chat.services import available_departments
+
+if TYPE_CHECKING:
+    from chainlit.user import User
 
 PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Агент по регламентам</title><style>
@@ -56,11 +60,18 @@ def _secure_cookie(request: Request) -> bool:
     return os.environ.get("CHAT_SECURE_COOKIES") == "true" or request.url.scheme == "https"
 
 
+def chainlit_user(identity: S.Identity) -> User:
+    from chainlit.user import User
+
+    return User(identifier=identity.email, metadata={"role": identity.role, "department": identity.department})
+
+
 def _redirect(request: Request, identity: S.Identity) -> RedirectResponse:
-    from chainlit.auth.cookie import clear_auth_cookie
+    from chainlit.auth import create_jwt, set_auth_cookie
 
     r = RedirectResponse("/", status_code=303)
-    clear_auth_cookie(request, r)
+    # Complete the role login before the browser starts Chainlit's router and /user request.
+    set_auth_cookie(request, r, create_jwt(chainlit_user(identity)))
     r.set_cookie(
         S.COOKIE_NAME, S.sign_identity(identity, secret()), max_age=S.COOKIE_TTL,
         httponly=True, secure=_secure_cookie(request), samesite="lax",

@@ -146,7 +146,12 @@ def test_switching_demo_identity_expires_prior_chat_session(monkeypatch, tmp_pat
         for method, path in [('get', '/start'), ('post', '/start/employee')]:
             r = getattr(client, method)(path, headers={'Cookie': 'access_token=old; access_token_1=part'})
             expired = [v.split('=', 1)[0] for v in r.headers.get_list('set-cookie') if 'Max-Age=0' in v]
-            assert {'access_token', 'access_token_1'} <= set(expired)
+            assert 'access_token_1' in expired
+            if method == 'get':
+                assert 'access_token' in expired
+            else:
+                assert 'access_token' not in expired
+                assert r.cookies.get('access_token') not in (None, 'old')
 
 
 def test_start_uses_current_active_departments(isolated, monkeypatch, tmp_path):

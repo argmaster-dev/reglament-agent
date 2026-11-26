@@ -2,10 +2,10 @@
 
 Role choice. Chainlit's own login page is a single email/password form and cannot show two role
 cards, so the choice lives on a small start page (`/start`, FastAPI routes added to Chainlit's
-app, see start_page.py). The page sets an HMAC-signed cookie; Chainlit's header_auth_callback
-verifies it and puts the role into the user metadata. A client cannot forge a role without
-CHAINLIT_AUTH_SECRET. With CHAT_TRUSTED_HEADER set (production) identity comes only from that
-header, which the reverse proxy must set and strip from client requests (see session.py).
+app, see start_page.py). Role selection issues a signed profile and a Chainlit JWT in
+the same redirect. Both use CHAINLIT_AUTH_SECRET. When CHAT_TRUSTED_HEADER is configured,
+Chainlit authenticates the identity through its header callback. The reverse proxy
+sets that header and strips client-supplied copies (see session.py).
 
 The dialog logic is not here: this module only renders Answer objects (render.py).
 """
@@ -61,9 +61,7 @@ def channel_storage():
 @cl.header_auth_callback
 async def auth(headers) -> cl.User | None:
     ident = S.identity_from_headers(headers, os.environ["CHAINLIT_AUTH_SECRET"])
-    if ident is None:
-        return None
-    return cl.User(identifier=ident.email, metadata={"role": ident.role, "department": ident.department})
+    return start_page.chainlit_user(ident) if ident else None
 
 
 def _actions(specs: list[R.ActionSpec]) -> list[cl.Action]:
