@@ -290,6 +290,35 @@ def _check_entry(conn: Connection, entry: dict) -> tuple[str, list[dict]]:
     return "ok", basis
 
 
+def review_reasons(conn: Connection, entry: dict) -> list[str]:
+    """Why an entry cannot stay published, judged against the document state as it is now."""
+    out = []
+    for b in entry["basis"]:
+        doc = conn.execute("SELECT status, title FROM documents WHERE doc_id=%s", (b["doc_id"],)).fetchone()
+        title = (doc[1] if doc else None) or b.get("doc_title") or b["doc_id"]
+        if doc is None or doc[0] != "active":
+            out.append(f"документ «{title}» снят с публикации")
+        elif entry["basis_kind"] == "document":
+            out.append(f"документ «{title}» заменён другой версией")
+        else:
+            state = point_state(conn, b)["state"]
+            if state == "removed":
+                out.append(f"пункт {b['number']} удалён из действующей версии")
+            elif state == "changed":
+                out.append(f"текст пункта {b['number']} изменён (или строка таблицы перенесена)")
+    return list(dict.fromkeys(out)) or ["основание записи изменилось"]
+
+
+def record_review(conn: Connection, faq_id: int, actor: str, action: str, detail: dict | None = None) -> None:
+    """One line of the check history: who, what, when and under which version of the document."""
+    row = conn.execute("SELECT v.version_number FROM faq_entries f JOIN documents d ON d.doc_id=f.doc_id "
+                       "JOIN document_versions v ON v.version_id=d.active_version_id WHERE f.id=%s",
+                       (faq_id,)).fetchone()
+    detail = {**(detail or {}), "version": row[0] if row else None}
+    conn.execute("INSERT INTO faq_reviews (faq_id, actor, action, detail) VALUES (%s,%s,%s,%s)",
+                 (faq_id, actor, action, Jsonb(detail)))
+
+
 def recheck_faq_after_publication(conn: Connection, doc_id: str) -> int:
     """Move active entries whose basis changed in the new active version of `doc_id` to `review`.
 
@@ -300,12 +329,13 @@ def recheck_faq_after_publication(conn: Connection, doc_id: str) -> int:
     with conn.transaction():
         rows = conn.cursor(row_factory=dict_row).execute(
             "SELECT id, basis_kind, doc_id, version_id, basis FROM faq_entries WHERE status='active' "
-            "AND basis_kind <> 'outside' AND (doc_id=%s OR basis @> %s::jsonb) FOR UPDATE",
+            "AND basis_kind <> 'outside' AND (doc_id=%s OR basis @> %s::jsonb) ORDER BY id FOR UPDATE",
             (doc_id, Jsonb([{"doc_id": doc_id}]))).fetchall()
         for row in rows:
             verdict, basis = _check_entry(conn, row)
             if verdict == "review":
                 conn.execute("UPDATE faq_entries SET status='review', updated_at=now() WHERE id=%s", (row["id"],))
+                record_review(conn, row["id"], "система", "to_review", {"reasons": review_reasons(conn, row)})
                 moved += 1
             else:
                 version = conn.execute("SELECT active_version_id FROM documents WHERE doc_id=%s",

@@ -34,6 +34,7 @@ form.f textarea{width:100%;font:inherit;padding:8px}
 <a href="/admin/documents" class="{{ 'on' if nav == 'documents' }}">Документы</a>
 <a href="/admin/tickets" class="{{ 'on' if nav == 'tickets' }}">Обращения{% if open_tickets is not none %} ({{ open_tickets }} открытых){% endif %}</a>
 <a href="/admin/faq" class="{{ 'on' if nav == 'faq' }}">FAQ</a>
+<a href="/admin/faq?status=review">FAQ на проверке</a>
 {% if mail_ui_url %}<a href="{{ mail_ui_url }}" target="_blank" rel="noopener">Почта службы</a>{% endif %}
 <a href="/admin/analytics" class="{{ 'on' if nav == 'analytics' }}">Аналитика</a>
 <span class="sp">{% if identity %}{{ identity.email }} · <a href="/start">сменить роль</a>{% endif %}</span></header>
