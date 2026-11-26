@@ -9,6 +9,7 @@ import psycopg
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from reglament_agent.chat import notifications
 from reglament_agent.dialog.state import answers
 from reglament_agent.chat.session import identity_from_headers
 from reglament_agent.chat.render import outcome_label
@@ -20,9 +21,11 @@ def load(conn, email, dialog_id=None):
     if dialog_id is None:
         return conn.execute(
             """
-            SELECT dialog_id, (array_agg(question ORDER BY created_at,id))[1], max(created_at)
-            FROM dialog_requests WHERE user_email=%s GROUP BY dialog_id
-            ORDER BY max(created_at) DESC LIMIT 100""",
+            SELECT r.dialog_id, (array_agg(r.question ORDER BY r.created_at,r.id))[1], max(r.created_at),
+                   EXISTS (SELECT 1 FROM chat_notifications n WHERE n.user_email=r.user_email
+                           AND n.dialog_id=r.dialog_id AND n.delivered_at IS NULL)
+            FROM dialog_requests r WHERE r.user_email=%s GROUP BY r.user_email,r.dialog_id
+            ORDER BY max(r.created_at) DESC LIMIT 100""",
             (email,),
         ).fetchall()
     return conn.execute(
@@ -46,13 +49,14 @@ def page(title, content, status=200):
     )
 
 
-def render(rows, dialog_id):
+def render(rows, dialog_id, notes=()):
     esc = html.escape
     if dialog_id is None:
         content = "".join(
             f'<li><a href="/history/{quote(key, safe="")}">{esc(title)}</a> '
-            f"<time>{date:%d.%m.%Y %H:%M}</time></li>"
-            for key, title, date in rows
+            f"<time>{date:%d.%m.%Y %H:%M}</time>"
+            f"{' · <strong>новый ответ</strong>' if unread else ''}</li>"
+            for key, title, date, unread in rows
         )
         return page(
             "Мои диалоги", f"<ul>{content}</ul>" if content else "<p>Сохранённых вопросов пока нет.</p>"
@@ -80,6 +84,13 @@ def render(rows, dialog_id):
         blocks.append(
             f"<article><h2>{esc(question)}</h2><time>{date:%d.%m.%Y %H:%M}</time> · {esc(label)}{content}</article>"
         )
+    for note in notes:
+        date = note["created_at"]
+        details = "".join(f"<p>{esc(line)}</p>" for line in notifications.notification_details(note))
+        blocks.append(
+            f"<article><h2>Ответ службы качества · обращение №{esc(note['ticket_number'])}</h2>"
+            f"<time>{date:%d.%m.%Y %H:%M}</time><p>{esc(note['payload']['answer'])}</p>{details}</article>"
+        )
     return page("История диалога", "".join(blocks))
 
 
@@ -92,6 +103,12 @@ async def history(request: Request, dialog_id: str | None = None):
 
     def read():
         with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-            return render(load(conn, identity.email, dialog_id), dialog_id)
+            rows = load(conn, identity.email, dialog_id)
+            if dialog_id is None or not rows:
+                return render(rows, dialog_id)
+            notes = notifications.conversation_notifications(conn, identity.email, dialog_id)
+            response = render(rows, dialog_id, notes)
+            notifications.mark_delivered(conn, [note["id"] for note in notes])
+            return response
 
     return await asyncio.to_thread(read)

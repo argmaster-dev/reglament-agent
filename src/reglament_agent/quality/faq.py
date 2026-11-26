@@ -9,6 +9,7 @@ document's active version, so a stale entry is hidden even before the re-check h
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Sequence
 
 from psycopg import Connection
@@ -16,6 +17,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from reglament_agent.answer import SourceRef
+from reglament_agent.dialog.lexicon import words, word_key
 from reglament_agent.ingest.embedding import Embedder, vector_literal
 from reglament_agent.storage.retrieve import FAQHit
 
@@ -43,6 +45,8 @@ class FaqRow:
     doc_title: str | None = None
     version_no: int | None = None
     alt_questions: tuple[str, ...] = ()
+    author_email: str = ""
+    created_at: datetime | None = None
 
 
 def basis_label(basis_kind: str, basis: list[dict]) -> str:
@@ -153,7 +157,8 @@ def answer_ticket(conn: Connection, *, number: str, expert_email: str, answer: s
                     "VALUES (%s,%s,%s,'answer',%s)",
                     (ticket["user_email"], ticket["dialog_id"], number,
                      Jsonb({"answer": answer, "basis_kind": basis_kind, "basis": basis,
-                            "question": ticket["question"]})))
+                            "question": ticket["question"], "expert_email": expert_email,
+                            "visibility": visibility})))
     return {"number": number, "faq_id": faq_id, "basis_kind": basis_kind, "basis": basis,
             "visibility": visibility}
 
@@ -336,13 +341,15 @@ def search_rows(conn: Connection, question: str, vector: list[float], *, departm
               FROM eligible e, (SELECT websearch_to_tsquery('russian', %(query)s) AS t) q WHERE e.tsv @@ q.t),
         fused AS (SELECT id, sum(1.0 / (60 + r)) AS score FROM
                   (SELECT id, r FROM v UNION ALL SELECT id, r FROM l) x GROUP BY id)
-        SELECT e.id, e.question, e.alt_questions, e.answer, e.basis_kind, e.basis, e.doc_id, e.dept, fused.score, v.sim, e.dtitle, e.vno
+        SELECT e.id, e.question, e.alt_questions, e.answer, e.basis_kind, e.basis, e.doc_id, e.dept,
+               fused.score, v.sim, e.dtitle, e.vno, e.author_email, e.created_at
         FROM fused JOIN eligible e ON e.id = fused.id JOIN v ON v.id = e.id
         ORDER BY fused.score DESC, e.id LIMIT %(limit)s""",
         {"vec": vector_literal(vector), "query": question, "dept": department, "stage": stage,
          "limit": limit}).fetchall()
     return [FaqRow(r["id"], r["question"], r["answer"], r["basis_kind"], r["basis"], r["doc_id"],
-                   r["dept"], float(r["score"]), float(r["sim"]), r["dtitle"], r["vno"], tuple(r["alt_questions"])) for r in rows]
+                   r["dept"], float(r["score"]), float(r["sim"]), r["dtitle"], r["vno"], tuple(r["alt_questions"]),
+                   r["author_email"], r["created_at"]) for r in rows]
 
 
 class PublishedFaqStore:
@@ -363,6 +370,46 @@ class PublishedFaqStore:
                                   point["number"], column=point.get("column"))
             source = SourceRef(r.doc_id or "faq", "FAQ службы качества", r.department or "Служба качества",
                                r.version_no or 0, "", faq_id=r.faq_id)
+            stamp = f" от {r.created_at:%d.%m.%Y}" if r.created_at else ""
+            attribution = f"Ответ службы качества{stamp} · {r.author_email} · {basis_label(r.basis_kind, r.basis)}"
             hits.append(FAQHit(source, r.answer, basis, r.department, stage if doc else None,
-                               r.question, r.alt_questions))
+                               r.question, r.alt_questions, r.similarity, attribution))
         return hits
+
+
+# A FAQ may answer a new wording only with strong embedding agreement AND shared content.
+# Exact variants explicitly supplied by the expert take priority.
+_FAQ_SIMILARITY = 0.78
+_FAQ_MARGIN = 0.04
+_FAQ_INTENTS = frozenset({"кто", "где", "когда", "сколько", "зачем", "почему", "какой", "какие"})
+_FAQ_CONDITIONS = frozenset({"не", "нет", "нельзя", "без", "кроме"})
+
+
+def _question_shape(tokens):
+    intent = tokens[0] if tokens and tokens[0] in _FAQ_INTENTS else ""
+    conditions = frozenset(t for t in tokens if t in _FAQ_CONDITIONS or t.isdigit())
+    keys = {word_key(t) for t in tokens if len(t) >= 4 and t not in _FAQ_INTENTS}
+    return intent, conditions, keys
+
+
+def match_published(question: str, hits: list[FAQHit]) -> FAQHit | None:
+    tokens = words(question)
+    if not tokens:
+        return None
+    intent, conditions, keys = _question_shape(tokens)
+    candidates = []
+    for hit in hits:
+        variants = [words(q) for q in (hit.question, *hit.alt_questions)]
+        if tokens in variants:
+            return hit
+        if hit.similarity < _FAQ_SIMILARITY:
+            continue
+        for variant in variants:
+            other_intent, other_conditions, other_keys = _question_shape(variant)
+            if (intent, conditions) == (other_intent, other_conditions) and len(keys & other_keys) >= 2:
+                candidates.append(hit)
+                break
+    candidates.sort(key=lambda hit: hit.similarity, reverse=True)
+    if not candidates or (len(candidates) > 1 and candidates[0].similarity - candidates[1].similarity < _FAQ_MARGIN):
+        return None
+    return candidates[0]

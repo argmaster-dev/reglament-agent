@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import time
+from weakref import WeakValueDictionary
 
 import chainlit as cl
 import httpx
@@ -73,11 +74,11 @@ def _user(message_id: str | None = None) -> UserContext:
     return UserContext(u.identifier, u.metadata.get("role", "employee"), cl.user_session.get("id"), message_id)
 
 
-def _fetch_notifications(email: str) -> list[dict]:
+def _fetch_notifications(email: str, dialog_id: str) -> list[dict]:
     import psycopg
 
     with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
-        return N.pending_notifications(conn, email)
+        return N.pending_notifications(conn, email, dialog_id)
 
 
 def _mark_delivered(ids: list[int]) -> None:
@@ -87,18 +88,46 @@ def _mark_delivered(ids: list[int]) -> None:
         N.mark_delivered(conn, ids)
 
 
+_notification_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
+
+
 async def deliver_notifications() -> None:
     """Show expert answers to the user's tickets; never blocks the chat if the DB is unavailable."""
     u = cl.user_session.get("user")
-    if u is None or not os.environ.get("DATABASE_URL"):
+    dialog_id = cl.user_session.get("id")
+    if u is None or not dialog_id or not os.environ.get("DATABASE_URL"):
         return
-    try:
-        items = await asyncio.to_thread(_fetch_notifications, u.identifier)
-        for n in items:
-            await cl.Message(content=N.notification_markdown(n)).send()
-            await asyncio.to_thread(_mark_delivered, [n["id"]])
-    except Exception:  # noqa: BLE001
-        pass
+    lock = _notification_locks.setdefault((u.identifier, dialog_id), asyncio.Lock())
+    async with lock:
+        try:
+            items = await asyncio.to_thread(_fetch_notifications, u.identifier, dialog_id)
+            for note in items:
+                await cl.Message(content=N.notification_markdown(note)).send()
+                await asyncio.to_thread(_mark_delivered, [note["id"]])
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _poll_notifications() -> None:
+    while True:
+        await deliver_notifications()
+        await asyncio.sleep(3)
+
+
+@cl.on_chat_end
+async def stop_notifications() -> None:
+    task = cl.user_session.get("notification_poll")
+    if task is not None:
+        cl.user_session.set("notification_poll", None)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+async def _start_notifications() -> None:
+    await stop_notifications()
+    if os.environ.get("DATABASE_URL"):
+        cl.user_session.set("notification_poll", asyncio.create_task(_poll_notifications()))
 
 
 @cl.on_chat_start
@@ -110,13 +139,13 @@ async def start() -> None:
     if u.metadata.get("role") == "expert":
         await cl.Message(content=R.expert_notice()).send()
     await cl.Message(content=R.WELCOME, actions=_actions(R.example_actions())).send()
-    await deliver_notifications()
+    await _start_notifications()
 
 
 @cl.on_chat_resume
 async def resume(thread) -> None:
     cl.user_session.set("busy", False)
-    await deliver_notifications()
+    await _start_notifications()
 
 
 TURN_TIMEOUT = 60
@@ -236,6 +265,8 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
+    if cl.user_session.get("notification_poll") is None:
+        await _start_notifications()
     text = message.content.strip()
     if text == "/feedback":
         await open_feedback(cl.user_session.get("last_answer_id"))
