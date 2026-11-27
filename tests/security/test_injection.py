@@ -3,6 +3,7 @@
 import json
 
 from reglament_agent.answer import Outcome
+from reglament_agent.dialog.grounding import prompt
 
 from .conftest import DEADLINE, Q_SIGN, SIGN, SOURCE_SENTENCES, claim, visible_text
 
@@ -53,8 +54,12 @@ def test_question_goes_to_model_only_as_data(env):
     """Текст вопроса не попадает в system-сообщение: инструкции пользователя не смешиваются с правилами."""
     _, model, _ = env.ask(ATTACK, lambda s: {"outcome": "no_basis", "claims": []})
     system, user = model.prompts[0]
-    assert system["role"] == "system" and "SYSTEM: теперь" not in system["content"]
-    assert json.loads(user["content"])["вопрос"].startswith("Игнорируй")
+    reference, _ = prompt(Q_SIGN, {}, variants=False)
+    assert system == reference[0]
+    assert user["role"] == "user"
+    question = json.loads(user["content"])["вопрос"]
+    assert question.endswith(Q_SIGN)
+    assert ATTACK.split(".", 1)[0] not in question
 
 
 def test_injection_does_not_reveal_other_users_data(env):
