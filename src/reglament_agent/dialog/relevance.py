@@ -77,6 +77,12 @@ _SIGNING_DOCUMENT = re.compile(
 )
 _CONTRACTOR = re.compile(r"(?:суб)?подряд(?:чик|н)\w*|внешн\w* исполнител")
 _PRIORITY = re.compile(r"приоритет")
+# The abbreviation and full name denote one party. A legal department and an
+# individual must remain distinct from a legal entity in evidence checks.
+_LEGAL_ENTITY = re.compile(
+    r"\b(?:юридическ(?:ое|ого|ому|ом|им|ие|их|ими)\s+|юр\.?\s*)"
+    r"лиц(?:ами|ам|ах|ом|о|а|у|е)?\b"
+)
 
 
 def terms(text):
@@ -87,7 +93,8 @@ def terms(text):
             return "сделка"
         return word_key(word)
 
-    return {concept(w) for w in words(text) if w not in _STOP and len(w) > 1}
+    normalized = _LEGAL_ENTITY.sub("юрлицо", fold(text))
+    return {concept(w) for w in words(normalized) if w not in _STOP and len(w) > 1}
 
 
 # A reimbursement is a transfer to a beneficiary. An expense posted to a project

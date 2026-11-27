@@ -19,3 +19,18 @@ def test_mention_of_requester_does_not_hide_general_rule():
     result = evidence('SS спрашивает: меняется ли приоритет заявки?', [
         'Приоритет заявки не меняется.', 'Диспетчер может повысить приоритет заявки при аварии.'])
     assert result.outcome == Outcome.CONFLICT and len(result.statements)==2
+
+
+def test_short_legal_entity_name_matches_only_the_same_party_in_a_signed_agreement():
+    question = 'С какого юрлица заключаем субдоговоры?'
+    correct = 'Субподрядные договоры заключаются от юридических лиц компании, кроме перепродажи сервисов.'
+    legal_review = 'Соглашения заключаются после рассмотрения юридической службой.'
+    individual = 'Соглашения заключаются с физическими лицами.'
+    result = evidence(question, [legal_review, individual, correct])
+    assert [s.text for s in result.statements] == [correct]
+
+
+def test_full_legal_entity_name_matches_an_abbreviated_rule():
+    rule = 'Поручение оформляет представитель юр. лица.'
+    result = evidence('От какого юридического лица оформляется заявка?', [rule])
+    assert [s.text for s in result.statements] == [rule]
