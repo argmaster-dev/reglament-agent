@@ -6,10 +6,12 @@ The extracted sentence and its precise reference remain the source of the answer
 """
 
 import re
+from dataclasses import dataclass, field
 
 from reglament_agent.answer import Statement
 from reglament_agent.storage.search import QUESTION_WORDS
 
+from .deadlines import has_deadline, question_mode
 from .lexicon import find_roles, fold, word_key, words
 
 _STOP = QUESTION_WORDS | {
@@ -41,21 +43,15 @@ _STOP = QUESTION_WORDS | {
     "для",
     "изо",
 }
-_ADVANCE = re.compile(r"за сколько|заранее|за какое время|за какой срок")
-_INTERVAL = re.compile(r"\bза\b.{0,40}\bдо\b")
-# A question about a time limit, however it is phrased (how far ahead, how long, until when, how many days).
-_DEADLINE_ASK = re.compile(
-    r"срок|за сколько|заранее|за како[ей] (?:время|срок)|в течение како|как долго|как быстро|до како\w* (?:числа|момента)"
-    r"|не позднее како|не раньше како|сколько\s+(?:\w+\s+)?(?:дн|дне|недел|час|месяц|времени|суток)|когда\s+(?:нужно|надо|следует|необходимо|должн|можно|подава|сда)"
-)
-_UNIT = r"(?:дн|недел|час|месяц|минут|суток|квартал)"
-_NUMBER = r"(?:\d+|одн\w*|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|двадцать|тридцать)"
-_TIME_VALUE = re.compile(
-    rf"{_NUMBER}\s+(?:(?:рабоч|календарн)\w*\s+)?{_UNIT}|в течение|не позднее|не менее чем за|заранее|в срок"
-)
 _DEADLINE_WORDS = {word_key(w) for w in (
     "срок срока сроки время времени день дня дней недели неделя час часов нужно надо следует необходимо "
-    "должен должна можно течение позднее раньше долго быстро сколько какой какого когда числа момента".split())}
+    "должен должна можно течение позднее раньше заранее долго быстро сколько какой какого когда числа момента "
+    "дается отводится отведено предусмотрено есть после даты начиная через рабочего рабочих календарного "
+    "календарных чтобы имеет".split())}
+_COURTESY_WORDS = {word_key(w) for w in ("уточните", "поясните", "скажите", "сообщите", "прошу", "пожалуйста")}
+_OPERATION_VERB = re.compile(r"^([а-я]{3,}?)(?:вать|овать|ировать|ть|ется|ются|ят|ют|ет|ит)$")
+_OPERATION_NOUN = re.compile(r"^([а-я]{3,}?)(?:ования|ания|ения|т[ия][еяю]|ч[аиу]|к[аиу])$")
+_REFERENCE_EVENT = re.compile(r"\b(?:после|до|с (?:момента|даты|дня))\b")
 _SIGN = re.compile(r"подпис|заключ")
 _SIGN_ROLE = re.compile(r"подпис(?:ание|ывает|ать|ыва)|заключ(?:ение|ает|ить)")
 _CONTRACTOR = re.compile(r"(?:суб)?подрядчик|внешн\w* исполнител")
@@ -133,9 +129,9 @@ def question_parts(question):
     return merged or [q]
 
 
-def matches_request(question, anchor):
-    parts = question_parts(question)
-    return any(_matches_part(p, anchor) for p in parts)
+def matches_request(question, anchor, *, point_terms=None):
+    parts = [part for part in question_parts(question) if terms(part) - _COURTESY_WORDS]
+    return any(_matches_part(part, anchor, point_terms=point_terms) for part in (parts or [question]))
 
 
 def uncovered_parts(question, statements, rows):
@@ -153,10 +149,10 @@ def uncovered_parts(question, statements, rows):
     return missing
 
 
-def _matches_part(question, anchor):
+def _matches_part(question, anchor, *, point_terms=None):
     q, sentence, context = fold(question), fold(anchor.text), fold(anchor.context)
-    if _ADVANCE.search(q):
-        return bool(_INTERVAL.search(sentence))
+    if asks_deadline(q):
+        return states_deadline(q, anchor, department=anchor.ref.department, point_terms=point_terms)
     if start_permission(q):
         if entry_condition(context) or entry_condition(sentence):
             return True
@@ -193,8 +189,6 @@ def score(question, anchor):
     direct = terms(anchor.text)
     context = terms(anchor.context)
     value = 2 * len(query & direct) + 0.45 * len(query & context)
-    if _ADVANCE.search(fold(question)) and _INTERVAL.search(fold(anchor.text)):
-        value += 7
     if anchor.ref.column and ("обязат" in query or "колонк" in query):
         value += 5
     if _PRIORITY.search(fold(question)) and _PRIORITY.search(fold(anchor.text)):
@@ -208,26 +202,91 @@ def score(question, anchor):
     return value + 2 / (1 + anchor.rank)
 
 
-def asks_deadline(q):
-    q = fold(q)
-    # «Кто контролирует сроки?» asks for a performer; the time limit is only its subject.
-    return bool(_DEADLINE_ASK.search(q)) and not re.search(r"\bкто\b", q)
+def asks_deadline(question):
+    return question_mode(question) is not None
 
 
 def deadline_subject(question, department=None):
-    scoped = {word_key(word) for word in words(department)} if department else set()
-    return terms(question) - _DEADLINE_WORDS - scoped
+    scoped = terms(department) if department else set()
+    return terms(question) - _DEADLINE_WORDS - _COURTESY_WORDS - scoped
+
+
+def _point_key(anchor):
+    return anchor.ref.doc_id, anchor.ref.version_no, anchor.ref.point
+
+
+def _roles(text):
+    return {role for _, _, role in find_roles(words(text))}
+
+
+@dataclass
+class _PointSubject:
+    words: set[str] = field(default_factory=set)
+    roles: set[str] = field(default_factory=set)
+
+
+def deadline_context(rows):
+    point_terms = {}
+    for anchor in rows:
+        point = point_terms.setdefault(_point_key(anchor), _PointSubject())
+        point.words.update(terms(anchor.text + " " + anchor.context))
+        point.roles.update(_roles(anchor.text + " " + anchor.context))
+    return point_terms
+
+
+def _operation(question, subject):
+    content = [token for token in words(question) if word_key(token) in subject]
+    verb = next((match for token in content if (match := _OPERATION_VERB.fullmatch(token))), None)
+    nominal = _OPERATION_NOUN.fullmatch(content[0]) if content else None
+    operation = verb or nominal
+    return operation[1][:5] if operation else None
+
+
+def _mentions_operation(operation, keys):
+    return any(key.startswith(operation) or len(key) >= 4 and key[:4] == operation[:4] for key in keys)
+
+
+def _operation_clause(text):
+    # A related event is a reference for the duration, not the action being timed.
+    event = _REFERENCE_EVENT.search(text)
+    if not event:
+        return text
+    action = text[:event.start()].strip()
+    if action:
+        return action
+    event_text = text[event.end():]
+    return event_text.partition(",")[2] or text
 
 
 def states_deadline(question, anchor, *, department=None, point_terms=None):
-    """A sentence with a time value in a point that concerns the subject the question names."""
-    if not _TIME_VALUE.search(fold(anchor.text)):
+    """Check the time and the operation independently. A section alone cannot supply the subject."""
+    mode = question_mode(question)
+    if mode is None or not has_deadline(anchor.text, mode):
         return False
-    keys = deadline_subject(question, department)
+    subject = deadline_subject(question, department)
     own = terms(anchor.text + " " + anchor.context)
-    # A note or exception of a point rarely repeats the subject of its heading sentence: the point supplies it.
-    whole = own | (point_terms or {}).get((anchor.ref.doc_id, anchor.ref.point), set())
-    return bool(keys) and len(keys & whole) >= min(2, len(keys))
+    point = (point_terms or {}).get(_point_key(anchor))
+    if point:
+        own |= point.words
+    clause = _operation_clause(fold(anchor.text))
+    requested_roles = _roles(question)
+    if requested_roles:
+        actual_roles = (
+            _roles(clause) or _roles(anchor.text) or (_roles(anchor.context) | (point.roles if point else set()))
+        )
+        if not requested_roles & actual_roles:
+            return False
+    operation = _operation(question, subject)
+    direct = terms(clause)
+    if operation and subject & direct and any(_OPERATION_VERB.fullmatch(word) for word in words(clause)):
+        if not _mentions_operation(operation, direct):
+            return False
+    section = terms(anchor.section_title)
+    if subject & own and len(subject & (own | section)) >= min(2, len(subject)):
+        return True
+    # In a short advance question, an action mention can stand on its own (e.g. an
+    # inflection or a generic noun for the action); longer questions need their subject.
+    return bool(mode == "before" and len(subject) == 2 and operation and _mentions_operation(operation, direct))
 
 
 def applicable_refs(question, rows, *, department=None):
@@ -238,16 +297,9 @@ def applicable_refs(question, rows, *, department=None):
         # The amount for an individual transaction also depends on its inputs.
         return set()
     if asks_deadline(q):
-        # The wording of a time-limit question must not decide whether several departments are compared.
-        point_terms = {}
-        for a in rows:
-            point_terms.setdefault((a.ref.doc_id, a.ref.point), set()).update(terms(a.text))
-        relevant = [
-            a for a in rows
-            if states_deadline(q, a, department=department, point_terms=point_terms)
-            or (_ADVANCE.search(q) and matches_request(q, a))
-        ]
-    elif _ADVANCE.search(q) or re.search(r"кто .*подпис|кто .*заключ", q):
+        point_terms = deadline_context(rows)
+        relevant = [a for a in rows if states_deadline(q, a, department=department, point_terms=point_terms)]
+    elif re.search(r"кто .*подпис|кто .*заключ", q):
         relevant = [a for a in rows if matches_request(q, a)]
     elif re.search(r"без\s+\w+", q):
         keys = terms(q) - scoped_terms
@@ -306,10 +358,6 @@ def companion_sentences(statements, rows):
                 group.append(Statement(following.text, [following.ref]))
         collected.extend(s for s in group if s not in collected)
     return collected
-
-
-def answers_advance_deadline(question):
-    return bool(_ADVANCE.search(fold(question)))
 
 
 def conflicting_priority(question, statements):

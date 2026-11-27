@@ -51,6 +51,7 @@ class Anchor:
     text: str
     context: str
     rank: int
+    section_title: str = ""
 
 
 def anchors(points):
@@ -70,13 +71,13 @@ def anchors(points):
                 ]
                 if cells:
                     rows.extend(
-                        Anchor(hit.source_ref(sentence=idx, column=h), cell, base, rank)
+                        Anchor(hit.source_ref(sentence=idx, column=h), cell, base, rank, hit.section_title)
                         for h, cell in dict.fromkeys(cells)
                     )
                     break
             else:
                 if not any(sentence == " | ".join(t.headers) for t in tables):
-                    rows.append(Anchor(hit.source_ref(sentence=idx), sentence, base, rank))
+                    rows.append(Anchor(hit.source_ref(sentence=idx), sentence, base, rank, hit.section_title))
     return rows
 
 
@@ -84,10 +85,12 @@ def vocabulary(question, rows):
     ranked = sorted(rows, key=lambda a: -relevance.score(question, a))
     result = {}
     size = 0
+    deadline = any(relevance.asks_deadline(part) for part in relevance.question_parts(question))
+    point_terms = relevance.deadline_context(rows) if deadline else None
     for a in ranked:
         if len(result) >= 44 or size > 8500:
             break
-        if not relevance.matches_request(question, a):
+        if not relevance.matches_request(question, a, point_terms=point_terms):
             continue
         result[f"S{len(result) + 1}"] = a
         size += len(a.text) + min(len(a.context), 100) + 30
@@ -223,14 +226,20 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         # Department names scope the question; they are not part of the requested rule.
         query = relevance.terms(question) - relevance.terms(" ".join(departments))
         grounded = []
+        deadline = relevance.asks_deadline(question)
+        point_terms = relevance.deadline_context(rows or items.values()) if deadline else None
         for st in statements:
             a = by_ref[st.sources[0]]
             if invention:
                 # Only a sentence that itself covers the question may stand in for an invented value.
                 enough = len(query & relevance.terms(a.text)) >= guards.required_overlap(len(query))
+            elif deadline:
+                enough = relevance.states_deadline(
+                    question, a, department=a.ref.department, point_terms=point_terms
+                )
             else:
                 overlap = query & relevance.terms(a.text + " " + a.context)
-                enough = len(overlap) >= min(2, len(query)) or relevance.answers_advance_deadline(question)
+                enough = len(overlap) >= min(2, len(query))
             if enough:
                 grounded.append(st)
             else:
