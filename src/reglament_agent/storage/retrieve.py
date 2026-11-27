@@ -21,6 +21,8 @@ class FAQHit:
 
     question: str = ""
     alt_questions: tuple[str, ...] = ()
+    similarity: float = 0.0
+    attribution: str = ""
 
     def __post_init__(self):
         if self.source.faq_id is None:

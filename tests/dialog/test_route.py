@@ -169,7 +169,10 @@ def test_distinguishes_signed_artifact_and_requires_actual_table_column():
 def test_exhausted_clarification_carries_transcript(isolated):
     conn, dsn = isolated
     model = Model()
-    points = [hit(d, "За подписание договора отвечает Логист.") for d in ("Отдел А", "Отдел Б")]
+    points = [
+        hit("Отдел А", "За подписание договора отвечает Логист."),
+        hit("Отдел Б", "Договор подписывает директор."),
+    ]
     route = Dialog(dsn, model, shortlist=lambda *a, **kw: points)
     user = UserContext("test@example.org", "employee", "thread", "1")
     assert asyncio.run(route.answer(user, "Кто подписывает договор?", status)).outcome == Outcome.CLARIFY
@@ -179,6 +182,9 @@ def test_exhausted_clarification_carries_transcript(isolated):
     assert answer.ticket and not model.calls
     reason, history = conn.execute("SELECT reason,clarifications FROM tickets").fetchone()
     assert reason == "clarify_exhausted" and len(history) == 3
+    retry = asyncio.run(route.answer(user, "не помню название", status))
+    assert retry.ticket.number == answer.ticket.number
+    assert conn.execute("SELECT count(*) FROM tickets").fetchone() == (1,)
 
 
 def test_unsupported_actor_is_not_rendered(isolated):
@@ -432,3 +438,217 @@ def test_permission_to_start_retains_alternative_conditions_and_their_scope():
     )
     assert result.outcome == Outcome.ANSWER and len(result.statements) == 3
     assert [s.sources[0].sentence for s in result.statements] == [0, 1, 2]
+
+
+def test_dialog_remembers_explicit_position_without_affecting_scope(isolated):
+    _, dsn = isolated
+    model = Model()
+    model.result = {"outcome": "no_basis", "claims": []}
+    route = Dialog(dsn, model, search=lambda *args, **kw: Candidates([], []))
+    user = UserContext("profile@example.org", "employee", "chat", "position")
+    asyncio.run(route.profiles.set_department(user.email, "Отдел А"))
+    reply = asyncio.run(route.answer(user, "Моя должность — логист.", status))
+    assert reply.outcome == Outcome.ANSWER and "логист" in reply.summary
+    profile = asyncio.run(route.profiles.get(user.email))
+    assert profile.department == "Отдел А" and profile.position == "логист"
+    asyncio.run(route.profiles.set_department(user.email, "Отдел Б"))
+    assert asyncio.run(route.profiles.get(user.email)).position == "логист"
+    asyncio.run(route.profiles.reset(user.email))
+    cleared = asyncio.run(route.profiles.get(user.email))
+    assert (cleared.department, cleared.position, cleared.confirmed_at) == (None, None, None)
+    assert model.calls == []
+
+
+def test_department_follow_up_during_clarification_is_temporary(isolated):
+    conn, dsn = isolated
+    from reglament_agent.storage.publish import publish
+    from reglament_agent.ingest.embedding import FakeEmbedder
+    from reglament_agent.ingest.parser import load_cards
+    from pathlib import Path
+
+    docs = Path(__file__).resolve().parents[2] / "docx"
+    for card in load_cards(docs):
+        publish(conn, card, (docs / card.file).read_bytes(), FakeEmbedder(), "test")
+    model = Model()
+    model.result = {"outcome": "no_basis", "claims": []}
+    points = [
+        hit("ДБРЦТ", "Договор подписывает директор."),
+        hit("Техническая дирекция", "За подписание договора отвечает Логист."),
+    ]
+    notes = []
+
+    def search(conn, question, vector, *, department, **kw):
+        notes.append((question, department))
+        return Candidates([p for p in points if p.department == department], [])
+
+    route = Dialog(dsn, model, search=search, shortlist=lambda *args, **kw: points)
+    user = UserContext("profile@example.org", "employee", "chat", "before")
+    question = "Кто подписывает договор?"
+    assert asyncio.run(route.answer(user, question, status)).outcome == Outcome.CLARIFY
+    user.message_id = "temporary"
+    asyncio.run(route.choose(user, "А в Технической дирекции?", status))
+    assert notes[-1] == (question, "Техническая дирекция")
+    assert asyncio.run(route.profiles.get(user.email)).department is None
+    user.message_id = "again"
+    assert asyncio.run(route.answer(user, question, status)).outcome == Outcome.CLARIFY
+    user.message_id = "personal"
+    asyncio.run(route.choose(user, "ДБРЦТ", status))
+    assert asyncio.run(route.profiles.get(user.email)).department == "ДБРЦТ"
+
+
+def test_database_connection_failure_returns_retryable_error(isolated, monkeypatch):
+    import psycopg
+
+    _, dsn = isolated
+    route = Dialog(dsn, Model())
+    user = UserContext("reader@example.org", "employee", "chat", "unavailable")
+
+    def unavailable(*args, **kw):
+        raise psycopg.OperationalError("connection refused")
+
+    with monkeypatch.context() as faults:
+        faults.setattr(psycopg, "connect", unavailable)
+        answer = asyncio.run(route.answer(user, "Что означает РП?", status))
+    assert answer.outcome == Outcome.ERROR and answer.answer_id is None
+    reply = asyncio.run(route.answer(user, "Что означает РП?", status))
+    assert reply.outcome == Outcome.ANSWER and reply.answer_id
+    assert asyncio.run(route.answer(user, "Что означает РП?", status)) == reply
+
+
+def test_stale_department_is_confirmed_once_per_new_dialog(isolated, monkeypatch):
+    conn, dsn = isolated
+    monkeypatch.setenv("DIALOG_PROFILE_MAX_AGE_DAYS", "1")
+    model = Model()
+    model.result = {"outcome": "no_basis", "claims": []}
+    route = Dialog(dsn, model, search=lambda *args, **kw: Candidates([], []))
+    user = UserContext("stale@example.org", "employee", "new chat", "ask")
+    asyncio.run(route.profiles.set_department(user.email, "Отдел А"))
+    conn.execute("UPDATE dialog_profiles SET confirmed_at=now() - interval '2 days'")
+    result = asyncio.run(route.answer(user, "Кто утверждает график?", status))
+    assert result.outcome == Outcome.CLARIFY
+    assert "по-прежнему" in result.clarification.question and "Да" in result.clarification.options
+    user.message_id = "confirm"
+    reply = asyncio.run(route.choose(user, "Да", status))
+    assert reply.scope.department == "Отдел А" and "Подтвердил" in reply.profile_note
+    assert asyncio.run(route.profiles.get(user.email)).confirmed_at is not None
+    user.message_id = "ask-again"
+    reply = asyncio.run(route.answer(user, "Кто утверждает договор?", status))
+    assert reply.outcome != Outcome.CLARIFY
+
+
+def test_a_lost_commit_ack_recovers_the_same_ticket(isolated, monkeypatch):
+    import psycopg
+
+    conn, dsn = isolated
+    connect = psycopg.connect
+    model = Model()
+    model.result = {"outcome": "no_basis", "claims": []}
+    route = Dialog(dsn, model, search=lambda *args, **kwargs: Candidates([], []))
+    user = UserContext("reader@example.org", "employee", "chat", "ticket")
+
+    class LostCommitAck:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+        def commit(self):
+            self.connection.commit()
+            raise psycopg.OperationalError("lost connection after commit")
+
+    with monkeypatch.context() as faults:
+        faults.setattr(psycopg, "connect", lambda dsn: LostCommitAck(connect(dsn)))
+        result = asyncio.run(route.answer(user, "Какие документы нужны?", status))
+    assert result.outcome == Outcome.ERROR
+    answer = asyncio.run(route.answer(user, "Какие документы нужны?", status))
+    assert answer.ticket and model.calls and len(model.calls) == 1
+    assert conn.execute("SELECT count(*) FROM tickets").fetchone() == (1,)
+    assert conn.execute("SELECT count(*) FROM mail_outbox").fetchone() == (1,)
+
+
+def test_identical_applicable_rules_do_not_force_department_clarification(isolated):
+    _, dsn = isolated
+    points = [hit(department, "Договор подписывает директор.") for department in ("Отдел А", "Отдел Б")]
+    model = Model()
+    model.result = {"outcome": "no_basis", "claims": []}
+    route = Dialog(
+        dsn,
+        model,
+        shortlist=lambda *args, **kwargs: points,
+        search=lambda *args, **kwargs: Candidates(points, []),
+    )
+    user = UserContext("person@example.org", "employee", "chat", "common-rule")
+    result = asyncio.run(route.answer(user, "Кто подписывает договор?", status))
+    assert result.outcome != Outcome.CLARIFY and len(model.calls) == 1
+
+
+def test_model_failure_does_not_consume_clarification_or_save_profile(isolated):
+    from reglament_agent.model.ollama import ModelUnavailable
+
+    conn, dsn = isolated
+    points = [
+        hit("Отдел А", "Договор подписывает директор."),
+        hit("Отдел Б", "За подписание договора отвечает Логист."),
+    ]
+
+    class OnceUnavailable(Model):
+        async def chat_json(self, *args, **kwargs):
+            if not self.calls:
+                self.calls.append(None)
+                raise ModelUnavailable("unavailable")
+            return SimpleNamespace(data={"outcome": "no_basis", "claims": []})
+
+    route = Dialog(
+        dsn,
+        OnceUnavailable(),
+        shortlist=lambda *args, **kwargs: points,
+        search=lambda *args, **kwargs: Candidates([], []),
+    )
+    user = UserContext("reader@example.org", "employee", "chat", "question")
+    assert asyncio.run(route.answer(user, "Кто подписывает договор?", status)).outcome == Outcome.CLARIFY
+    user.message_id = "choice"
+    assert asyncio.run(route.choose(user, "Отдел А", status)).outcome == Outcome.ERROR
+    assert asyncio.run(route.profiles.get(user.email)).department is None
+    topic = conn.execute("SELECT state FROM dialog_topics").fetchone()[0]
+    assert "history" not in topic and topic["options"] == ["Отдел А", "Отдел Б"]
+    assert asyncio.run(route.choose(user, "Отдел А", status)).ticket
+    assert asyncio.run(route.profiles.get(user.email)).department == "Отдел А"
+    assert conn.execute("SELECT count(*) FROM tickets").fetchone() == (1,)
+
+
+def test_stage_clarification_preserves_the_scoped_department(isolated):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from reglament_agent.ingest.embedding import FakeEmbedder
+    from reglament_agent.ingest.parser import load_cards
+    from reglament_agent.storage.publish import publish
+
+    conn, dsn = isolated
+    docs = Path(__file__).resolve().parents[2] / "docx"
+    department = "Дирекция ИБ"
+    for card in load_cards(docs):
+        if card.department == department:
+            publish(conn, card, (docs / card.file).read_bytes(), FakeEmbedder(), "test")
+    points = [
+        replace(hit(department, "Начальник контролирует сроки."), doc_id="ib-project"),
+        replace(hit(department, "Куратор контролирует сроки."), doc_id="ib-presale"),
+    ]
+    checked = []
+
+    def search(conn, question, vector, *, department, stage, **kwargs):
+        checked.append((question, department, stage))
+        return Candidates([], [])
+
+    model = Model()
+    model.result = {"outcome": "no_basis", "claims": []}
+    route = Dialog(dsn, model, search=search, shortlist=lambda *args, **kwargs: points)
+    user = UserContext("stage@example.org", "employee", "chat", "question")
+    question = "Кто контролирует сроки в Дирекции ИБ?"
+    request = asyncio.run(route.answer(user, question, status))
+    assert request.outcome == Outcome.CLARIFY and "Пресейл" in request.clarification.options
+    user.message_id = "choose"
+    result = asyncio.run(route.choose(user, "Пресейл", status))
+    assert result.scope.stage == "presale" and checked[-1] == (question, department, "presale")
+    assert asyncio.run(route.profiles.get(user.email)).department is None

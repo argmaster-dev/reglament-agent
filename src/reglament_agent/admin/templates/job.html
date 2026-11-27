@@ -8,17 +8,45 @@
 {% if s.key == "embed" %}{% if s.state == "active" and total %} {{ done }}/{{ total }} <progress value="{{ done }}" max="{{ total }}"></progress>
 {% elif s.state == "done" and stats.embed %} {{ stats.embed.done }}/{{ stats.embed.total }}{% if stats.publication %} (переиспользовано векторов: {{ stats.publication.vectors_reused }}){% endif %}{% endif %}
 {% elif s.key == "selfcheck" and s.state == "active" %} {{ done }}/{{ total }} <progress value="{{ done }}" max="{{ total }}"></progress>
-{% elif s.key == "selfcheck" and s.state == "done" and check %} {{ check.found }}/{{ check.total }}{% endif %}</span>
+{% elif s.key == "selfcheck" and s.state == "done" and check %} {{ check.top1 }}/{{ check.total }}{% endif %}</span>
 <span class="s">{% if s.sec is not none %}{{ "%.1f"|format(s.sec) }} с{% endif %}</span></li>{% endfor %}
 </ul>{% if t.total is defined %}<p class="muted">Всего: {{ "%.1f"|format(t.total) }} с</p>{% endif %}
 {% if status == "queued" %}<p class="muted">В очереди…</p>{% endif %}</div>
-{% if status == "failed" %}<div class="card"><p class="err"><b>Ошибка публикации.</b> Активная версия документа не изменена.</p>
-<pre style="white-space:pre-wrap">{{ error }}</pre><a class="btn sec" href="/admin/documents/upload">Загрузить заново</a></div>{% endif %}
+{% if status == "failed" %}<div class="card">
+{% if stage == "selfcheck" and stats.version %}
+<p class="err"><b>Самопроверка не завершилась.</b> Версия {{ stats.version }} опубликована и доступна поиску.</p>
+{% else %}
+<p class="err"><b>Ошибка публикации.</b> Публикация остановлена до активации новой версии.</p>
+{% endif %}
+<pre style="white-space:pre-wrap">{{ error }}</pre>
+{% if stage == "selfcheck" and stats.version %}
+<a class="btn sec" href="/admin/documents">К документам</a>
+{% else %}
+<a class="btn sec" href="/admin/documents/upload">Загрузить заново</a>
+{% endif %}</div>{% endif %}
 {% if status == "duplicate" %}<div class="card"><p>Эта редакция уже загружена (версия {{ stats.version }}). Ничего не изменено.</p>
 <a class="btn sec" href="/admin/documents">К документам</a></div>{% endif %}
 {% if status == "ready" %}<div class="card"><p class="ready">● Готов к поиску</p>
-{% if check %}<p>Поиск находит {{ check.found }} из {{ check.total }} пунктов (в первой тройке выдачи; на первом месте: {{ check.top1 }}).</p>
-{% if check.misses %}<p class="warn">Не найдены в первой тройке по собственному тексту (короткие пункты): {% for m in check.misses %}п. {{ m.number }} «{{ m.text }}»{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}{% endif %}
+{% if check %}
+{% if check.full_text is defined %}
+<p data-search-metric="top1">Первое место в гибридном поиске — {{ check.top1 }} из {{ check.total }} пунктов.</p>
+<p class="muted" data-search-metric="top3">Первая тройка в гибридном поиске — {{ check.found }} из {{ check.total }}.</p>
+<p class="muted" data-search-metric="full_text">Полный текст — {{ check.full_text }} из {{ check.total }}. Проверка совпадений текста.</p>
+{% else %}
+<p>Сохранённая самопроверка — {{ check.top1 }} из {{ check.total }} пунктов на первом месте.</p>
+<p class="muted">В первой тройке найдено {{ check.found }} из {{ check.total }}.</p>
+{% endif %}
+{% set misses = check.top1_misses if check.top1_misses is defined else check.misses %}
+{% if misses %}<details><summary>{% if check.top1_misses is defined %}Пункты, которые не заняли первое место{% else %}Пункты вне первой тройки{% endif %} ({{ misses|length }})</summary>
+<ul>{% for m in misses %}<li data-search-miss="{{ m.number }}">
+<b>Пункт {{ m.number }}</b> · {{ m.text }}
+{% if m.first_number %}<br><span class="muted">На первом месте «{{ m.first_title }}», п. {{ m.first_number }}.
+{% if m.same_text %}Текст совпадает после нормализации.
+{% elif m.first_text %}Текст первого результата: «{{ m.first_text | truncate(220) }}».
+{% endif %}</span>{% endif %}
+</li>{% endfor %}</ul></details>{% endif %}
+{% endif %}
+{% if stats.faq_review %}<p>Отправлено на проверку записей FAQ: {{ stats.faq_review }}.</p>{% endif %}
 <p class="muted">Версия {{ stats.version }}. Новое подразделение появится в кнопках уточнения в чате.</p>
 <a class="btn" href="/admin/documents">Открыть документ</a></div>{% endif %}
 {% endblock %}

@@ -1,0 +1,33 @@
+.release-footer {
+  max-inline-size: 1060px;
+  margin: 0 auto 1rem;
+  padding: .65rem 1.5rem 0;
+  font-size: .8rem;
+  line-height: 1.35;
+  color: #4b5563;
+  overflow-wrap: anywhere;
+}
+
+.watermark + .release-footer {
+  margin: 0;
+  padding: 0 .5rem .35rem;
+  text-align: center;
+}
+
+.release-footer a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.release-footer__warning {
+  color: #b00020;
+  font-weight: 600;
+}
+
+.dark .release-footer {
+  color: #d1d5db;
+}
+
+.dark .release-footer__warning {
+  color: #ff9ca7;
+}

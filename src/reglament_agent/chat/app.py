@@ -2,10 +2,10 @@
 
 Role choice. Chainlit's own login page is a single email/password form and cannot show two role
 cards, so the choice lives on a small start page (`/start`, FastAPI routes added to Chainlit's
-app, see start_page.py). The page sets an HMAC-signed cookie; Chainlit's header_auth_callback
-verifies it and puts the role into the user metadata. A client cannot forge a role without
-CHAINLIT_AUTH_SECRET. With CHAT_TRUSTED_HEADER set (production) identity comes only from that
-header, which the reverse proxy must set and strip from client requests (see session.py).
+app, see start_page.py). Role selection issues a signed profile and a Chainlit JWT in
+the same redirect. Both use CHAINLIT_AUTH_SECRET. When CHAT_TRUSTED_HEADER is configured,
+Chainlit authenticates the identity through its header callback. The reverse proxy
+sets that header and strips client-supplied copies (see session.py).
 
 The dialog logic is not here: this module only renders Answer objects (render.py).
 """
@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import time
+from weakref import WeakValueDictionary
 
 import chainlit as cl
 import httpx
@@ -34,13 +35,16 @@ from reglament_agent.chat import render as R  # noqa: E402
 from reglament_agent.chat import session as S  # noqa: E402
 from reglament_agent.chat import start_page  # noqa: E402
 from reglament_agent.admin import routes as admin_routes  # noqa: E402
-from reglament_agent.chat.services import build_services  # noqa: E402
+from reglament_agent.chat.services import available_departments, build_services  # noqa: E402
 from reglament_agent.chat import notifications as N  # noqa: E402
 
+from reglament_agent.chat.admission import AdmissionRejected, AdmissionSettings, TurnAdmission
 from reglament_agent.chat.history import router as history_router
+from reglament_agent.model.queue import GenerationQueueFull
 from reglament_agent.ops.health import router as health_router
 
 services = build_services()
+turn_admission = TurnAdmission(AdmissionSettings())
 # Chainlit already registers /health. Give the dependency check precedence over its liveness handler.
 for route in reversed([*history_router.routes, *health_router.routes]):
     fastapi_app.router.routes.insert(0, route)
@@ -58,9 +62,7 @@ def channel_storage():
 @cl.header_auth_callback
 async def auth(headers) -> cl.User | None:
     ident = S.identity_from_headers(headers, os.environ["CHAINLIT_AUTH_SECRET"])
-    if ident is None:
-        return None
-    return cl.User(identifier=ident.email, metadata={"role": ident.role, "department": ident.department})
+    return start_page.chainlit_user(ident) if ident else None
 
 
 def _actions(specs: list[R.ActionSpec]) -> list[cl.Action]:
@@ -72,11 +74,11 @@ def _user(message_id: str | None = None) -> UserContext:
     return UserContext(u.identifier, u.metadata.get("role", "employee"), cl.user_session.get("id"), message_id)
 
 
-def _fetch_notifications(email: str) -> list[dict]:
+def _fetch_notifications(email: str, dialog_id: str) -> list[dict]:
     import psycopg
 
     with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
-        return N.pending_notifications(conn, email)
+        return N.pending_notifications(conn, email, dialog_id)
 
 
 def _mark_delivered(ids: list[int]) -> None:
@@ -86,18 +88,46 @@ def _mark_delivered(ids: list[int]) -> None:
         N.mark_delivered(conn, ids)
 
 
+_notification_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
+
+
 async def deliver_notifications() -> None:
     """Show expert answers to the user's tickets; never blocks the chat if the DB is unavailable."""
     u = cl.user_session.get("user")
-    if u is None or not os.environ.get("DATABASE_URL"):
+    dialog_id = cl.user_session.get("id")
+    if u is None or not dialog_id or not os.environ.get("DATABASE_URL"):
         return
-    try:
-        items = await asyncio.to_thread(_fetch_notifications, u.identifier)
-        for n in items:
-            await cl.Message(content=N.notification_markdown(n)).send()
-            await asyncio.to_thread(_mark_delivered, [n["id"]])
-    except Exception:  # noqa: BLE001
-        pass
+    lock = _notification_locks.setdefault((u.identifier, dialog_id), asyncio.Lock())
+    async with lock:
+        try:
+            items = await asyncio.to_thread(_fetch_notifications, u.identifier, dialog_id)
+            for note in items:
+                await cl.Message(content=N.notification_markdown(note)).send()
+                await asyncio.to_thread(_mark_delivered, [note["id"]])
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _poll_notifications() -> None:
+    while True:
+        await deliver_notifications()
+        await asyncio.sleep(3)
+
+
+@cl.on_chat_end
+async def stop_notifications() -> None:
+    task = cl.user_session.get("notification_poll")
+    if task is not None:
+        cl.user_session.set("notification_poll", None)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+async def _start_notifications() -> None:
+    await stop_notifications()
+    if os.environ.get("DATABASE_URL"):
+        cl.user_session.set("notification_poll", asyncio.create_task(_poll_notifications()))
 
 
 @cl.on_chat_start
@@ -109,23 +139,44 @@ async def start() -> None:
     if u.metadata.get("role") == "expert":
         await cl.Message(content=R.expert_notice()).send()
     await cl.Message(content=R.WELCOME, actions=_actions(R.example_actions())).send()
-    await deliver_notifications()
+    await _start_notifications()
 
 
 @cl.on_chat_resume
 async def resume(thread) -> None:
     cl.user_session.set("busy", False)
-    await deliver_notifications()
+    await _start_notifications()
 
 
 TURN_TIMEOUT = 60
+
+
+def _retry_actions(text: str, message_id: str, choice: bool) -> list[cl.Action]:
+    return _actions(
+        [R.ActionSpec("retry", "🔁 Повторить", {"text": text, "message_id": message_id, "choice": choice})]
+    )
 
 
 async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
     if cl.user_session.get("busy"):
         await cl.Message(content=R.ERROR_TEXTS["busy"]).send()
         return
-    cl.user_session.set("busy", True)
+    user = _user(message_id)
+    try:
+        with turn_admission.accept(user.email):
+            cl.user_session.set("busy", True)
+            try:
+                await _run_admitted(user, text, message_id, choice=choice)
+            finally:
+                cl.user_session.set("busy", False)
+    except AdmissionRejected as rejected:
+        await cl.Message(
+            content=R.ERROR_TEXTS[rejected.reason],
+            actions=_retry_actions(text, message_id, choice),
+        ).send()
+
+
+async def _run_admitted(user: UserContext, text: str, message_id: str, *, choice: bool) -> None:
     phase = "Обрабатываю вопрос…"
     started = time.monotonic()
     progress = cl.Message(content=f"⏳ {phase}")
@@ -151,8 +202,11 @@ async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
         method = services.answerer.choose if choice else services.answerer.answer
         try:
             async with asyncio.timeout(TURN_TIMEOUT):
-                answer = await method(_user(message_id), text, update_status)
+                await deliver_notifications()
+                answer = await method(user, text, update_status)
             error = "unavailable" if answer.outcome == Outcome.ERROR else None
+        except GenerationQueueFull:
+            error = "stand_busy"
         except (TimeoutError, httpx.TimeoutException):
             error = "timeout"
         except (httpx.RequestError, httpx.HTTPStatusError, psycopg.Error):
@@ -164,10 +218,7 @@ async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
                 await clock
         if error:
             progress.content = f"⚠️ {R.ERROR_TEXTS[error]} · {int(time.monotonic() - started)} с"
-            spec = R.ActionSpec(
-                "retry", "🔁 Повторить", {"text": text, "message_id": message_id, "choice": choice}
-            )
-            progress.actions = _actions([spec])
+            progress.actions = _retry_actions(text, message_id, choice)
             await progress.update()
         else:
             await progress.remove()
@@ -178,8 +229,6 @@ async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
         progress.content = R.ERROR_TEXTS["cancelled"]
         await progress.update()
         raise
-    finally:
-        cl.user_session.set("busy", False)
 
 
 async def clear_clarification():
@@ -216,12 +265,14 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    await deliver_notifications()
+    if cl.user_session.get("notification_poll") is None:
+        await _start_notifications()
     text = message.content.strip()
     if text == "/feedback":
         await open_feedback(cl.user_session.get("last_answer_id"))
         return
-    if not 3 <= len(text) <= 2000:
+    small_reply = len(text) == 2 and cl.user_session.get("clarify_msg") is not None
+    if not (small_reply or 3 <= len(text) <= 2000):
         await cl.Message(content="Введите вопрос длиной от 3 до 2000 символов.").send()
         return
     cl.user_session.set("last_mid", message.id)
@@ -327,9 +378,15 @@ async def change_scope(action: cl.Action) -> None:
     if not current_scope_action(action):
         await cl.Message(content="Чтобы вернуться к прежнему вопросу, задайте его ещё раз.").send()
         return
+    departments = await available_departments()
+    if not current_scope_action(action):
+        return
+    if not departments:
+        await cl.Message(content="Нужен действующий регламент, чтобы выбрать подразделение.").send()
+        return
     specs = [
         R.ActionSpec("set_department", d, {"department": d, "answer_id": action.payload["answer_id"]})
-        for d in S.DEPARTMENTS
+        for d in departments
     ]
     await cl.Message(content="Для какого подразделения ответить?", actions=_actions(specs)).send()
 
@@ -346,7 +403,9 @@ def current_scope_action(action: cl.Action) -> bool:
 @cl.action_callback("set_department")
 async def set_department(action: cl.Action) -> None:
     department = action.payload.get("department")
-    if department not in S.DEPARTMENTS or not current_scope_action(action):
+    if not department or not current_scope_action(action):
+        return
+    if department not in await available_departments() or not current_scope_action(action):
         return
     await action.remove()
     msg = cl.Message(content=f"А в подразделении {department}?", author="user", type="user_message")

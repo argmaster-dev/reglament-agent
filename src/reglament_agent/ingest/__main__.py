@@ -1,17 +1,16 @@
 """Load the manifest and publish each regulation independently."""
 import argparse
-import asyncio
 import json
 import os
 from pathlib import Path
 
 import psycopg
 
-from reglament_agent.model import OllamaClient
+from reglament_agent.quality.faq import recheck_faq_after_publication
 from reglament_agent.storage.migrate import migrate
 from reglament_agent.storage.publish import publish
 
-from .embedding import OllamaEmbedder
+from .embedding import open_embedder
 from .parser import load_cards
 
 
@@ -24,20 +23,23 @@ def main():
     dsn = os.getenv("DATABASE_URL")
     if not dsn:
         parser.error("Set DATABASE_URL to a PostgreSQL database with pgvector")
-    with psycopg.connect(dsn, autocommit=True) as conn, asyncio.Runner() as runner:
-        client = OllamaClient()
-        try:
-            _load(conn, OllamaEmbedder(client, runner), args)
-        finally:
-            runner.run(client.aclose())
+    with psycopg.connect(dsn, autocommit=True) as conn, open_embedder() as embedder:
+        _load(conn, embedder, args)
 
 
 def _load(conn, embedder, args):
     migrate(conn)
     for card in load_cards(args.directory):
-        result = publish(conn, card, (args.directory / card.file).read_bytes(), embedder, args.uploaded_by)
+        faq_review = 0
+
+        def check_faq(conn, publication):
+            nonlocal faq_review
+            faq_review = recheck_faq_after_publication(conn, card.doc_id)
+
+        result = publish(conn, card, (args.directory / card.file).read_bytes(), embedder, args.uploaded_by,
+                         before_commit=check_faq)
         print(json.dumps({"doc_id": card.doc_id, "version": result.number, "created": result.created,
-                          "version_stats": result.stats}, ensure_ascii=False), flush=True)
+                          "version_stats": result.stats, "faq_review": faq_review}, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

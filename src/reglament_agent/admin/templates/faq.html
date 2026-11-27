@@ -8,5 +8,5 @@
 {% for r in rows %}<tr><td><a href="/admin/faq/{{ r.id }}">{{ r.id }}</a></td><td>{{ r.question }}</td>
 <td>{{ 'вне регламентов' if r.basis_kind == 'outside' else r.doc_id }}</td><td>{{ r.author_email }}</td>
 <td>{% if r.ticket_number %}<a href="/admin/tickets/{{ r.ticket_number }}">{{ r.ticket_number }}</a>{% else %}—{% endif %}</td>
-<td><span class="badge {{ r.status }}">{{ statuses.get(r.status, r.status) }}</span></td></tr>{% endfor %}</table>
+<td><span class="badge {{ r.status }}">{{ statuses.get(r.status, r.status) }}</span>{% if r.status == 'review' %} <a href="/admin/faq/{{ r.id }}/review">Проверить</a>{% endif %}</td></tr>{% endfor %}</table>
 {% else %}<p class="muted">Записей нет.</p>{% endif %}{% endblock %}

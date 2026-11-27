@@ -1,15 +1,13 @@
 """Reset the stand to a known demo state: wipe the schema, migrate, load the cards."""
-import json
 import os
 import time
 from pathlib import Path
 
-import httpx
 import psycopg
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
-from reglament_agent.ingest.embedding import Embedder, FakeEmbedder, OllamaEmbedder
+from reglament_agent.ingest.embedding import Embedder
 from reglament_agent.ingest.parser import load_cards
 from reglament_agent.storage.migrate import migrate
 from reglament_agent.storage.publish import publish
@@ -53,14 +51,3 @@ def demo_reset(dsn: str, directory: Path, *, without: tuple[str, ...] = (), embe
             points += result.stats["points"]
     return {"documents": loaded, "documents_loaded": len(loaded), "skipped": list(without),
             "points": points, "seconds": round(time.monotonic() - started, 2)}
-
-
-def make_embedder(kind: str):
-    """Return (embedder, closer)."""
-    if kind == "fake":
-        return FakeEmbedder(), None
-    if kind != "ollama":
-        raise ValueError("EMBEDDER must be ollama or fake")
-    client = httpx.Client(base_url=os.getenv("MODEL_OLLAMA_URL", "http://127.0.0.1:11434"),
-                          timeout=180, trust_env=False)
-    return OllamaEmbedder(client, os.getenv("MODEL_EMBED", "bge-m3")), client

@@ -1,0 +1,33 @@
+{% extends "base.html" %}{% block content %}
+<p><a href="/admin/documents">← Документы</a> · <a href="/admin/documents/{{ doc.doc_id }}/versions">Версии</a></p>
+<h1>Проверка вопросов: {{ doc.title }}</h1>
+{% if error %}<p class="card err">{{ error }}</p>{% endif %}
+<p class="muted">Проверочные вопросы службы качества составлены по тексту регламента ({{ cs.questions|length if cs else 0 }} шт., подразделение: {{ doc.department }}).
+Кнопка прогоняет их через агента; после замены версии документа прогон повторяется, и таблица показывает, что изменилось.</p>
+<form method="post" action="/admin/documents/{{ doc.doc_id }}/checks/run" style="margin-bottom:16px">
+<button type="submit" {% if latest and latest.status == 'running' %}disabled{% endif %}>Проверить</button></form>
+{% if not latest %}<p class="card">Проверка ещё не запускалась. Нажмите «Проверить».</p>
+{% else %}
+<p class="card">
+{% if latest.status == 'running' %}Идёт проверка: {{ latest.results|length }} из {{ latest.total }}…
+{% elif latest.status == 'failed' %}<span class="err">Проверка прервана: {{ latest.error }}</span>
+{% else %}<b>Пройдено {{ passed }} из {{ rows|length }}</b>
+{% if changed %} · <b style="color:#b36b00">изменилось — обновите ожидание: {{ changed }}</b>{% endif %}{% endif %}
+· версия {{ latest.version_no }} · {{ latest.started_at.strftime("%d.%m.%Y %H:%M") }} · запустил {{ latest.started_by }}
+{% if previous %}<br><span class="muted">Предыдущий прогон: версия {{ previous.version_no }}, {{ previous.started_at.strftime("%d.%m.%Y %H:%M") }}</span>{% endif %}</p>
+<table><tr><th>Вопрос</th><th>Ожидалось</th><th>Найдено</th><th>Исход</th><th>Результат</th><th>Предыдущий прогон</th><th></th></tr>
+{% for row in rows %}{% set r = row.r %}{% set o = row.old %}
+<tr><td>{{ r.question }}{% if r.gold_id %}<br><span class="muted">{{ r.gold_id }}{% if r.kind %} · {{ r.kind }}{% endif %}</span>{% endif %}</td>
+<td>{% if r.expected_point %}п. {{ r.expected_point }}{% else %}без ссылки на пункт{% endif %}<br><span class="muted">{{ outcomes.get(r.expected_outcome, r.expected_outcome) }}{% if r.expected_phrase %}; «{{ r.expected_phrase }}»{% endif %}</span></td>
+<td>{% if r.found_points %}{% for p in r.found_points %}п. {{ p }}{% if not loop.last %}, {% endif %}{% endfor %}, версия {{ r.version_no }}{% else %}—{% endif %}
+<br><span class="muted">{{ r.answer_text[:220] }}</span></td>
+<td>{{ outcomes.get(r.outcome, r.outcome) }}<br><span class="muted">{{ r.seconds }} с</span></td>
+<td>{% if r.passed %}<span class="ok">пройдено</span>{% elif r.status == 'changed' %}<span style="color:#b36b00">Изменилось: ожидалось «{{ r.expected_phrase }}» (версия {{ r.expected_version }}), найдено в версии {{ r.version_no }}: «{{ r.changed_excerpt }}»</span>{% else %}<span class="err">не пройдено</span>
+<br><span class="muted">{% if r.reason %}{{ r.reason }}{% elif not r.point_ok %}нет ожидаемого пункта{% elif not r.outcome_ok %}другой исход{% elif r.phrase_found is false %}нет фразы «{{ r.expected_phrase }}»{% endif %}{% if r.error %} {{ r.error }}{% endif %}</span>{% endif %}</td>
+<td>{% if o %}{% if o.passed %}<span class="ok">пройдено</span>{% elif o.status == 'changed' %}<span style="color:#b36b00">изменилось</span>{% else %}<span class="err">не пройдено</span>{% endif %}, версия {{ o.version_no }}
+<br><span class="muted">{{ o.answer_text[:220] }}</span>{% else %}—{% endif %}</td>
+<td><a href="/" target="_blank" rel="noopener">Спросить в чате</a><br>
+<button type="button" class="sec" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.dataset.q)" data-q="{{ r.question }}">Копировать вопрос</button></td></tr>{% endfor %}</table>
+<p class="muted">Чат пока не принимает вопрос из ссылки: откройте чат и вставьте скопированный вопрос.</p>
+{% endif %}
+{% endblock %}

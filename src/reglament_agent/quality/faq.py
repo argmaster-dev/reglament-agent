@@ -9,6 +9,7 @@ document's active version, so a stale entry is hidden even before the re-check h
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Sequence
 
 from psycopg import Connection
@@ -16,6 +17,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from reglament_agent.answer import SourceRef
+from reglament_agent.dialog.lexicon import words, word_key
 from reglament_agent.ingest.embedding import Embedder, vector_literal
 from reglament_agent.storage.retrieve import FAQHit
 
@@ -43,6 +45,8 @@ class FaqRow:
     doc_title: str | None = None
     version_no: int | None = None
     alt_questions: tuple[str, ...] = ()
+    author_email: str = ""
+    created_at: datetime | None = None
 
 
 def basis_label(basis_kind: str, basis: list[dict]) -> str:
@@ -56,6 +60,13 @@ def basis_label(basis_kind: str, basis: list[dict]) -> str:
     return f"по {pts}"
 
 
+def _lock_basis_documents(conn: Connection, doc_ids) -> None:
+    # A concurrent version switch updates the document row. Hold shared locks until
+    # the FAQ commit so publication either observes this entry or precedes its basis read.
+    conn.execute("SELECT doc_id FROM documents WHERE doc_id=ANY(%s) ORDER BY doc_id FOR SHARE",
+                 (sorted(set(doc_ids)),)).fetchall()
+
+
 def _capture_basis(conn: Connection, kind: str, points: Sequence[tuple]) -> tuple[list[dict], str | None, int | None]:
     if kind not in BASIS_KINDS:
         raise TicketError(f"Неизвестный вид основания: {kind}")
@@ -65,6 +76,7 @@ def _capture_basis(conn: Connection, kind: str, points: Sequence[tuple]) -> tupl
         return [], None, None
     if not points:
         raise TicketError("Укажите пункты регламентов или выберите «вне регламентов».")
+    _lock_basis_documents(conn, (item[0] for item in points))
     cur = conn.cursor(row_factory=dict_row)
     basis: list[dict] = []
     for item in points:
@@ -145,7 +157,8 @@ def answer_ticket(conn: Connection, *, number: str, expert_email: str, answer: s
                     "VALUES (%s,%s,%s,'answer',%s)",
                     (ticket["user_email"], ticket["dialog_id"], number,
                      Jsonb({"answer": answer, "basis_kind": basis_kind, "basis": basis,
-                            "question": ticket["question"]})))
+                            "question": ticket["question"], "expert_email": expert_email,
+                            "visibility": visibility})))
     return {"number": number, "faq_id": faq_id, "basis_kind": basis_kind, "basis": basis,
             "visibility": visibility}
 
@@ -214,6 +227,7 @@ def set_faq_status(conn: Connection, faq_id: int, status: str) -> bool:
 def _repin(conn: Connection, row: dict) -> None:
     """Expert confirmed a `review` entry: pin it to the current text of its points (removed ones block it)."""
     basis = [dict(b) for b in row["basis"]]
+    _lock_basis_documents(conn, (b["doc_id"] for b in basis))
     cur = conn.cursor(row_factory=dict_row)
     for b in basis:
         if row["basis_kind"] == "document":
@@ -276,6 +290,35 @@ def _check_entry(conn: Connection, entry: dict) -> tuple[str, list[dict]]:
     return "ok", basis
 
 
+def review_reasons(conn: Connection, entry: dict) -> list[str]:
+    """Why an entry cannot stay published, judged against the document state as it is now."""
+    out = []
+    for b in entry["basis"]:
+        doc = conn.execute("SELECT status, title FROM documents WHERE doc_id=%s", (b["doc_id"],)).fetchone()
+        title = (doc[1] if doc else None) or b.get("doc_title") or b["doc_id"]
+        if doc is None or doc[0] != "active":
+            out.append(f"документ «{title}» снят с публикации")
+        elif entry["basis_kind"] == "document":
+            out.append(f"документ «{title}» заменён другой версией")
+        else:
+            state = point_state(conn, b)["state"]
+            if state == "removed":
+                out.append(f"пункт {b['number']} удалён из действующей версии")
+            elif state == "changed":
+                out.append(f"текст пункта {b['number']} изменён (или строка таблицы перенесена)")
+    return list(dict.fromkeys(out)) or ["основание записи изменилось"]
+
+
+def record_review(conn: Connection, faq_id: int, actor: str, action: str, detail: dict | None = None) -> None:
+    """One line of the check history: who, what, when and under which version of the document."""
+    row = conn.execute("SELECT v.version_number FROM faq_entries f JOIN documents d ON d.doc_id=f.doc_id "
+                       "JOIN document_versions v ON v.version_id=d.active_version_id WHERE f.id=%s",
+                       (faq_id,)).fetchone()
+    detail = {**(detail or {}), "version": row[0] if row else None}
+    conn.execute("INSERT INTO faq_reviews (faq_id, actor, action, detail) VALUES (%s,%s,%s,%s)",
+                 (faq_id, actor, action, Jsonb(detail)))
+
+
 def recheck_faq_after_publication(conn: Connection, doc_id: str) -> int:
     """Move active entries whose basis changed in the new active version of `doc_id` to `review`.
 
@@ -286,12 +329,13 @@ def recheck_faq_after_publication(conn: Connection, doc_id: str) -> int:
     with conn.transaction():
         rows = conn.cursor(row_factory=dict_row).execute(
             "SELECT id, basis_kind, doc_id, version_id, basis FROM faq_entries WHERE status='active' "
-            "AND basis_kind <> 'outside' AND (doc_id=%s OR basis @> %s::jsonb) FOR UPDATE",
+            "AND basis_kind <> 'outside' AND (doc_id=%s OR basis @> %s::jsonb) ORDER BY id FOR UPDATE",
             (doc_id, Jsonb([{"doc_id": doc_id}]))).fetchall()
         for row in rows:
             verdict, basis = _check_entry(conn, row)
             if verdict == "review":
                 conn.execute("UPDATE faq_entries SET status='review', updated_at=now() WHERE id=%s", (row["id"],))
+                record_review(conn, row["id"], "система", "to_review", {"reasons": review_reasons(conn, row)})
                 moved += 1
             else:
                 version = conn.execute("SELECT active_version_id FROM documents WHERE doc_id=%s",
@@ -327,13 +371,15 @@ def search_rows(conn: Connection, question: str, vector: list[float], *, departm
               FROM eligible e, (SELECT websearch_to_tsquery('russian', %(query)s) AS t) q WHERE e.tsv @@ q.t),
         fused AS (SELECT id, sum(1.0 / (60 + r)) AS score FROM
                   (SELECT id, r FROM v UNION ALL SELECT id, r FROM l) x GROUP BY id)
-        SELECT e.id, e.question, e.alt_questions, e.answer, e.basis_kind, e.basis, e.doc_id, e.dept, fused.score, v.sim, e.dtitle, e.vno
+        SELECT e.id, e.question, e.alt_questions, e.answer, e.basis_kind, e.basis, e.doc_id, e.dept,
+               fused.score, v.sim, e.dtitle, e.vno, e.author_email, e.created_at
         FROM fused JOIN eligible e ON e.id = fused.id JOIN v ON v.id = e.id
         ORDER BY fused.score DESC, e.id LIMIT %(limit)s""",
         {"vec": vector_literal(vector), "query": question, "dept": department, "stage": stage,
          "limit": limit}).fetchall()
     return [FaqRow(r["id"], r["question"], r["answer"], r["basis_kind"], r["basis"], r["doc_id"],
-                   r["dept"], float(r["score"]), float(r["sim"]), r["dtitle"], r["vno"], tuple(r["alt_questions"])) for r in rows]
+                   r["dept"], float(r["score"]), float(r["sim"]), r["dtitle"], r["vno"], tuple(r["alt_questions"]),
+                   r["author_email"], r["created_at"]) for r in rows]
 
 
 class PublishedFaqStore:
@@ -354,6 +400,46 @@ class PublishedFaqStore:
                                   point["number"], column=point.get("column"))
             source = SourceRef(r.doc_id or "faq", "FAQ службы качества", r.department or "Служба качества",
                                r.version_no or 0, "", faq_id=r.faq_id)
+            stamp = f" от {r.created_at:%d.%m.%Y}" if r.created_at else ""
+            attribution = f"Ответ службы качества{stamp} · {r.author_email} · {basis_label(r.basis_kind, r.basis)}"
             hits.append(FAQHit(source, r.answer, basis, r.department, stage if doc else None,
-                               r.question, r.alt_questions))
+                               r.question, r.alt_questions, r.similarity, attribution))
         return hits
+
+
+# A FAQ may answer a new wording only with strong embedding agreement AND shared content.
+# Exact variants explicitly supplied by the expert take priority.
+_FAQ_SIMILARITY = 0.78
+_FAQ_MARGIN = 0.04
+_FAQ_INTENTS = frozenset({"кто", "где", "когда", "сколько", "зачем", "почему", "какой", "какие"})
+_FAQ_CONDITIONS = frozenset({"не", "нет", "нельзя", "без", "кроме"})
+
+
+def _question_shape(tokens):
+    intent = tokens[0] if tokens and tokens[0] in _FAQ_INTENTS else ""
+    conditions = frozenset(t for t in tokens if t in _FAQ_CONDITIONS or t.isdigit())
+    keys = {word_key(t) for t in tokens if len(t) >= 4 and t not in _FAQ_INTENTS}
+    return intent, conditions, keys
+
+
+def match_published(question: str, hits: list[FAQHit]) -> FAQHit | None:
+    tokens = words(question)
+    if not tokens:
+        return None
+    intent, conditions, keys = _question_shape(tokens)
+    candidates = []
+    for hit in hits:
+        variants = [words(q) for q in (hit.question, *hit.alt_questions)]
+        if tokens in variants:
+            return hit
+        if hit.similarity < _FAQ_SIMILARITY:
+            continue
+        for variant in variants:
+            other_intent, other_conditions, other_keys = _question_shape(variant)
+            if (intent, conditions) == (other_intent, other_conditions) and len(keys & other_keys) >= 2:
+                candidates.append(hit)
+                break
+    candidates.sort(key=lambda hit: hit.similarity, reverse=True)
+    if not candidates or (len(candidates) > 1 and candidates[0].similarity - candidates[1].similarity < _FAQ_MARGIN):
+        return None
+    return candidates[0]

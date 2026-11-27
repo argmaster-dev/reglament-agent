@@ -1,13 +1,15 @@
 {% extends "base.html" %}{% block content %}
 <h1>Предпросмотр: {{ filename }}</h1>
-<div class="card"><p><b>{{ summary.sections }}</b> разделов, <b>{{ summary.points }}</b> пунктов, уровней: {{ summary.levels }},
+<div class="card"><p><b>{{ summary.sections }}</b> разделов, <b>{{ summary.points }}</b> пунктов,
 примечаний: {{ summary.notes }}, списков: {{ summary.lists }}, таблиц: {{ summary.tables }},
 предупреждений: {{ summary.warnings|length }}</p>
+<ul>{% for level, total in summary.levels.items() %}<li>Уровень {{ level }} · {{ total }}</li>{% endfor %}</ul>
 <p class="muted">Подразделение: {{ card.department }} · Этапы: {% for s in card.stages %}{{ stages.get(s, s) }}{% if not loop.last %}, {% endif %}{% endfor %}
 · Разбор занял {{ parse_sec }} с</p>
 {% if summary.warnings %}<ul class="warn">{% for w in summary.warnings %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}
 {% if diff %}<p>Новая редакция документа «{{ card.title }}»: добавлено пунктов {{ diff.added }}, удалено {{ diff.removed }},
-изменено {{ diff.changed }}, без изменений {{ diff.same }}. Векторы неизменённых пунктов будут переиспользованы.</p>{% endif %}</div>
+изменено {{ diff.changed }}, без изменений {{ diff.same }}. Векторы неизменённых пунктов будут переиспользованы.</p>
+<p><a href="/admin/jobs/{{ job_id }}/changes">Что изменится</a>: отличия по пунктам и записи FAQ, которые уйдут на проверку.</p>{% endif %}</div>
 <div class="card"><details><summary>Структура документа</summary>
 {% for s in summary.tree %}<details><summary>{{ s.point.number }}. {{ s.point.heading }} ({{ s.children|length }})</summary>
 {% for p in s.children %}<div class="pt"><b>{{ p.number }}</b> {{ p.heading|truncate(140) }}</div>{% endfor %}</details>{% endfor %}
