@@ -90,8 +90,8 @@ def test_slang_path_override_by_env_and_setter(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(("query", "added"), [
-    ("кто закупает железо?", "оборудование"),
-    ("что делать с железками на складе", "оборудование"),
+    ("кто работает с госзаказчиками?", "конкурсные процедуры"),
+    ("кто готовит ндашки?", "NDA"),
     ("когда подписывать допник?", "ДС"),
     ("кто подписывает допники и допсоглашения", "ДС"),
     ("субчик не прошёл проверку", "субподрядчик"),
@@ -106,5 +106,23 @@ def test_expansion_of_slang_in_word_forms(query, added):
     assert added.lower() in expand_query(query).lower()
 
 
-def test_official_term_is_not_expanded_into_other_meanings():
-    assert expand_query("кто подписывает субподрядный договор") .count("субподрядчик") == 0
+@pytest.mark.parametrize("query", [
+    "кто подписывает договор с субподрядчиком?",
+    "как оформить дополнительное соглашение?",
+    "кто проводит установочное совещание?",
+    "когда проводится ретроспектива?",
+    "что входит в закрывающие документы?",
+    "кто работает с Департаментом экономической безопасности",
+])
+def test_official_terms_are_never_expanded_into_slang(query):
+    with_slang = expand_query(query)
+    lexicon.set_slang_path(DOCX / "missing.tsv")
+    assert with_slang == expand_query(query)  # only the glossary may add words
+
+
+def test_glossary_reverse_expansion_is_unchanged():
+    out = expand_query("где взять технико-коммерческое предложение")
+    assert "ТКП" in out and "КП" in out
+    assert "ДС" in expand_query("подписать дополнительное соглашение")
+    # the same direction is disabled for a jargon row whose official term is in the question
+    assert "субчик" not in expand_query("договор с субподрядчиком")

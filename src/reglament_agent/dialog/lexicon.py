@@ -52,6 +52,7 @@ def set_glossary_path(path: str | Path | None) -> None:
     global _glossary_path
     _glossary_path = Path(path) if path else None
     _load.cache_clear()
+    _load_slang.cache_clear()
     _patterns.cache_clear()
 
 
@@ -60,6 +61,7 @@ def set_slang_path(path: str | Path | None) -> None:
     global _slang_path
     _slang_path = Path(path) if path else None
     _load.cache_clear()
+    _load_slang.cache_clear()
     _patterns.cache_clear()
 
 
@@ -90,18 +92,20 @@ def _read_rows(path: Path) -> list[tuple[tuple[str, ...], str]]:
 
 
 @lru_cache(maxsize=1)
-def _load() -> tuple[tuple[tuple[str, ...], str], ...]:
-    """Rows of (abbreviation variants, expansion): glossary first, then the optional
-    jargon file without any variant the glossary already defines."""
-    rows = _read_rows(glossary_path())
-    taken = {fold(v) for variants, _ in rows for v in variants}
+def _load_slang() -> tuple[tuple[tuple[str, ...], str], ...]:
+    """Jargon rows without any variant the glossary already defines (jargon -> official term only)."""
     slang = slang_path()
-    if slang.is_file():
-        for variants, exp in _read_rows(slang):
-            kept = tuple(v for v in variants if fold(v) not in taken)
-            if kept:
-                rows.append((kept, exp))
-    return tuple(rows)
+    if not slang.is_file():
+        return ()
+    taken = {fold(v) for variants, _ in _read_rows(glossary_path()) for v in variants}
+    rows = ((tuple(v for v in variants if fold(v) not in taken), exp) for variants, exp in _read_rows(slang))
+    return tuple(row for row in rows if row[0])
+
+
+@lru_cache(maxsize=1)
+def _load() -> tuple[tuple[tuple[str, ...], str], ...]:
+    """Rows of (abbreviation variants, expansion): glossary first, then the optional jargon file."""
+    return (*_read_rows(glossary_path()), *_load_slang())
 
 
 def glossary() -> dict[str, str]:
@@ -202,12 +206,14 @@ def expand_query(text: str) -> str:
     keys = [word_key(t) for t in toks]
     low = text.lower()
     extra: list[str] = []
-    for variants, exp in _load():
+    slang = frozenset(_load_slang())
+    for row in _load():
+        variants, exp = row
         clean = _clean(exp)
         if any(_seq_in(toks, words(v)) for v in variants):
             if fold(clean) not in fold(text):
                 extra.append(clean)
-        elif _seq_in(keys, [word_key(w) for w in words(clean)]):
+        elif row not in slang and _seq_in(keys, [word_key(w) for w in words(clean)]):
             extra.extend(v for v in variants if v.lower() not in low)
     return " ".join([text, *extra]) if extra else text
 
