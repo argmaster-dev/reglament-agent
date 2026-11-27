@@ -101,7 +101,7 @@ def cache_key(conn, user, question, scope, model):
     faq = conn.execute(
         "SELECT id,updated_at::text FROM faq_entries WHERE status='active' ORDER BY id"
     ).fetchall()
-    data = ["extract-v5-creation-target", model, user.role, asdict(scope), query_cache_input(question), versions, faq]
+    data = ["extract-v6-process-intent", model, user.role, asdict(scope), query_cache_input(question), versions, faq]
     return hashlib.sha256(json.dumps(data, ensure_ascii=False).encode()).hexdigest()
 
 

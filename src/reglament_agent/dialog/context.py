@@ -21,46 +21,64 @@ def _aliases(dept):
     return equivalent
 
 
+def _department_spans(keys, department):
+    for alias in _aliases(department):
+        target = [word_key(w) for w in alias]
+        for start in range(len(keys) - len(target) + 1):
+            if keys[start:start + len(target)] == target:
+                yield start, start + len(target)
+
+
 def departments_in(text, departments):
     """Every known department the text names, in order of appearance."""
-    tokens = words(text)
-    keyed = [word_key(w) for w in tokens]
+    keys = [word_key(w) for w in words(text)]
     found = []
     for dept in departments:
-        for alias in _aliases(dept):
-            keys = [word_key(w) for w in alias]
-            at = next((i for i in range(len(keyed)) if keyed[i : i + len(keys)] == keys), None)
-            if at is not None:
-                found.append((at, dept))
-                break
+        span = next(_department_spans(keys, dept), None)
+        if span is not None:
+            found.append((span[0], dept))
     # A longer name that contains a shorter one wins over it.
     names = [d for _, d in found]
     return [d for _, d in sorted(found) if not any(d != o and set(words(d)) < set(words(o)) for o in names)]
 
 
 def department_in(text, departments):
-    tokens = words(text)
-    for dept in sorted(departments, key=len, reverse=True):
-        for alias in _aliases(dept):
-            keys = [word_key(w) for w in alias]
-            if any([word_key(w) for w in tokens[i : i + len(keys)]] == keys for i in range(len(tokens))):
-                return dept
-    return None
+    keys = [word_key(w) for w in words(text)]
+    return next((dept for dept in sorted(departments, key=len, reverse=True)
+                 if next(_department_spans(keys, dept), None) is not None), None)
 
 
 STAGE_LABELS = {"presale": "Пресейл", "project": "Проект"}
+_STAGE_PHRASES = {
+    "presale": re.compile(r"\b(?:(?:на\s+)?(?:этап(?:а|е|у|ом|ы|ов|ах|ам|ами)?|"
+                          r"стади(?:я|и|ю|ей|й|ях|ям|ями))\s+|на\s+)"
+                          r"(?:пресейл(?:а|у|е|ом)?|предпродаж(?:а|и|у|е|ей)?)\b"),
+    "project": re.compile(r"\b(?:на\s+этапе\s+проекта|на\s+проектной\s+стадии|на\s+проекте|проектная\s+деятельность)\b"),
+}
 
 
 def stage_in(text):
     value = fold(text).strip(" ?.!")
     for stage, label in STAGE_LABELS.items():
-        if value == fold(label):
+        if value == fold(label) or _STAGE_PHRASES[stage].search(value):
             return stage
-    if re.search(r"\b(на |этап\w* |стади\w* )(пресейл|предпродаж)", fold(text)):
-        return "presale"
-    if re.search(r"\b(на этапе проекта|на проектной стадии|на проекте|проектная деятельность)", fold(text)):
-        return "project"
     return None
+
+
+def without_scope(text, scope):
+    """Remove explicit scope phrases while keeping subject words such as «проектная заявка»."""
+    text = fold(text)
+    stage_phrase = _STAGE_PHRASES.get(scope.stage)
+    if stage_phrase:
+        # A standalone button «Проект» resolves a stage, but «проект» can be the question's object.
+        text = stage_phrase.sub(" ", text)
+    if not scope.department:
+        return text
+    tokens = words(text)
+    keys = [word_key(word) for word in tokens]
+    for start, end in _department_spans(keys, scope.department):
+        tokens[start:end] = [""] * (end - start)
+    return " ".join(tokens)
 
 
 _PERSONAL_DEPARTMENT = re.compile(
@@ -105,6 +123,21 @@ def personal_position(text):
     ):
         return title
     return None
+
+
+_ROLE_DUTIES = re.compile(
+    r"(?:^|[.!?]\s*)(?:что\s+(?:делает|должен\s+делать)|чем\s+занимается|за\s+что\s+отвечает"
+    r"|какие\s+(?:обязанности|функции)\s+у|что\s+входит\s+в\s+обязанности)\s+([^.!?]+)[.!?]?\s*$"
+)
+
+
+def asks_role_overview(text):
+    """Only a role, without a narrower action or work item, follows the question about duties."""
+    match = _ROLE_DUTIES.search(fold(text))
+    if not match:
+        return False
+    tokens = words(match[1])
+    return any(start == 0 and end == len(tokens) for start, end, _ in find_roles(tokens))
 
 
 def new_question(text):
