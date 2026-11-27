@@ -94,7 +94,7 @@ def previous(conn, user):
     return answers.validate_python(row[0]) if row else None
 
 
-POLICY = "extract-v8-scoped-evidence"
+POLICY = "extract-v9-operation-evidence"
 
 
 def _versions(conn):

@@ -10,7 +10,8 @@ from tests.dialog.test_cache import Model, ask, publish, route_for, user, world
 BASE = "Кто подписывает договор в ТД?"
 
 
-def test_new_evidence_rules_invalidate_exact_and_similar_answers(isolated, monkeypatch):
+@pytest.mark.parametrize("old_policy", ["extract-v7-document-subject", "extract-v8-scoped-evidence"])
+def test_new_evidence_rules_invalidate_exact_and_similar_answers(isolated, monkeypatch, old_policy):
     conn, _ = isolated
     employee = UserContext("reader@example.org", "employee", "chat", "request")
     scope = Scope(None, None)
@@ -19,7 +20,7 @@ def test_new_evidence_rules_invalidate_exact_and_similar_answers(isolated, monke
         return state.cache_key(conn, employee, BASE, scope, "model"), state.cache_context(conn, employee, scope, "model")
 
     exact, context = keys()
-    monkeypatch.setattr(state, "POLICY", "extract-v7-document-subject")
+    monkeypatch.setattr(state, "POLICY", old_policy)
     previous_exact, previous_context = keys()
     assert exact != previous_exact
     assert context != previous_context
