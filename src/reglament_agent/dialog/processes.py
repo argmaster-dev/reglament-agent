@@ -2,6 +2,7 @@
 
 import re
 
+from .context import without_scope
 from .lexicon import fold
 from .relevance import terms
 
@@ -19,20 +20,21 @@ _START = re.compile(r"\b(?:старт|инициац|запуск|запуст|�
 _CONDITION = re.compile(r"\b(?:если|после|перед|когда|без|только|срок|сколько)\b")
 
 
-def broad_subject(question):
+def broad_subject(question, scope=None):
     text = fold(question)
     opening = _OPEN.search(text)
     if not opening or _CONDITION.search(text):
         return None
-    subject = terms(text[:opening.start()] + " " + text[opening.end():])
+    remainder = text[:opening.start()] + " " + text[opening.end():]
+    subject = terms(without_scope(remainder, scope) if scope else remainder)
     if 1 <= len(subject) <= 2:
         return subject, bool(opening['start'])
     return None
 
 
-def options(question, points):
+def options(question, points, scope=None):
     """Offer different named processes with direct subject overlap, keeping real point identities."""
-    request = broad_subject(question)
+    request = broad_subject(question, scope)
     if not request:
         return []
     subject, start = request

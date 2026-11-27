@@ -355,11 +355,11 @@ class Dialog:
         await status("Ищу основания в действующих регламентах…")
 
         intent_candidates = []
-        broad = processes.broad_subject(question)
+        broad = processes.broad_subject(question, scope)
 
         def ambiguity(points):
             if broad:
-                options = processes.options(question, [*points, *intent_candidates])
+                options = processes.options(question, [*points, *intent_candidates], scope)
                 if options:
                     refs = [ref for _, ref in options]
                     trace["intent_options"] = [asdict(ref) for ref in refs]
