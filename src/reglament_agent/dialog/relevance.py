@@ -214,24 +214,36 @@ def question_parts(question):
     return merged or [q]
 
 
-def matches_request(question, anchor, *, point_terms=None):
+def requested_parts(question):
     parts = [part for part in question_parts(question) if terms(part) - _COURTESY_WORDS]
-    return any(_matches_part(part, anchor, point_terms=point_terms) for part in (parts or [question]))
+    return parts or [question]
 
 
-def uncovered_parts(question, statements, rows):
-    """Parts of a compound question for which no selected sentence shares any subject term."""
-    parts = question_parts(question)
-    if len(parts) < 2:
-        return []
-    by_ref = {a.ref: a for a in rows}
-    texts = [fold(by_ref[r].text) if r in by_ref else fold(st.text) for st in statements for r in st.sources]
-    missing = []
-    for part in parts:
-        keys = terms(part)
-        if keys and not any(len(keys & terms(t)) >= min(2, len(keys)) for t in texts):
-            missing.append(part)
-    return missing
+def matches_request(question, anchor, *, point_terms=None):
+    return any(_matches_part(part, anchor, point_terms=point_terms) for part in requested_parts(question))
+
+
+_PART_FILLERS = {word_key(w) for w in ("его", "ее", "их", "это", "есть", "какова", "каков", "каковы",
+                                      "каково", "каким", "какому", "который")}
+_LOOKUP = re.compile(r"^где\b.*\b(?:найти|искать|посмотр\w*|увидеть|проверить)\b")
+_LOCATION = re.compile(r"найти|наход\w*|хран\w*|размещ\w*|опубликов\w*|указан\w*|доступ\w*|содерж\w*")
+_LOOKUP_VERBS = {word_key(w) for w in ("найти", "искать", "посмотреть", "увидеть", "проверить")}
+
+
+def supports_part(part, anchor, *, point_terms=None):
+    """Match a requested action with its subject in the actual sentence cited for this part."""
+    subject = terms(part) - _COURTESY_WORDS - _PART_FILLERS
+    direct = terms(anchor.text)
+    if _LOOKUP.search(part):
+        subject -= _LOOKUP_VERBS
+        if not _LOCATION.search(fold(anchor.text)):
+            return False
+    if not subject or len(subject & direct) < min(2, len(subject)):
+        return False
+    operation = _operation(part, subject)
+    if operation and not _mentions_operation(operation, direct):
+        return False
+    return _matches_part(part, anchor, point_terms=point_terms)
 
 
 def _matches_part(question, anchor, *, point_terms=None):
