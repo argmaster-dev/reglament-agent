@@ -502,6 +502,31 @@ def supports_part(part, anchor, *, point_terms=None, antecedent=""):
     return _matches_part(part, anchor, point_terms=point_terms)
 
 
+_CREATION_OBJECT = re.compile(r"\bкто\s+созда(?:ет|ют)\s+(\w+)(?=\s*(?:(?:на|от|для)\b|[?.!]*$))")
+_GENITIVE_MODIFIER = re.compile(r"\w+(?:ого|его|ых|их|ой|ей)")
+
+
+def creation_object_is_source(question, sentence):
+    """Recognize a direct creation question whose object is mentioned only in an «из …» phrase."""
+    requested = _CREATION_OBJECT.search(fold(question))
+    if not requested:
+        return False
+    target = word_key(requested[1])
+    found = False
+    for clause in re.split(r"[,;:.!?]", sentence):
+        tokens = words(clause)
+        for index, token in enumerate(tokens):
+            if word_key(token) != target:
+                continue
+            found = True
+            previous = index - 1
+            while previous >= 0 and _GENITIVE_MODIFIER.fullmatch(tokens[previous]):
+                previous -= 1
+            if previous < 0 or tokens[previous] not in {"из", "изо"}:
+                return False
+    return found
+
+
 def _matches_part(question, anchor, *, point_terms=None):
     if qualifier_conflict(question, anchor) or lacks_requested_object(question, anchor):
         return False
@@ -528,7 +553,10 @@ def _matches_part(question, anchor, *, point_terms=None):
             return False
         return _answers_signing_role(q, sentence, role)
     if re.search(r"кто .*созда", q):
-        return "созда" in sentence and ("заявк" not in q or "заявк" in sentence)
+        return (
+            "созда" in sentence and ("заявк" not in q or "заявк" in sentence)
+            and not creation_object_is_source(q, sentence)
+        )
     return True
 
 

@@ -248,6 +248,9 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         if check.dropped:
             dropped.extend(check.dropped)
             continue
+        if not parts and relevance.creation_object_is_source(question, a.text):
+            dropped.append(Verdict(claim, False, ["creation_object_is_source"]))
+            continue
         if relevance.qualifier_conflict(question, a):
             # The sentence concerns the same noun for another object or direction than the question asks.
             dropped.append(Verdict(claim, False, ["object_qualifier_mismatch"]))
