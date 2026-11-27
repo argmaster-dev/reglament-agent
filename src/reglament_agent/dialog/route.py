@@ -20,7 +20,7 @@ from reglament_agent.answer import (
     Statement,
     Variant,
 )
-from reglament_agent.model.queue import generation_progress
+from reglament_agent.model.queue import generation_progress, register_chat_slot
 from reglament_agent.model.ollama import ModelError, ModelOutputError, OllamaClient
 from reglament_agent.quality.faq import PublishedFaqStore, match_published
 from reglament_agent.quality.mail import MailSettings
@@ -63,6 +63,7 @@ class Dialog:
     def __init__(self, dsn, model=None, *, search=retrieve, shortlist=preview, mail=None):
         self.dsn = dsn
         self.model = model or OllamaClient(sink=RequestCalls())
+        register_chat_slot(getattr(self.model, "slot", None))  # /health shows this queue only
         self.shortlist = shortlist
         self.search = search
         self.mail = mail or MailSettings()

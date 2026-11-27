@@ -82,6 +82,8 @@ services:
       # Override host-side values from .env: inside the container services are reached by name.
       <<: *backend-env
       MODEL_OLLAMA_URL: ${CONTAINER_OLLAMA_URL:-http://host.docker.internal:11434}
+      # Concurrent generations; keep OLLAMA_NUM_PARALLEL on the Ollama host >= this value.
+      MODEL_CHAT_SLOTS: ${MODEL_CHAT_SLOTS:-1}
       REGULATIONS_IMAGE_DIGESTS: ${REGULATIONS_IMAGE_DIGESTS:-}
       CHAT_SERVICES_FACTORY: ${CHAT_SERVICES_FACTORY:-reglament_agent.dialog.services:build_services}
       CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:?Set CHAINLIT_AUTH_SECRET}

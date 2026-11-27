@@ -48,7 +48,10 @@ uv run python -m reglament_agent.ingest load docx/
 ```bash
 cp .env.example .env   # заполните пароли и секрет
 docker compose up -d --build --wait
+docker compose exec -T app python -m reglament_agent.ingest load docx/
 ```
+
+Вторая команда выполняет первую загрузку регламентов внутри контейнера: Compose передаёт `app` адреса PostgreSQL и Ollama, `docx/` уже лежит в образе, миграции применяются во время загрузки. Повторный демо-прогон идёт на существующей БД без сброса; `make demo-reset` нужен только для явной полной очистки одноразовой БД и требует `DATABASE_URL` в окружении.
 
 Приложение слушает `127.0.0.1:${APP_PORT:-8000}`, Postgres и Mailpit опубликованы только на loopback. Сеть `backend` внутренняя.
 
@@ -57,6 +60,24 @@ docker compose up -d --build --wait
 **Сброс демо.** `make demo-reset` стирает всю схему БД, применяет миграции и загружает все регламенты; `make demo-reset-without-td` — без `td-project` (чтобы показать добавление регламента). Команда требует `--yes` или `DEMO_RESET_ALLOWED=1`. Переменные: `EMBEDDER=ollama|fake`, `DEMO_RESET_SCHEMA` (по умолчанию `public`). Выводит JSON: документы, пункты, секунды.
 
 **Проверка состояния.** `GET /health` (роутер `reglament_agent.ops.health.router`, подключается в приложение) возвращает JSON по БД, Ollama и SMTP; 503 при недоступности любой из этих зависимостей.
+
+## Конфигурация под GPU заказчика
+
+Параллельные генерации задаются `MODEL_CHAT_SLOTS` (целое ≥ 1, по умолчанию 1; в `compose.yaml` пробрасывается в `app`). Лишние запросы встают в FIFO-очередь с показом позиции. Длину очереди ограничивает `MODEL_GENERATION_MAX_WAITERS` (по умолчанию 3) на каждый слот: при N слотах в очереди помещается N × это значение (при N=1 ровно столько же, сколько раньше). При переполнении выбрасывается `GenerationQueueFull`, чат отвечает «стенд занят». Эмбеддинги идут мимо слотов генерации; `MODEL_EMBED_NUM_GPU` (по умолчанию 0 = CPU) переводит их на GPU. На стороне сервера Ollama `OLLAMA_NUM_PARALLEL` должен быть не меньше `MODEL_CHAT_SLOTS`, иначе запросы выстроятся внутри Ollama.
+
+Пример для GPU с большой памятью, 128 ГБ (значения примерные, не измерены):
+
+```bash
+MODEL_CHAT_SLOTS=4
+MODEL_GENERATION_MAX_WAITERS=4   # очередь до 16 ожидающих
+CHAT_MAX_IN_FLIGHT=20            # не меньше 4 + 16, иначе пятый запрос получит «стенд занят» до очереди модели
+MODEL_EMBED_NUM_GPU=99
+OLLAMA_NUM_PARALLEL=4   # переменная сервера Ollama, не приложения
+```
+
+`CHAT_MAX_IN_FLIGHT` ограничивает общее число одновременных ходов чата, включая поиск, поэтому его нужно держать не меньше `MODEL_CHAT_SLOTS` × (1 + `MODEL_GENERATION_MAX_WAITERS`), иначе лишний запрос получит «стенд занят» раньше, чем попадёт в очередь модели.
+
+Состояние слотов: `OllamaClient.slot_status()` возвращает `{slots, busy, waiting, max_waiting}`; тот же блок отдаёт `GET /health` в поле `generation` (только очередь чата; клиент индексации со своим слотом в него не входит). В журнале вызовов (`CallRecord`) у каждого chat-вызова есть `slots`, `busy` (занято слотов на момент старта, включая этот вызов), `waiting` (сколько уже ждало к его приходу) и `queue_ms`.
 
 ## Структура
 

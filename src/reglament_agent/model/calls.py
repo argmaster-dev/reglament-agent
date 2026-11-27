@@ -23,6 +23,9 @@ class CallRecord:
     queue_ms: float = 0.0
     total_ms: float = 0.0
     load_ms: float = 0.0
+    slots: int = 0  # generation slots configured (chat calls only)
+    busy: int = 0  # slots busy when this call started, including itself
+    waiting: int = 0  # callers already waiting when this call arrived
     ok: bool = True
     error: str | None = None
     started_at: str = field(default_factory=_now)

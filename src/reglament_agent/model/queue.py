@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import weakref
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ log = logging.getLogger(__name__)
 @dataclass
 class Ticket:
     queue_ms: float = 0.0
+    slots: int = 1
+    busy: int = 1  # busy slots right after this call got its slot (including itself)
+    waiting: int = 0  # callers waiting when this call arrived
 
 
 class _Waiter:
@@ -23,6 +27,26 @@ class _Waiter:
         self.future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self.on_position = on_position
         self.last_position = 0
+
+
+_chat_slot: "weakref.ref[GenerationSlot] | None" = None
+
+
+def register_chat_slot(slot: "GenerationSlot | None") -> None:
+    """Mark the one queue the chat service uses; /health reports only this one.
+
+    Other clients (indexer embeddings, scripts) own their own slots but are not the chat queue.
+    """
+    global _chat_slot
+    _chat_slot = weakref.ref(slot) if slot is not None else None
+
+
+def generation_status(default_slots: int = 1) -> dict:
+    """Chat generation queue state for /health: {slots, busy, waiting, max_waiting}."""
+    slot = _chat_slot() if _chat_slot else None
+    if slot is None:
+        return {"slots": default_slots, "busy": 0, "waiting": 0, "max_waiting": None}
+    return slot.slot_status()
 
 
 class GenerationQueueFull(RuntimeError):
@@ -46,6 +70,14 @@ class GenerationSlot:
     def waiting(self) -> int:
         return len(self._queue)
 
+    def slot_status(self) -> dict:
+        return {
+            "slots": self.capacity,
+            "busy": self.active,
+            "waiting": len(self._queue),
+            "max_waiting": self.max_waiting,
+        }
+
     def _notify(self) -> None:
         for i, w in enumerate(self._queue, start=1):
             if w.on_position and w.last_position != i:
@@ -67,6 +99,7 @@ class GenerationSlot:
     @asynccontextmanager
     async def acquire(self, on_position: PositionCallback | None = None) -> AsyncIterator[Ticket]:
         start = time.perf_counter()
+        waiting_on_entry = len(self._queue)
         if self.active < self.capacity and not self._queue:
             self.active += 1
         else:
@@ -86,7 +119,12 @@ class GenerationSlot:
                     self.active -= 1
                     self._grant()
                 raise
-        ticket = Ticket(queue_ms=(time.perf_counter() - start) * 1000)
+        ticket = Ticket(
+            queue_ms=(time.perf_counter() - start) * 1000,
+            slots=self.capacity,
+            busy=self.active,
+            waiting=waiting_on_entry,
+        )
         try:
             yield ticket
         finally:
