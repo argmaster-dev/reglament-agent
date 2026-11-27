@@ -253,6 +253,14 @@ class ReplyPoller:
                 counts[outcome] = counts.get(outcome, 0) + 1
         return counts
 
+    def log_trust_policy(self) -> None:
+        allowed = [a.strip() for a in self.settings.quality_addresses.split(",") if a.strip()]
+        if allowed:
+            log.info("expert replies: allow-list ON, answers accepted only from %s", ", ".join(allowed))
+        else:
+            log.warning("expert replies: allow-list OFF (MAIL_QUALITY_ADDRESSES is empty), any sender except "
+                        "the ticket's user can publish an answer; set the quality-service and process-owner addresses")
+
     async def run_once(self) -> dict[str, int]:
         """One poll; returns {outcome: count}."""
         return await asyncio.to_thread(self._run_once)
@@ -260,6 +268,7 @@ class ReplyPoller:
     async def run_forever(self, interval: float | None = None, *, stop: asyncio.Event | None = None) -> None:
         stop = stop if stop is not None else asyncio.Event()
         interval = self.settings.reply_interval if interval is None else interval
+        self.log_trust_policy()
         while not stop.is_set():
             try:
                 counts = await self.run_once()

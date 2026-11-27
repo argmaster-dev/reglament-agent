@@ -283,3 +283,32 @@ def test_imap_reader_with_fake_server():
     mails = reader.fetch_new()
     assert len(mails) == 2 and mails[0].message_id == "<i1@corp.kz>"
     assert reader.fetch_new(lambda mid: True) == []
+
+
+def test_default_poll_interval_is_five_seconds():
+    assert MailSettings().reply_interval == 5.0
+
+
+def test_trust_policy_logging(caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="reglament_agent.quality.replies")
+    reader = MailpitReader("http://m", client=httpx.Client(transport=mailpit_transport({})))
+    ReplyPoller("x", MailSettings(), reader).log_trust_policy()
+    [rec] = caplog.records
+    assert rec.levelno == logging.WARNING and "allow-list OFF" in rec.message
+    caplog.clear()
+    ReplyPoller("x", MailSettings(quality_addresses="quality@corp.kz, boss@corp.kz"), reader).log_trust_policy()
+    [rec] = caplog.records
+    assert rec.levelno == logging.INFO and "allow-list ON" in rec.message and "boss@corp.kz" in rec.message
+
+
+def test_processing_latency_with_fake_transport(isolated):
+    """Poll + processing (without the sleep between polls) stays far below the interval budget."""
+    import time
+    conn, dsn = isolated
+    n = new_ticket(conn)
+    reader = MailpitReader("http://m", client=httpx.Client(
+        transport=mailpit_transport({"i": raw_reply(n, "<lat@x>", "Ответ.")})))
+    t = time.monotonic()
+    assert asyncio.run(ReplyPoller(dsn, MailSettings(), reader, embedder_factory=FakeEmbedder).run_once()) == {"answered": 1}
+    assert time.monotonic() - t < 2.0

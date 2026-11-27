@@ -86,9 +86,16 @@ docker compose exec -T app python -m reglament_agent.ingest load docx/
 | `MAIL_REPLY_ENABLED` | `false` | включить опрос ящика в службе качества |
 | `MAIL_REPLY_SOURCE` | `mailpit` | `mailpit` (стенд) или `imap` (продукт) |
 | `MAIL_MAILPIT_URL` | `http://localhost:8025` | адрес HTTP API Mailpit (в compose: `http://mailpit:8025`) |
-| `MAIL_REPLY_INTERVAL` | `15` | пауза между опросами, с |
-| `MAIL_QUALITY_ADDRESSES` | пусто | список адресов службы качества через запятую |
+| `MAIL_REPLY_INTERVAL` | `5` | пауза между опросами, с |
+| `MAIL_QUALITY_ADDRESSES` | пусто | кто вправе отвечать: адреса службы качества и владельцев процессов через запятую |
 | `MAIL_IMAP_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_FOLDER` | | параметры IMAP (SSL) |
+
+**Доверенные адреса.** Пока `MAIL_QUALITY_ADDRESSES` пуст, ответом считается письмо любого отправителя,
+кроме автора обращения; при запуске службы в журнал пишется предупреждение «allow-list OFF». На стенде и в
+продукте задайте список: адрес службы качества, на который уходят письма об обращениях (`service_email`,
+по умолчанию `quality@demo.local`), адреса владельцев процессов и адрес тестового эксперта. При заданном
+списке в журнале стоит «allow-list ON», письма остальных отправителей не публикуются (`sender_rejected`).
+Опрос ящика каждые 5 с плюс опрос уведомлений чатом (3 с) и запись FAQ дают ответ в чате примерно за 8-10 с.
 
 Для публикации в FAQ нужен тот же `EMBEDDER`, что и у кабинета. Один проход вручную (демонстрация):
 `DATABASE_URL=... MAIL_REPLY_ENABLED=true python -m reglament_agent.quality poll-replies`.
