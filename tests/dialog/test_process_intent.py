@@ -27,7 +27,10 @@ def test_options_and_related_use_actual_distinct_processes_and_points():
     hits = [first, next_step, alternative, noise]
     choices = processes.options('Что делать с заявкой?', hits)
     assert [(name, ref.point) for name, ref in choices] == [(first.section_title, '1.1'), (alternative.section_title, '2.1')]
+    assert processes.options('С заявкой как быть?', hits) == choices
+    assert processes.options('Помогите с заявкой', hits) == choices
     assert not processes.options('Кто регистрирует заявку?', hits)
+    assert not processes.options('Что делать с заявкой, если истёк срок?', hits)
     assert not processes.options('Что делать с заявкой?', [first, next_step, noise])
     assert not processes.options('Что делать с доставкой?', hits)
     for vague in ['Как мне запустить проект?', 'Кто за это отвечает в проекте?']:
@@ -87,6 +90,13 @@ def test_process_choice_survives_retry_and_only_reads_selected_active_section(is
     assert asyncio.run(route.choose(user, c.options[-1], status)) == answer and len(model.prompts) == 1
     assert asyncio.run(route.profiles.get(user.email)).department is None
 
+    for ident, wording in enumerate(['Как мне запустить проект?', 'Кто за это отвечает в проекте?']):
+        user.dialog_id, user.message_id = f'open-{ident}', 'first'
+        broad = asyncio.run(route.answer(user, wording, status))
+        assert broad.clarification and broad.clarification.dimension == 'intent', (wording, broad)
+        assert 2 <= len(broad.clarification.options) == len(broad.clarification.option_refs) <= 4
+        assert all(point_view(conn, ref).point == ref.point for ref in broad.clarification.option_refs)
+
     user.dialog_id = 'unknown'
     user.message_id = 'first'
     prompt = asyncio.run(route.answer(user, ask, status))
@@ -97,6 +107,21 @@ def test_process_choice_survives_retry_and_only_reads_selected_active_section(is
     user.message_id = 'exhausted'
     exhausted = asyncio.run(route.choose(user, 'Не знаю', status))
     assert exhausted.outcome == Outcome.NO_BASIS and exhausted.ticket and len(model.prompts) == 1
+
+    # A profile confirmation and subsequent intent prompts consume one shared budget.
+    person = UserContext('second@example.org', 'employee', 'combined', 'ask')
+    conn.execute("INSERT INTO dialog_profiles(email,department,confirmed_at) VALUES (%s,%s, now()-interval '90 days')",
+                 (person.email, card.department))
+    first = asyncio.run(route.answer(person, ask, status))
+    assert first.clarification.dimension == 'department' and first.clarification.attempt == 1
+    person.message_id = 'confirm'
+    second = asyncio.run(route.choose(person, 'Да', status))
+    assert second.clarification.dimension == 'intent' and second.clarification.attempt == 2
+    person.message_id = 'position'
+    third = asyncio.run(route.answer(person, 'Моя должность — логист.', status))
+    assert third.clarification.attempt == 3 and third.clarification.option_refs == second.clarification.option_refs
+    person.message_id = 'unknown'
+    assert asyncio.run(route.choose(person, 'Не знаю', status)).ticket
 
     user.dialog_id = 'stale'
     user.message_id = 'first'

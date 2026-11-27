@@ -353,11 +353,14 @@ class Dialog:
 
         await status("Ищу основания в действующих регламентах…")
 
-        def ambiguity(points):
+        def ambiguity(points, *, preview_only=False):
             options = processes.options(question, points)
             if options:
                 return clarify([name for name, _ in options], "intent", ask="Какой процесс вас интересует?",
                                refs=[ref for _, ref in options])
+            if preview_only and processes.broad_subject(question):
+                # Hybrid retrieval may find additional processes before the scope needs narrowing.
+                return None
             rows = grounding.anchors(points)
             related = relevance.applicable_refs(question, rows, department=dept)
             by_department, by_stage = {}, {}
@@ -378,7 +381,7 @@ class Dialog:
 
         if not selected and not variants and (not dept or not stage):
             candidates = await asyncio.to_thread(self.shortlist, conn, question, department=dept, stage=stage)
-            clarification = ambiguity(candidates)
+            clarification = ambiguity(candidates, preview_only=True)
             if clarification:
                 trace["candidates"] = describe(candidates)
                 return clarification, question, None
