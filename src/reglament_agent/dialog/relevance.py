@@ -398,7 +398,7 @@ def near_basis(question, rows, limit=3):
 # A temporal subordinate clause or «верно, что…» supplies context to a single question.
 # Strong coordination separates independent questions. A comma can also introduce a new actor or object question.
 _COORDINATED = re.compile(
-    rf"\s+(?:и|а также)\s+(?={_ASK}\b)|[;?]\s*(?={_ASK}\b)|,\s*(?=(?:кто|како\w*|каки\w*|что)\b)"
+    rf"\s+(?:и|а также)\s+(?=(?:с\s+)?{_ASK}\b)|[;?]\s*(?={_ASK}\b)|,\s*(?=(?:кто|како\w*|каки\w*|что)\b)"
 )
 
 
@@ -655,6 +655,81 @@ def _operation_clause(text):
         return action
     event_text = text[event.end():]
     return event_text.partition(",")[2] or text
+
+
+_FREQUENCY_QUERY = re.compile(
+    r"\b(?:как часто|с какой (?:частотой|периодичностью)|с каким интервалом|"
+    r"(?:каков[аы]?|какая|какой) (?:периодичность|частота|интервал)|"
+    r"сколько раз(?: в (?:день|неделю|месяц|квартал|год))?)\b"
+)
+_CADENCE = re.compile(
+    r"\b(?:еже(?:часно|дневно|недельно|месячно|квартально|годно)|"
+    r"кажд(?:ый|ую|ое|ые)\s+(?:(?:\d+|рабочий|календарный)\s+)?"
+    r"(?:день|час\w*|дн\w*|недел\w*|месяц\w*|квартал\w*|год\w*|сут\w*|лет)|"
+    r"раз(?:а)?\s+в\s+(?:(?:\d+|два|две|три|четыре)\s+)?"
+    r"(?:день|час\w*|дн\w*|недел\w*|месяц\w*|квартал\w*|год\w*|лет)|"
+    r"при кажд\w+|по мере необходимости|"
+    r"(?:периодичность|частота)\s+не\s+(?:установлена|определена|регламентирована))\b"
+)
+_FREQUENCY_FILLERS = re.compile(r"\b(?:провод\w*|осуществля\w*|выполня\w*|долж\w*|требуется|необходимо|этих|этого|этой)\b")
+_RELATION_PREPS = {"для", "по", "в", "во", "на", "при", "из", "у", "к", "от", "через", "о", "об"}
+_COORDINATED_ACTION = re.compile(
+    r"[,;.!?]|\s+и\s+(?=(?:\w+\s+)?(?:еже\w+|кажд\w+|раз\s+в)\b|(?:\w+\s+)?\w+(?:ет|ит|ют|ут|ат|ят|ется|ются)\b)"
+)
+
+
+@dataclass(frozen=True)
+class Frequency:
+    subject: frozenset[str]
+    operation: str | None
+    actor: frozenset[str]
+    object_head: str | None
+
+    def supported_by(self, text):
+        for clause in _COORDINATED_ACTION.split(fold(text)):
+            if not _CADENCE.search(clause) or not self.subject <= terms(clause):
+                continue
+            # A monthly report about an inspection is not a monthly inspection.
+            tokens = words(clause)
+            for i, word in enumerate(tokens):
+                if not (self.operation and _OPERATION_VERB.fullmatch(word)
+                        and _mentions_operation(self.operation, {word_key(word)})):
+                    continue
+                if not self.actor <= set(map(word_key, tokens[:i])):
+                    continue
+                if self.object_head:
+                    # A reference to the object in a prepositional phrase is insufficient.
+                    following = tokens[i + 1:]
+                    stop = next((j for j, w in enumerate(following) if w in _RELATION_PREPS), len(following))
+                    if self.object_head not in set(map(word_key, following[:stop])):
+                        continue
+                return True
+            # A nominalized action needs an explicit scheduling or performance predicate.
+            if (self.operation and _mentions_operation(self.operation, terms(clause))
+                    and re.search(r"\b(?:периодичность|частота|проводится|проводятся|осуществляется|выполняется)\b", clause)):
+                return True
+        return False
+
+
+def frequency_request(part, departments):
+    part = fold(part)
+    if not _FREQUENCY_QUERY.search(part):
+        return None
+    rest = _FREQUENCY_FILLERS.sub(" ", _FREQUENCY_QUERY.sub(" ", part))
+    subject = terms(rest) - terms(" ".join(departments)) - _PART_FILLERS - _COURTESY_WORDS
+    operation = _operation(rest, subject)
+    tokens = words(rest)
+    predicate = next((i for i, w in enumerate(tokens) if operation and _OPERATION_VERB.fullmatch(w)
+                      and _mentions_operation(operation, {word_key(w)})), None)
+    actor, object_head = frozenset(), None
+    if predicate is not None:
+        actor = frozenset(terms(" ".join(tokens[:predicate])) & subject)
+        following = tokens[predicate + 1:]
+        if following and following[0] not in _RELATION_PREPS:
+            object_head = next((word_key(w) for w in following if word_key(w) in subject), None)
+    if operation:
+        subject = {key for key in subject if not _mentions_operation(operation, {key})}
+    return Frequency(frozenset(subject), operation, actor, object_head)
 
 
 def states_deadline(question, anchor, *, department=None, point_terms=None):
