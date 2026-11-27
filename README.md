@@ -48,7 +48,10 @@ uv run python -m reglament_agent.ingest load docx/
 ```bash
 cp .env.example .env   # заполните пароли и секрет
 docker compose up -d --build --wait
+docker compose exec -T app python -m reglament_agent.ingest load docx/
 ```
+
+Вторая команда выполняет первую загрузку регламентов внутри контейнера: Compose передаёт `app` адреса PostgreSQL и Ollama, `docx/` уже лежит в образе, миграции применяются во время загрузки. Повторный демо-прогон идёт на существующей БД без сброса; `make demo-reset` нужен только для явной полной очистки одноразовой БД и требует `DATABASE_URL` в окружении.
 
 Приложение слушает `127.0.0.1:${APP_PORT:-8000}`, Postgres и Mailpit опубликованы только на loopback. Сеть `backend` внутренняя.
 
