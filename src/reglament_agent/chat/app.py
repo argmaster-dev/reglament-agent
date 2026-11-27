@@ -30,7 +30,8 @@ os.environ.setdefault("CHAINLIT_AUTH_SECRET", secrets.token_urlsafe(32))
 
 from chainlit.server import app as fastapi_app  # noqa: E402
 
-from reglament_agent.answer import Answer, Outcome, UserContext  # noqa: E402
+from reglament_agent.answer import Answer, Outcome, SourceRef, UserContext  # noqa: E402
+from reglament_agent.storage.sources import faq_confirmations, resolve_point  # noqa: E402
 from reglament_agent.chat import render as R  # noqa: E402
 from reglament_agent.chat import session as S  # noqa: E402
 from reglament_agent.chat import start_page  # noqa: E402
@@ -239,10 +240,31 @@ async def clear_clarification():
         cl.user_session.set("clarify_msg", None)
 
 
+def _lookup_answer_extras(answer: Answer) -> tuple[dict[int, str], dict[tuple, SourceRef]]:
+    """Read-only: confirmation dates of FAQ used in the answer and the points near a refusal."""
+    if not os.environ.get("DATABASE_URL"):
+        return {}, {}
+    try:
+        with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
+            dates = faq_confirmations(conn, R.faq_ids(answer)) if R.faq_ids(answer) else {}
+            near = {}
+            for n in R.near_points(answer):
+                near[(n.doc_title, n.department, n.point)] = resolve_point(conn, n.doc_title, n.department, n.point)
+            return dates, near
+    except psycopg.Error:
+        logging.getLogger(__name__).exception("answer extras unavailable")
+        return {}, {}
+
+
 async def _show(answer: Answer, text: str, message_id: str) -> None:
     await clear_clarification()
     names = R.assign_chip_names(answer)
-    specs = R.clarify_actions(answer) + R.answer_actions(answer, text, message_id)
+    faq_dates, near_refs = await asyncio.to_thread(_lookup_answer_extras, answer)
+    specs = (
+        R.clarify_actions(answer)
+        + R.answer_actions(answer, text, message_id)
+        + R.near_actions(answer, lambda n: near_refs.get((n.doc_title, n.department, n.point)))
+    )
     if answer.outcome is Outcome.CLARIFY:
         specs = R.clarify_actions(answer)
     evidence = R.evidence_groups(answer, names)
@@ -253,7 +275,7 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
     )
     msg = cl.Message(content="", elements=elements)
     # Only verified statements reach the stream; raw model tokens may still lose their basis.
-    for part in R.answer_markdown(answer, names, separate_evidence=bool(evidence)).splitlines(keepends=True):
+    for part in R.answer_markdown(answer, names, separate_evidence=bool(evidence), faq_dates=faq_dates).splitlines(keepends=True):
         await msg.stream_token(part)
     msg.actions = _actions(specs)
     await msg.send()
