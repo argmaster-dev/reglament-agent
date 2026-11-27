@@ -179,14 +179,45 @@ def near_points(answer: Answer) -> list[NearPoint]:
     return split_near(answer.summary)[1]
 
 
-def near_actions(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> list[ActionSpec]:
-    """Buttons that open the near points in the side panel; points that no longer resolve get none."""
-    acts = []
-    for near in near_points(answer)[:NEAR_LIMIT]:
-        ref = resolve(near)
-        if ref is not None:
-            acts.append(ActionSpec("open_source", f"Близкий пункт · {near.label}", ref_payload(ref)))
-    return acts
+def near_chips(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> list[dict]:
+    """Near points as clickable chips (label + source payload), at most NEAR_LIMIT, each point once.
+
+    The structured `nearby_sources` of the Answer wins when the route supplies it; otherwise the lines
+    the route appends to the summary are parsed and resolved against the active documents.
+    """
+    refs = list(getattr(answer, "nearby_sources", None) or [])
+    if not refs:
+        refs = [r for r in (resolve(n) for n in near_points(answer)) if r is not None]
+    chips, seen = [], set()
+    for ref in refs:
+        key = (ref.doc_id, ref.point)
+        if key not in seen:
+            seen.add(key)
+            chips.append({"label": f"{ref.department} · п. {ref.point}", "source": ref_payload(ref)})
+    return chips[:NEAR_LIMIT]
+
+
+def refusal_element(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> dict | None:
+    """Props of the small inline element under a refusal: near-point chips and the ticket line."""
+    if answer.outcome not in TICKET_OUTCOMES:
+        return None
+    ticket = None
+    if answer.ticket:
+        t = answer.ticket
+        delivery = DELIVERY_TEXT.get(t.delivery, t.delivery)
+        ticket = {"number": t.number, "text": f"Обращение № {t.number} · {delivery}", "href": f"/tickets/{t.number}",
+                  "link": "статус"}
+    near = near_chips(answer, resolve)
+    return {"near": near, "ticket": ticket} if near or ticket else None
+
+
+_ABSENCE = re.compile(r"не наш[её]л|не нашла|ответ\w*[^.]*\bнет\b|\bнет ответа|Точного пункта|Есть пункты о том же", re.I)
+
+
+def drop_absence(summary: str) -> str:
+    """Remove sentences that only restate that there is no answer: the lead sentence says it once."""
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", summary)
+    return " ".join(x for x in sentences if x.strip() and not _ABSENCE.search(x)).strip()
 
 
 def faq_ids(answer: Answer) -> list[int]:
@@ -206,12 +237,6 @@ def ru_date(iso: str) -> str:
 def confirmed_line(dates: dict[int, str] | None, ids: list[int]) -> str:
     known = sorted({ru_date(dates[i]) for i in ids if dates and i in dates})
     return "🎓 " + CONFIRMED.capitalize() + (f" · {', '.join(known)}" if known else "")
-
-
-def ticket_note(t: TicketInfo) -> str:
-    """Small secondary line of a refusal: the number is a detail, the lead already says what happens."""
-    delivery = DELIVERY_TEXT.get(t.delivery, t.delivery)
-    return f"_Обращение № {t.number} · {delivery} · [статус](/tickets/{t.number})_"
 
 
 def evidence_groups(answer: Answer, names: dict[SourceRef, str]) -> list[dict]:
@@ -236,18 +261,22 @@ def answer_markdown(
     faq_dates: dict[int, str] | None = None,
 ) -> str:
     names = names if names is not None else assign_chip_names(answer)
-    summary, near = split_near(answer.summary)
+    summary, _near = split_near(answer.summary)
     if answer.outcome is Outcome.OFF_TOPIC and not summary.startswith("Сообщение длиннее"):
         summary = OFF_TOPIC_HINT  # заменяет общий текст маршрута, без повтора
     parts: list[str] = []
-    if answer.outcome is Outcome.LOW_CONFIDENCE:
-        parts.append(f"> ⚠️ {answer.caveat or 'Требует подтверждения службой качества'}")
-    parts.append(f"**{outcome_label(answer)}**")
     scope = scope_line(answer.scope)
-    if scope:
-        parts.append(f"_{scope}_")
-    if answer.outcome in TICKET_OUTCOMES:
+    refusal = answer.outcome in TICKET_OUTCOMES
+    if refusal:
+        # The first visible text is the lead sentence: no heading, no scope before it, said once.
         parts.append(REFUSAL_LEAD)
+        summary = drop_absence(summary)
+    else:
+        if answer.outcome is Outcome.LOW_CONFIDENCE:
+            parts.append(f"> ⚠️ {answer.caveat or 'Требует подтверждения службой качества'}")
+        parts.append(f"**{outcome_label(answer)}**")
+        if scope:
+            parts.append(f"_{scope}_")
     if answer.outcome is Outcome.ERROR:
         parts.append("Не удалось получить ответ, вопрос сохранён. Нажмите «Повторить».")
     elif answer.outcome is Outcome.CLARIFY and answer.clarification:
@@ -269,12 +298,12 @@ def answer_markdown(
     ids = faq_ids(answer)
     if ids and answer.outcome not in (Outcome.ERROR, Outcome.CLARIFY):
         parts.append(confirmed_line(faq_dates, ids))
-    if near:
-        parts.append("Близкие пункты: " + " · ".join(f"[{n.label}]" for n in near[:NEAR_LIMIT]))
     if answer.caveat and answer.outcome != Outcome.LOW_CONFIDENCE:
         parts.append(f"> {answer.caveat}")
-    if answer.ticket:
-        parts.append(ticket_note(answer.ticket) if answer.outcome in TICKET_OUTCOMES else ticket_card(answer.ticket))
+    if refusal and scope:
+        parts.append(f"_{scope}_")
+    if answer.ticket and not refusal:
+        parts.append(ticket_card(answer.ticket))
     if answer.profile_note:
         parts.append(f"_{answer.profile_note}_")
     return "\n\n".join(parts)

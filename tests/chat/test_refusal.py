@@ -1,8 +1,10 @@
 """К4: каждый отказ полезен; ответ из FAQ помечен «подтверждено службой качества» с датой."""
 
+from pathlib import Path
+
 import pytest
 
-from reglament_agent.answer import Answer, Outcome, SourceRef, Statement, TicketInfo
+from reglament_agent.answer import Answer, Outcome, Scope, ScopeOrigin, SourceRef, Statement, TicketInfo
 from reglament_agent.chat import render as R
 from reglament_agent.storage.sources import faq_confirmations, resolve_point
 
@@ -15,55 +17,91 @@ COVERED = Statement("Заявку на закупку подаёт заказч�
 REFUSALS = [Outcome.NO_BASIS, Outcome.CONFLICT, Outcome.EXTERNAL_DOC]  # EXTERNAL_DOC = вне регламентов
 
 
-@pytest.mark.parametrize("outcome", REFUSALS)
-def test_every_refusal_shows_ticket_and_where_answer_comes(outcome):
-    md = R.answer_markdown(Answer(outcome, "Ответа нет.", ticket=TICKET))
-    assert "Обращение № 2026-0042" in md  # мелкой строкой, а не только в ссылке на статус
-    assert md.index("в копии") < md.index("2026-0042")  # сначала что произошло, номер вторичен
-    assert "по почте" in md and "в этот диалог" in md and "службу качества" in md
-    assert "**✉️ Обращение" not in md  # номер не заголовок
+def resolver(near):
+    return SourceRef("zakup", "Правила закупок", "ОЗ", 1, near.point)
 
 
 @pytest.mark.parametrize("outcome", REFUSALS)
-def test_near_points_are_listed_and_clickable(outcome):
+def test_lead_sentence_is_first_and_said_once(outcome):
+    summary = "В доступных регламентах не нашёл ответа на этот вопрос.\nНа вторую часть ответа нет."
+    a = Answer(outcome, summary, [COVERED], ticket=TICKET, scope=Scope("ОЗ", "project", ScopeOrigin.PROFILE))
+    md = R.answer_markdown(a)
+    assert md.startswith(R.REFUSAL_LEAD)  # ни заголовка, ни подразделения до фразы
+    low = md.lower()
+    assert low.count("ответа нет") == 1 and "не нашёл" not in low  # пересказ из итога маршрута убран
+    assert "Заявку на закупку подаёт заказчик." in md  # покрытая часть остаётся
+    assert md.index("Отвечаю для") > md.index(R.REFUSAL_LEAD)  # подразделение, если нужно, после
+    assert "**" not in md.split(R.REFUSAL_LEAD)[0]
+    assert "по почте" in md and "в копии" in md and "в этот диалог" in md
+
+
+def test_route_summary_with_real_content_is_kept():
+    a = Answer(Outcome.CONFLICT, "Нашёл общее правило и условие, которое требует отдельной проверки.", ticket=TICKET)
+    assert "требует отдельной проверки" in R.answer_markdown(a)
+
+
+@pytest.mark.parametrize("outcome", REFUSALS)
+def test_ticket_number_is_a_small_secondary_line_in_the_element(outcome):
+    a = Answer(outcome, "Нет.", ticket=TICKET)
+    md = R.answer_markdown(a)
+    assert "2026-0042" not in md  # не в тексте ответа и не заголовок
+    note = R.refusal_element(a, resolver)
+    assert note["ticket"]["text"].startswith("Обращение № 2026-0042") and note["ticket"]["href"] == "/tickets/2026-0042"
+    jsx = (Path(__file__).parents[2] / "public/elements/RefusalNote.jsx").read_text()
+    assert "<small" in jsx and "fontSize" in jsx  # мелкий кегль
+
+
+@pytest.mark.parametrize("outcome", REFUSALS)
+def test_near_points_are_clickable_chips_without_duplicate_buttons(outcome):
     a = Answer(outcome, SUMMARY, ticket=TICKET)
     md = R.answer_markdown(a)
-    assert "Близкие пункты: [ОЗ · п. 2.2]" in md
-    assert "Закупку до лимита" not in md  # коротко: только ссылки, без длинного блока
-    ref = SourceRef("zakup", "Правила закупок", "ОЗ", 3, "2.2")
-    (act,) = R.near_actions(a, lambda near: ref)
-    assert act.name == "open_source" and R.ref_from_payload(act.payload) == ref
+    assert "Близкие пункты" not in md and "Закупку до лимита" not in md  # не плоским текстом
+    note = R.refusal_element(a, resolver)
+    (chip,) = note["near"]
+    assert chip["label"] == "ОЗ · п. 2.2"
+    assert R.ref_from_payload(chip["source"]) == SourceRef("zakup", "Правила закупок", "ОЗ", 1, "2.2")
+    assert not hasattr(R, "near_actions")  # отдельного ряда кнопок нет
+    assert R.answer_actions(a, "q", "m1") == [] or all(x.name != "open_source" for x in R.answer_actions(a, "q", "m1"))
 
 
-def test_near_points_are_limited_to_three_in_one_line():
+def test_structured_nearby_sources_win_over_summary_parsing():
+    refs = [SourceRef("zakup", "Правила закупок", "ОЗ", 1, p) for p in ("2.1", "2.1", "2.2", "2.3", "2.4")]
+    a = Answer(Outcome.NO_BASIS, SUMMARY, ticket=TICKET)
+    a.nearby_sources = refs  # поле приходит из маршрута; в answer.py его добавляет другая ветка
+    chips = R.refusal_element(a, lambda n: None)["near"]
+    assert [c["label"] for c in chips] == ["ОЗ · п. 2.1", "ОЗ · п. 2.2", "ОЗ · п. 2.3"]
+
+
+def test_unresolvable_near_point_gets_no_chip():
+    assert R.refusal_element(Answer(Outcome.NO_BASIS, SUMMARY), lambda near: None) is None
+
+
+def test_near_points_are_limited_to_three():
     lines = "\n".join(f"п. 2.{i} «Правила закупок» (ОЗ): Текст {i}." for i in range(1, 6))
     a = Answer(Outcome.NO_BASIS, f"Нет.\n{lines}", ticket=TICKET)
-    line = next(l for l in R.answer_markdown(a).splitlines() if l.startswith("Близкие пункты"))
-    assert line.count("[ОЗ") == 3
-    assert len(R.near_actions(a, lambda n: SourceRef("zakup", "Правила закупок", "ОЗ", 1, n.point))) == 3
+    assert len(R.refusal_element(a, resolver)["near"]) == 3
 
 
 def test_off_topic_sends_to_manager_without_ticket():
     from reglament_agent.dialog.route import _ESCALATE
     assert Outcome.OFF_TOPIC not in _ESCALATE  # маршрут не заводит обращение и письмо
-    md = R.answer_markdown(Answer(Outcome.OFF_TOPIC, "Я помогаю с вопросами по внутренним регламентам."))
+    a = Answer(Outcome.OFF_TOPIC, "Я помогаю с вопросами по внутренним регламентам.")
+    md = R.answer_markdown(a)
     assert "обратитесь к своему руководителю" in md and "не касается регламентов" in md
     assert "Обращение" not in md and "службу качества" not in md and "почт" not in md
     assert md.count("руководителю") == 1 and "Я помогаю" not in md
+    assert R.refusal_element(a, resolver) is None
 
 
-def test_unresolvable_near_point_gets_no_button():
-    assert R.near_actions(Answer(Outcome.NO_BASIS, SUMMARY), lambda near: None) == []
-
-
-def test_refusal_without_near_points_has_no_empty_header():
-    assert "Близкие пункты" not in R.answer_markdown(Answer(Outcome.NO_BASIS, "Нет.", ticket=TICKET))
+def test_refusal_without_near_points_has_no_empty_chips():
+    note = R.refusal_element(Answer(Outcome.NO_BASIS, "Нет.", ticket=TICKET), resolver)
+    assert note["near"] == []
 
 
 def test_covered_part_is_answered_next_to_the_refusal():
     a = Answer(Outcome.NO_BASIS, "На вторую часть ответа нет.", [COVERED], ticket=TICKET)
     md = R.answer_markdown(a)
-    assert "Заявку на закупку подаёт заказчик." in md and "2026-0042" in md
+    assert "Заявку на закупку подаёт заказчик." in md
 
 
 def test_faq_answer_is_labelled_with_date():
