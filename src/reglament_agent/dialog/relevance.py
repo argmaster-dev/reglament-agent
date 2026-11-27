@@ -288,11 +288,16 @@ def _signed_document(text, kind):
     return False
 
 
+_UNSIGNED = re.compile(r"\bбез\s+(?:подписанн\w*|заключенн\w*)\s+")
+_EXCEPTION = re.compile(r"^\s*(?:исключени\w*|(?:в (?:порядке|качестве) исключения)|в исключительных случаях)\b")
+
+
 def _direct_start_rule(text, kind):
     if not (_WORK_START.search(text) and _PERMISSION.search(text)):
         return False
     exclusive = re.finditer(r"\bтолько после (?:подписани\w*|заключени\w*)\s+", text)
-    return any(_event_document(text, e) == kind for e in (*_BEFORE_SIGNING.finditer(text), *exclusive))
+    events = (*_BEFORE_SIGNING.finditer(text), *_UNSIGNED.finditer(text), *exclusive)
+    return any(_event_document(text, event) == kind for event in events)
 
 
 
@@ -310,9 +315,19 @@ def start_before_signature_rows(rows, kind):
                 and any(_signed_document(fold(a.text), kind) for a in group[1:])):
             applicable.append(group)
         else:
-            direct = [a for a in group if a.ref.column is None and _direct_start_rule(fold(a.text), kind)]
+            direct = []
+            for i, anchor in enumerate(group):
+                if anchor.ref.column or not _direct_start_rule(fold(anchor.text), kind):
+                    continue
+                direct.append(anchor)
+                for neighbor in group[i + 1:]:
+                    previous = direct[-1]
+                    if (neighbor.ref.column or neighbor.ref.sentence != previous.ref.sentence + 1
+                            or not (_EXCEPTION.search(fold(neighbor.text)) or previous.text.rstrip().endswith((":", ";")))):
+                        break
+                    direct.append(neighbor)
             if direct:
-                applicable.append(direct)
+                applicable.append(list({a.ref: a for a in direct}.values()))
     return applicable[0] if len(applicable) == 1 else []
 
 

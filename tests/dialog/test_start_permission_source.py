@@ -89,3 +89,11 @@ def test_precedes_a_different_signing_event():
     rule = provision("3", "Разрешено начать работы после подписания договора и до подписания акта.")
     answer = select(QUESTION, rule, rule)
     assert answer.outcome == Outcome.NO_BASIS and not answer.statements
+
+
+def test_preserves_exception_to_an_explicit_prohibition_with_its_own_citation():
+    rule = provision("3", "Без подписанного договора запрещено начинать работы.",
+                     "Исключение — письменное разрешение руководителя смены.")
+    answer = select(QUESTION, rule, rule[:1])
+    assert answer.outcome == Outcome.ANSWER
+    assert [(s.text, s.sources) for s in answer.statements] == [(a.text, [a.ref]) for a in rule]
