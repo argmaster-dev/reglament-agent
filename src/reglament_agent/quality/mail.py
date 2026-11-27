@@ -28,6 +28,17 @@ class MailSettings(BaseSettings):
     max_attempts: int = 8
     backoff_base: float = 30.0  # seconds; delay = base * 2**(attempts-1), capped at one hour
     public_base_url: str = "http://localhost:8000"
+    # Ответ эксперта по почте (ADR-015): агент сам забирает «ответить всем» из ящика службы качества.
+    reply_enabled: bool = False  # MAIL_REPLY_ENABLED
+    reply_interval: float = 5.0  # MAIL_REPLY_INTERVAL, seconds between polls (cheap: one local HTTP call)
+    reply_source: str = "mailpit"  # MAIL_REPLY_SOURCE: mailpit | imap
+    mailpit_url: str = "http://localhost:8025"  # MAIL_MAILPIT_URL
+    quality_addresses: str = ""  # MAIL_QUALITY_ADDRESSES: comma list of who may answer; empty = any sender except the user (warned)
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_user: str = ""
+    imap_password: str = ""
+    imap_folder: str = "INBOX"
 
 
 def message_id_for(number: str, kind: str = "ticket_created") -> str:
