@@ -2,10 +2,10 @@
 
 Role choice. Chainlit's own login page is a single email/password form and cannot show two role
 cards, so the choice lives on a small start page (`/start`, FastAPI routes added to Chainlit's
-app, see start_page.py). The page sets an HMAC-signed cookie; Chainlit's header_auth_callback
-verifies it and puts the role into the user metadata. A client cannot forge a role without
-CHAINLIT_AUTH_SECRET. With CHAT_TRUSTED_HEADER set (production) identity comes only from that
-header, which the reverse proxy must set and strip from client requests (see session.py).
+app, see start_page.py). Role selection issues a signed profile and a Chainlit JWT in
+the same redirect. Both use CHAINLIT_AUTH_SECRET. When CHAT_TRUSTED_HEADER is configured,
+Chainlit authenticates the identity through its header callback. The reverse proxy
+sets that header and strips client-supplied copies (see session.py).
 
 The dialog logic is not here: this module only renders Answer objects (render.py).
 """
@@ -38,10 +38,13 @@ from reglament_agent.admin import routes as admin_routes  # noqa: E402
 from reglament_agent.chat.services import available_departments, build_services  # noqa: E402
 from reglament_agent.chat import notifications as N  # noqa: E402
 
+from reglament_agent.chat.admission import AdmissionRejected, AdmissionSettings, TurnAdmission
 from reglament_agent.chat.history import router as history_router
+from reglament_agent.model.queue import GenerationQueueFull
 from reglament_agent.ops.health import router as health_router
 
 services = build_services()
+turn_admission = TurnAdmission(AdmissionSettings())
 # Chainlit already registers /health. Give the dependency check precedence over its liveness handler.
 for route in reversed([*history_router.routes, *health_router.routes]):
     fastapi_app.router.routes.insert(0, route)
@@ -59,9 +62,7 @@ def channel_storage():
 @cl.header_auth_callback
 async def auth(headers) -> cl.User | None:
     ident = S.identity_from_headers(headers, os.environ["CHAINLIT_AUTH_SECRET"])
-    if ident is None:
-        return None
-    return cl.User(identifier=ident.email, metadata={"role": ident.role, "department": ident.department})
+    return start_page.chainlit_user(ident) if ident else None
 
 
 def _actions(specs: list[R.ActionSpec]) -> list[cl.Action]:
@@ -150,11 +151,32 @@ async def resume(thread) -> None:
 TURN_TIMEOUT = 60
 
 
+def _retry_actions(text: str, message_id: str, choice: bool) -> list[cl.Action]:
+    return _actions(
+        [R.ActionSpec("retry", "🔁 Повторить", {"text": text, "message_id": message_id, "choice": choice})]
+    )
+
+
 async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
     if cl.user_session.get("busy"):
         await cl.Message(content=R.ERROR_TEXTS["busy"]).send()
         return
-    cl.user_session.set("busy", True)
+    user = _user(message_id)
+    try:
+        with turn_admission.accept(user.email):
+            cl.user_session.set("busy", True)
+            try:
+                await _run_admitted(user, text, message_id, choice=choice)
+            finally:
+                cl.user_session.set("busy", False)
+    except AdmissionRejected as rejected:
+        await cl.Message(
+            content=R.ERROR_TEXTS[rejected.reason],
+            actions=_retry_actions(text, message_id, choice),
+        ).send()
+
+
+async def _run_admitted(user: UserContext, text: str, message_id: str, *, choice: bool) -> None:
     phase = "Обрабатываю вопрос…"
     started = time.monotonic()
     progress = cl.Message(content=f"⏳ {phase}")
@@ -180,8 +202,11 @@ async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
         method = services.answerer.choose if choice else services.answerer.answer
         try:
             async with asyncio.timeout(TURN_TIMEOUT):
-                answer = await method(_user(message_id), text, update_status)
+                await deliver_notifications()
+                answer = await method(user, text, update_status)
             error = "unavailable" if answer.outcome == Outcome.ERROR else None
+        except GenerationQueueFull:
+            error = "stand_busy"
         except (TimeoutError, httpx.TimeoutException):
             error = "timeout"
         except (httpx.RequestError, httpx.HTTPStatusError, psycopg.Error):
@@ -193,10 +218,7 @@ async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
                 await clock
         if error:
             progress.content = f"⚠️ {R.ERROR_TEXTS[error]} · {int(time.monotonic() - started)} с"
-            spec = R.ActionSpec(
-                "retry", "🔁 Повторить", {"text": text, "message_id": message_id, "choice": choice}
-            )
-            progress.actions = _actions([spec])
+            progress.actions = _retry_actions(text, message_id, choice)
             await progress.update()
         else:
             await progress.remove()
@@ -207,8 +229,6 @@ async def _run(text: str, message_id: str, *, choice: bool = False) -> None:
         progress.content = R.ERROR_TEXTS["cancelled"]
         await progress.update()
         raise
-    finally:
-        cl.user_session.set("busy", False)
 
 
 async def clear_clarification():

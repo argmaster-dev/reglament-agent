@@ -9,5 +9,6 @@
 {% elif doc.status != 'active' %}<a href="/admin/documents/{{ doc.doc_id }}/versions/{{ v.number }}/activate">Вернуть в публикацию</a>{% endif %}
 {% for new, old in pairs if new == v.number %} · <a href="/admin/documents/{{ doc.doc_id }}/versions/diff?old={{ old }}&amp;new={{ new }}">Отличия от версии {{ old }}</a>{% endfor %}</td></tr>{% endfor %}</table>
 <p style="margin-top:16px">{% if doc.status == 'active' %}<a class="btn sec" href="/admin/documents/{{ doc.doc_id }}/withdraw">Снять с публикации</a>{% endif %}
+<a class="btn sec" href="/admin/documents/{{ doc.doc_id }}/checks">Проверка вопросов</a>
 <a class="btn" href="/admin/documents/upload">Заменить новой версией</a></p>
 {% endblock %}

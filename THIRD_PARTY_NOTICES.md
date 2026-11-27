@@ -37,3 +37,5 @@
 | Ollama (ollama/ollama) | 0.40.2 на проверочном стенде | MIT | Локальный сервер моделей |
 | python:3.12-slim (Docker Official Image) | 3.12 | PSF-2.0 (Python), лицензии Debian | Базовый образ приложения (Dockerfile) |
 | uv (ghcr.io/astral-sh/uv) | 0.8 | MIT / Apache-2.0 | Установка зависимостей при сборке образа |
+
+- **Caddy 2.8-alpine** — Apache-2.0. Готовый Docker-образ, закреплён по digest. Проксирует приложение и Mailpit на стенде. [Исходный код](https://github.com/caddyserver/caddy/tree/v2.8.4)
