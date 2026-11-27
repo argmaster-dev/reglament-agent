@@ -8,7 +8,7 @@ The extracted sentence and its precise reference remain the source of the answer
 import re
 from dataclasses import dataclass, field
 
-from reglament_agent.answer import Statement
+from reglament_agent.answer import SourceRef, Statement
 from reglament_agent.storage.search import QUESTION_WORDS
 
 from .deadlines import has_deadline, question_mode
@@ -287,16 +287,24 @@ def qualifier_conflict(question, anchor):
     return _conflicts(question, anchor.text) is not None or _conflicts(question, anchor.context) is not None
 
 
-def near_basis(question, rows, limit=3):
-    """Sentences about the same noun with another object or direction, named openly instead of substituted."""
-    lines, seen = [], set()
-    for a in rows:
-        if _conflicts(question, a.text) and (a.ref.doc_id, a.ref.point) not in seen:
-            seen.add((a.ref.doc_id, a.ref.point))
-            lines.append(f"п. {a.ref.point} «{a.ref.doc_title}» ({a.ref.department}): {a.text}")
-        if len(lines) >= limit:
+def nearby_evidence(question, rows, limit=3) -> tuple[str, list[SourceRef]]:
+    """Describe neighbouring points and keep their exact references in the same order."""
+    lines, refs, seen = [], [], set()
+    for anchor in rows:
+        ref = anchor.ref
+        key = (ref.doc_id, ref.version_no, ref.point)
+        if len(refs) >= limit:
             break
-    return "\n".join(lines)
+        if key in seen or not _conflicts(question, anchor.text):
+            continue
+        seen.add(key)
+        refs.append(ref)
+        lines.append(f"п. {ref.point} «{ref.doc_title}» ({ref.department}): {anchor.text}")
+    return "\n".join(lines), refs
+
+
+def near_basis(question, rows, limit=3):
+    return nearby_evidence(question, rows, limit)[0]
 
 
 def matches_request(question, anchor, *, point_terms=None):
