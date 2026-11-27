@@ -25,10 +25,10 @@ from reglament_agent.model.ollama import ModelError, ModelOutputError, OllamaCli
 from reglament_agent.quality.faq import PublishedFaqStore, match_published
 from reglament_agent.quality.mail import MailSettings
 from reglament_agent.quality.tickets import create_ticket
-from reglament_agent.storage.retrieve import retrieve
+from reglament_agent.storage.retrieve import Candidates, retrieve
 from reglament_agent.storage.search import preview
 
-from . import context, grounding, relevance, state
+from . import context, grounding, guards, relevance, spelling, state
 from .lexicon import fold, words
 
 _LOG = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def describe(points):
     ]
 
 
-MAX_MESSAGE_CHARS = 2000
+MAX_MESSAGE_CHARS = guards.MAX_LENGTH
 
 class RequestCalls:
     def record(self, call):
@@ -69,6 +69,24 @@ class Dialog:
         self.mail = mail or MailSettings()
         self.profiles = state.Profiles(dsn)
         self.profile_max_age_days = int(os.getenv("DIALOG_PROFILE_MAX_AGE_DAYS", "30"))
+        self._vocabulary = (None, None)
+
+    def vocabulary(self, conn):
+        """Words of the active regulations; rebuilt only when the set of active versions changes."""
+        versions = tuple(
+            conn.execute("SELECT active_version_id FROM documents WHERE status='active' ORDER BY doc_id").fetchall()
+        )
+        if self._vocabulary[0] != versions:
+            texts = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT p.text FROM points p JOIN documents d ON d.active_version_id=p.version_id"
+                    " WHERE d.status='active'"
+                )
+            ]
+            departments = [r[0] for r in conn.execute("SELECT DISTINCT department FROM documents")]
+            self._vocabulary = (versions, spelling.Vocabulary.from_texts(texts + departments))
+        return self._vocabulary[1]
 
     async def answer(self, user, message, on_status):
         return await self._turn(user, message.strip(), on_status, choice=False)
@@ -77,9 +95,11 @@ class Dialog:
         return await self._turn(user, option.strip(), on_status, choice=True)
 
     async def _turn(self, user, message, status, choice):
-        if len(message) > MAX_MESSAGE_CHARS:
-            # Chat checks the same limit, but retry/choice paths reach the dialog directly.
-            return Answer(Outcome.OFF_TOPIC, f"Сообщение длиннее {MAX_MESSAGE_CHARS} символов. Сократите вопрос.")
+        refusal = Answer(
+            Outcome.OFF_TOPIC, f"Вопрос должен содержать от {guards.MIN_LENGTH} до {guards.MAX_LENGTH} символов."
+        )
+        if len(message) > guards.MAX_LENGTH or not message:
+            return refusal
         started = monotonic()
         trace = {"steps": [], "calls": [], "candidates": [], "dropped": []}
         token = _records.set(trace["calls"])
@@ -93,6 +113,9 @@ class Dialog:
                     return prior
                 if prior:
                     conn.execute("DELETE FROM dialog_requests WHERE id=%s", (prior.answer_id,))
+                if len(message) < guards.MIN_LENGTH and not initial.get("options"):
+                    # A short reply is valid only as an answer to an open clarification.
+                    return refusal
                 request_id = str(uuid.uuid4())
                 topic = deepcopy(initial)
                 try:
@@ -116,6 +139,21 @@ class Dialog:
             return Answer(Outcome.ERROR)
         finally:
             _records.reset(token)
+
+    @staticmethod
+    def _merge_variants(named, faqs, assembled):
+        by_department = {v.department: v for v in assembled}
+        merged = []
+        for d in named:
+            faq = faqs.get(d)
+            if faq:
+                refs = [faq.source] + ([faq.basis] if faq.basis else [])
+                merged.append(Variant(d, [Statement(faq.answer, refs)], faq.attribution or None))
+            elif d in by_department and by_department[d].statements:
+                merged.append(by_department[d])
+            else:
+                merged.append(Variant(d, [], f"в регламентах {d} нет основания"))
+        return merged
 
     def _ticket(self, conn, user, message, question, reason, topic, trace):
         profile = state.get_profile(conn, user.email)
@@ -142,7 +180,13 @@ class Dialog:
         options = topic.get("options", [])
         axis = topic.get("axis", "department")
         confirming = topic.get("confirm_department")
-        dept = context.department_in(message, departments or (options if axis == "department" else []))
+        catalog = departments or (options if axis == "department" else [])
+        dept = context.department_in(message, catalog)
+        named = [] if topic.get("options") else context.departments_in(message, departments)
+        # A question about several departments is answered per department, never from one of them.
+        multi = len(named) >= 2
+        if multi:
+            dept = None
         declared_dept = context.personal_department(message, dept)
         position = context.personal_position(message)
         explicit_stage = context.stage_in(message)
@@ -151,7 +195,8 @@ class Dialog:
         short = context.scope_only(message, dept)
         stage_reply = explicit_stage and len(words(message)) <= 4
         confirming_yes = pending and confirming and context.normalized_reply(message) == "да"
-        follow = bool(topic.get("subject")) and bool(
+        operational = guards.operational_request(message)
+        follow = not operational and bool(topic.get("subject")) and bool(
             short
             or stage_reply
             or (pending and (choice or unknown or confirming_yes or not context.new_question(message)))
@@ -174,6 +219,13 @@ class Dialog:
             return Answer(Outcome.ANSWER, note), message, None
 
         question = topic["subject"] if follow else message
+        invention = bool(topic.get("invention")) if follow else guards.fabrication_intent(message)
+        if not follow:
+            question = guards.neutralize(question)
+            if invention:
+                question = guards.strip_invention(question)
+            if not operational:
+                question = spelling.correct(question, self.vocabulary(conn))
         if not follow:
             ignored = topic.get("ignored_department")
             offered = topic.get("profile_confirmation_offered")
@@ -182,10 +234,14 @@ class Dialog:
                 topic["ignored_department"] = ignored
             if offered:
                 topic["profile_confirmation_offered"] = True
+            topic["invention"] = invention
         if pending and follow:
             topic.setdefault("history", []).append({"question": topic["clarify"], "answer": message})
         trace["restated"] = question
-        variants = pending and follow and unknown
+        if operational:
+            trace["steps"].append("off_topic")
+            return Answer(Outcome.OFF_TOPIC, guards.OFF_TOPIC_MESSAGE), question, None
+        variants = (pending and follow and unknown) or multi
         note = None
         if follow and confirming_yes:
             profile = state.confirm_department(conn, user.email, confirming)
@@ -315,18 +371,34 @@ class Dialog:
                 return clarification, question, None
         trace["steps"].append("retrieve")
         (vector,) = await self.model.embed([question], step="retrieve", request_id=request_id)
-        found = await asyncio.to_thread(
-            self.search,
-            conn,
-            question,
-            vector,
-            department=dept,
-            stage=stage,
-            limit=28,
-            faq=PublishedFaqStore(),
-        )
+        if multi:
+            parts = [
+                await asyncio.to_thread(
+                    self.search, conn, question, vector, department=d, stage=stage,
+                    limit=max(8, 28 // len(named)), faq=PublishedFaqStore(),
+                )
+                for d in named
+            ]
+            # A published answer settles only its own department; the others are assembled from the points.
+            # Only an answer based on this department's own document may stand for it. An answer without such
+            # a basis (outside the regulations) belongs to no department row and is not shown in the comparison.
+            faqs = {
+                d: match_published(
+                    question, [f for f in part.faq if f.basis and f.basis.department == d]
+                )
+                for d, part in zip(named, parts)
+            }
+            departments = [d for d in named if not faqs[d]]
+            found = Candidates(
+                [p for d, part in zip(named, parts) if d in departments for p in part.points], []
+            )
+        else:
+            found = await asyncio.to_thread(
+                self.search, conn, question, vector, department=dept, stage=stage, limit=28,
+                faq=PublishedFaqStore(),
+            )
         trace["candidates"] = describe(found.points)
-        faq = match_published(question, found.faq)
+        faq = None if multi else match_published(question, found.faq)
         if faq is not None:
             refs = [faq.source] + ([faq.basis] if faq.basis else [])
             reply = Answer(
@@ -338,6 +410,11 @@ class Dialog:
             )
             trace["steps"].append("published_faq")
             return reply, question, key
+        if multi and not departments:
+            reply = Answer(Outcome.VARIANTS, scope=scope, profile_note=note)
+            reply.variants = self._merge_variants(named, faqs, [])
+            trace["steps"].append("published_faq")
+            return reply, question, None
         rows = grounding.anchors(found.points)
         if not departments:
             departments = sorted({p.department for p in found.points})
@@ -346,7 +423,7 @@ class Dialog:
             if clarification:
                 return clarification, question, None
         items = grounding.vocabulary(question, rows)
-        messages, schema = grounding.prompt(question, items, variants)
+        messages, schema = grounding.prompt(question, items, variants, invention)
         await status("Проверяю ответ по найденным пунктам…")
         trace["steps"].append("select")
         async with generation_progress(status) as notify:
@@ -377,14 +454,40 @@ class Dialog:
             raise ModelOutputError("invalid claim structure")
         trace["proposal"] = data
         trace["evidence"] = {key: asdict(a.ref) for key, a in items.items()}
-        result = grounding.assemble(question, response.data, items, departments, variants, trace, rows)
-        if variants and axis == "stage" and result.outcome == Outcome.VARIANTS:
+        result = grounding.assemble(question, response.data, items, departments, variants, trace, rows, invention)
+        if variants and not multi and axis == "stage" and result.outcome == Outcome.VARIANTS:
             statements = [s for v in result.variants for s in v.statements]
             result.variants = [
                 Variant(label, [s for s in statements if code in stages_by_doc.get(s.sources[0].doc_id, [])])
                 for code, label in context.STAGE_LABELS.items()
             ]
         trace["steps"].append("verify")
+        if multi and result.outcome == Outcome.NO_BASIS and not any(faqs.values()):
+            # Nothing for any named department: an ordinary refusal with a ticket, each department named.
+            marks = [v.note for v in self._merge_variants(named, faqs, [])]
+            result.summary = "\n".join([result.summary, *marks])
+        elif multi and (result.outcome == Outcome.VARIANTS or any(faqs.values())):
+            # A department without a basis is marked in its variant; it does not open a ticket.
+            own = result.variants if result.outcome == Outcome.VARIANTS else []
+            result = Answer(
+                Outcome.VARIANTS, variants=self._merge_variants(named, faqs, own), caveat=result.caveat
+            )
+        if result.outcome == Outcome.NO_BASIS and relevance.request_qualifiers(question):
+            # No silent substitution: name the points about the same noun for another object or direction,
+            # including those of other departments.
+            wider = rows
+            if dept and not multi:
+                found_all = await asyncio.to_thread(
+                    self.search, conn, question, vector, department=None, stage=stage, limit=28,
+                    faq=PublishedFaqStore(),
+                )
+                wider = grounding.anchors(found_all.points)
+            near, result.nearby_sources = relevance.nearby_evidence(question, wider)
+            if near:
+                result.summary = (
+                    f"{result.summary}\nТочного пункта для этого объекта и направления нет. "
+                    f"Есть пункты о том же предмете, но для другого объекта или направления:\n{near}"
+                )
         result.scope, result.profile_note = scope, note
         if result.outcome in _ESCALATE:
             result.ticket = self._ticket(conn, user, message, question, result.outcome.value, topic, trace)
@@ -393,6 +496,7 @@ class Dialog:
         return result, question, key if cacheable else None
 
     async def rate(self, user, answer_id, good, reason, forward=False):
+        reason = reason[: guards.MAX_LENGTH] if reason else reason
         def record(conn):
             try:
                 identity = uuid.UUID(answer_id)

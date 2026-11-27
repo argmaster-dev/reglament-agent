@@ -16,7 +16,7 @@
 {{ c.view.text }}</pre>{% else %}<p class="muted">Пункт не найден в действующей версии.</p>{% endif %}</details>
 {% else %}<p class="muted">Кандидатов нет.</p>{% endfor %}</div>
 {% if answer %}
-<div class="card"><p class="ok"><b>Ответ отправлен</b> · {{ answer.expert_email }}</p><p>{{ answer.answer }}</p>
+<div class="card"><p class="ok"><b>Ответ отправлен</b> · {{ answer.expert_email }}{% if answer.source == 'email' %} · <b>ответ получен по почте</b>{% if answer.updated_at %} (заменён более поздним письмом){% endif %}{% endif %}</p><p>{{ answer.answer }}</p>
 <p class="muted">Основание: {{ basis_text }}</p>
 {% if answer.faq_id %}<p>Опубликовано в FAQ: <a href="/admin/faq/{{ answer.faq_id }}">запись №{{ answer.faq_id }}</a></p>
 {% else %}<p class="muted">Ответ только сотруднику, в FAQ не публиковался.</p>{% endif %}</div>

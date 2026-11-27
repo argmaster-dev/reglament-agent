@@ -199,22 +199,40 @@ def _seq_in(seq: list[str], sub: list[str]) -> bool:
     return n > 0 and any(seq[i : i + n] == sub for i in range(len(seq) - n + 1))
 
 
+_CASE_SENSITIVE_ALIASES = {"ПО"}
+
+
+def query_cache_input(text):
+    """Preserve meaningful acronym case while allowing ordinary case-only cache hits."""
+    marked = [i for i, token in enumerate(_WORD.findall(text)) if token in _CASE_SENSITIVE_ALIASES]
+    return text.strip().casefold(), marked
+
+
 def expand_query(text: str) -> str:
     """Append expansions of abbreviations found in the query and abbreviations
     of expansions found in it."""
-    toks = words(text)
+    original_tokens = _WORD.findall(text)
+    toks = [fold(token) for token in original_tokens]
     keys = [word_key(t) for t in toks]
     low = text.lower()
+
+    # Lowercase «по» is a preposition. Other glossary aliases keep their
+    # case-insensitive matching, including acronyms typed in lowercase.
+    def has_variant(variant: str) -> bool:
+        if variant in _CASE_SENSITIVE_ALIASES:
+            return variant in original_tokens
+        return _seq_in(toks, words(variant))
+
     extra: list[str] = []
     slang = frozenset(_load_slang())
     for row in _load():
         variants, exp = row
         clean = _clean(exp)
-        if any(_seq_in(toks, words(v)) for v in variants):
+        if any(has_variant(v) for v in variants):
             if fold(clean) not in fold(text):
                 extra.append(clean)
         elif row not in slang and _seq_in(keys, [word_key(w) for w in words(clean)]):
-            extra.extend(v for v in variants if v.lower() not in low)
+            extra.extend(v for v in variants if v in _CASE_SENSITIVE_ALIASES or v.lower() not in low)
     return " ".join([text, *extra]) if extra else text
 
 
@@ -222,12 +240,13 @@ def expand_query(text: str) -> str:
 _ACTION_PREFIXES: list[tuple[tuple[str, ...], str]] = [
     (("подпис",), "подпис"),
     (("соглас",), "соглас"),
-    (("созда", "создан"), "созда"),
+    (("созда", "создан", "формир", "составл", "оформ", "заводит", "завест", "завед"), "созда"),
+    (("провер", "сверя", "сверит", "валидир", "контрол"), "провер"),
+    (("принима", "принят", "принять"), "принима"),
     (("заключ",), "заключ"),
     (("отвеча", "ответствен"), "отвеч"),
-    (("назнач",), "назнач"),
-    (("направл",), "направл"),
-    (("привлек", "привлеч"), "привле"),
+    (("назнач", "привлек", "привлеч", "определ", "закрепл", "выдел", "поруч"), "назнач"),
+    (("направл", "отправ", "переда", "отсыла", "перенапр"), "направл"),
     (("утвер",), "утвер"),
 ]
 

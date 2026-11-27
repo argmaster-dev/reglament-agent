@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 from pydantic import TypeAdapter
 
 from reglament_agent.answer import Answer, Profile
+from .lexicon import query_cache_input
 
 answers = TypeAdapter(Answer)
 
@@ -100,7 +101,7 @@ def cache_key(conn, user, question, scope, model):
     faq = conn.execute(
         "SELECT id,updated_at::text FROM faq_entries WHERE status='active' ORDER BY id"
     ).fetchall()
-    data = ["extract-v1", model, user.role, asdict(scope), question.strip().casefold(), versions, faq]
+    data = ["extract-v5-creation-target", model, user.role, asdict(scope), query_cache_input(question), versions, faq]
     return hashlib.sha256(json.dumps(data, ensure_ascii=False).encode()).hexdigest()
 
 
