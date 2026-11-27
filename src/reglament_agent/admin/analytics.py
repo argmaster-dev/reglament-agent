@@ -245,8 +245,16 @@ def _words(text: str) -> list[str]:
     return _WORD.findall((text or "").casefold().replace("ё", "е"))
 
 
+_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9:-]*(?:\s+[^<>]*)?\s*/?>")
+
+
 def guard_signature(text: str, dept_vocab: frozenset[str] = frozenset()) -> tuple:
     """Mandatory conditions of a question: two questions may be grouped only if all of them coincide."""
+    # Pasted markup contributes no comparison. Keep operators between operands
+    # in the visible text. This only affects grouping; the log displays the escaped original.
+    plain, tags = _TAG.subn(" ", text or "")
+    if tags:
+        text = re.sub(r"(?<!\w)[<>]+\s*$", "", plain)
     words = _words(text)
     departments = {w for w in words if w in dept_vocab or any(w.startswith(st) for st in _DEPT_STEMS)}
     return (quantity_conditions(text), tuple(sorted(set(words) & _NEGATIONS)), tuple(sorted(departments)),

@@ -70,6 +70,13 @@ def test_exact_analytics_summary_keeps_unlike_questions_apart():
     assert analytics.repeated(log_rows(first, second)) == []
 
 
+def test_analytics_distinguishes_quantity_bounds_inside_copied_markup():
+    upper = "<em>Сумма</em> < 500 рублей"
+    lower = "<em>Сумма</em> > 500 рублей"
+    assert analytics.guard_signature(upper) == analytics.guard_signature("Сумма < 500 рублей")
+    assert analytics.guard_signature(upper) != analytics.guard_signature(lower)
+
+
 @pytest.mark.parametrize("emb", [None, SAME_VECTOR])
 def test_restatement_cannot_erase_a_bound_from_the_original(emb):
     rows = log_rows("Когда согласовать отчёт до 5 дней?", "Когда согласовать отчёт от 5 дней?")
