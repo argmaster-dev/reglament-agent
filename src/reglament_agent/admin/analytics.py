@@ -12,6 +12,7 @@ import re
 import statistics
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 from typing import NamedTuple
 
 from psycopg.rows import dict_row
@@ -27,6 +28,7 @@ DEFAULT_PERIOD = "7"
 REC_MIN_SECTION_EVENTS = 5   # обращений + 👎 + уточнений по одному разделу за период
 REC_MIN_REPEATS = 5          # одинаковых по смыслу вопросов за период
 SERVICE_DOMAIN = "@service.local"  # служебные прогоны (проверочные вопросы) не попадают в аналитику
+GROUP_SEMANTIC_BUDGET_S = 2.0  # page-wide budget for optional embeddings and semantic comparisons
 GROUP_MIN_COSINE_DEFAULT = 0.90  # ANALYTICS_GROUP_MIN_COSINE: порог косинусной близости для группы перефразировок
 TOP_CANDIDATES = 3           # сколько первых кандидатов поиска считать «затронутыми» разделами
 
@@ -313,7 +315,8 @@ def _group_dict(key: _GroupKey, members: list[dict], dept_vocab: frozenset[str])
 
 
 def repeated_groups(rows: list[dict], embedder=None, *, min_cosine: float | None = None,
-                    dept_vocab: frozenset[str] = frozenset(), cache: dict | None = None) -> list[dict]:
+                    dept_vocab: frozenset[str] = frozenset(), cache: dict | None = None,
+                    deadline: float | None = None) -> list[dict]:
     """Groups of similar questions (>= 2 requests). Exact groups (`repeated`) are merged greedily by cosine
     similarity of their embeddings, but only when the mandatory conditions (numbers, negations, departments,
     question word) coincide. Any embedder failure -> plain exact grouping."""
@@ -327,6 +330,8 @@ def repeated_groups(rows: list[dict], embedder=None, *, min_cosine: float | None
             text_of = {k: _clean(_group_question(v[0])) for k, v in units}
             todo = sorted({t for t in text_of.values() if t not in cache})
             if todo:
+                if deadline is not None and monotonic() >= deadline:
+                    raise TimeoutError("semantic grouping budget exhausted")
                 vectors = embedder.embed(todo)
                 if len(vectors) != len(todo):
                     raise ValueError("embedder returned a wrong number of vectors")
@@ -335,6 +340,8 @@ def repeated_groups(rows: list[dict], embedder=None, *, min_cosine: float | None
             reps: list[_GroupKey] = []
             for k, v in units:
                 for i, rep in enumerate(reps):
+                    if deadline is not None and monotonic() >= deadline:
+                        raise TimeoutError("semantic grouping budget exhausted")
                     if k.conditions == rep.conditions and _cosine(cache[text_of[k]], cache[text_of[rep]]) >= threshold:
                         clusters[i][1].extend(v)
                         break
@@ -354,11 +361,12 @@ def repeated_groups(rows: list[dict], embedder=None, *, min_cosine: float | None
 
 def build_groups(conn, rows: list[dict]) -> list[dict]:
     """Semantic groups with the embedder chosen by the environment (EMBEDDER); exact grouping on any failure."""
+    deadline = monotonic() + GROUP_SEMANTIC_BUDGET_S
     vocab = dept_vocabulary(conn)
     try:
         from reglament_agent.ingest.embedding import open_embedder
-        with open_embedder() as emb:
-            return repeated_groups(rows, emb, dept_vocab=vocab)
+        with open_embedder(deadline=deadline) as emb:
+            return repeated_groups(rows, emb, dept_vocab=vocab, deadline=deadline)
     except Exception:  # noqa: BLE001
         log.warning("analytics: embedder unavailable, exact grouping used", exc_info=True)
         return repeated_groups(rows, dept_vocab=vocab)

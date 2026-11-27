@@ -6,6 +6,7 @@ import os
 import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from time import monotonic
 from typing import Protocol
 
 from reglament_agent.model import OllamaClient
@@ -26,12 +27,17 @@ def vector_literal(values: Sequence[float]) -> str:
 
 class OllamaEmbedder:
     """Sync adapter for the publisher. The shared client owns batching, validation and telemetry."""
-    def __init__(self, client: OllamaClient, runner: asyncio.Runner):
+    def __init__(self, client: OllamaClient, runner: asyncio.Runner, *, deadline: float | None = None):
         self.client = client
         self.runner = runner
+        self.deadline = deadline
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        return self.runner.run(self.client.embed(list(texts), step="ingest_embed"))
+        request = self.client.embed(list(texts), step="ingest_embed")
+        if self.deadline is not None:
+            # The async client may send many HTTP batches. Cancel their single parent operation.
+            request = asyncio.wait_for(request, max(0.0, self.deadline - monotonic()))
+        return self.runner.run(request)
 
 
 class FakeEmbedder:
@@ -48,8 +54,8 @@ class FakeEmbedder:
 
 
 @contextmanager
-def open_embedder(kind: str | None = None, *, env=None) -> Iterator[Embedder]:
-    """Share the Ollama connection and event loop across embedding batches."""
+def open_embedder(kind: str | None = None, *, env=None, deadline: float | None = None) -> Iterator[Embedder]:
+    """Share an Ollama connection across batches, optionally ending at a monotonic deadline."""
     env = os.environ if env is None else env
     kind = (kind or env.get("EMBEDDER") or "ollama").lower()
     if kind == "fake":
@@ -62,7 +68,7 @@ def open_embedder(kind: str | None = None, *, env=None) -> Iterator[Embedder]:
     with asyncio.Runner() as runner:
         client = OllamaClient(settings)
         try:
-            yield OllamaEmbedder(client, runner)
+            yield OllamaEmbedder(client, runner, deadline=deadline)
         finally:
             runner.run(client.aclose())
 
