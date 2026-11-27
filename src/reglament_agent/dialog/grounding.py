@@ -228,8 +228,8 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         statement = Statement(text, [a.ref])
         if statement not in statements:
             statements.append(statement)
-    parts = relevance.requested_parts(question)
-    compound = len(parts) > 1 and not variants
+    parts = relevance.coordinated_parts(question)
+    compound = bool(parts) and not variants
     # A model can decline an entire question even when one of its citations answers a specific part.
     check_parts = compound and out in (Outcome.ANSWER, Outcome.LOW_CONFIDENCE, Outcome.NO_BASIS)
     missing_parts = []
@@ -238,7 +238,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         # Department names scope the question; they are not part of the requested rule.
         query = relevance.terms(question) - relevance.terms(" ".join(departments))
         grounded = []
-        deadline = any(relevance.asks_deadline(part) for part in parts)
+        deadline = any(relevance.asks_deadline(part) for part in (parts or [question]))
         point_terms = relevance.deadline_context(rows or items.values()) if deadline else None
         covered = set()
         for st in statements:

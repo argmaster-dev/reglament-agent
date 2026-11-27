@@ -214,13 +214,23 @@ def question_parts(question):
     return merged or [q]
 
 
-def requested_parts(question):
-    parts = [part for part in question_parts(question) if terms(part) - _COURTESY_WORDS]
-    return parts or [question]
+# A temporal subordinate clause or «верно, что…» supplies context to a single question.
+# Strong coordination separates independent questions. A comma can also introduce a new actor or object question.
+_COORDINATED = re.compile(
+    rf"\s+(?:и|а также)\s+(?={_ASK}\b)|[;?]\s*(?={_ASK}\b)|,\s*(?=(?:кто|како\w*|каки\w*|что)\b)"
+)
+
+
+def coordinated_parts(question):
+    parts = [part.strip(" ,?!;.") for part in _COORDINATED.split(fold(question))]
+    if len(parts) > 1 and re.search(rf"\b(?:{_ASK}|ли|ком)\b", parts[0]):
+        return parts
+    return []
 
 
 def matches_request(question, anchor, *, point_terms=None):
-    return any(_matches_part(part, anchor, point_terms=point_terms) for part in requested_parts(question))
+    parts = [part for part in question_parts(question) if terms(part) - _COURTESY_WORDS]
+    return any(_matches_part(part, anchor, point_terms=point_terms) for part in (parts or [question]))
 
 
 _PART_FILLERS = {word_key(w) for w in ("его", "ее", "их", "это", "есть", "какова", "каков", "каковы",
@@ -240,9 +250,10 @@ def supports_part(part, anchor, *, point_terms=None):
             return False
     if not subject or len(subject & direct) < min(2, len(subject)):
         return False
-    operation = _operation(part, subject)
-    if operation and not _mentions_operation(operation, direct):
-        return False
+    if re.search(r"\bкто\b", part):
+        operation = _operation(part, subject)
+        if operation and not _mentions_operation(operation, direct):
+            return False
     return _matches_part(part, anchor, point_terms=point_terms)
 
 

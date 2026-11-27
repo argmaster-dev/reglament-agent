@@ -62,10 +62,14 @@ def test_partial_evidence_keeps_only_the_supported_part(proposed):
     assert "штраф" in answer.caveat
 
 
-def test_neighbour_without_a_supported_part_cannot_be_a_partial_answer():
-    q = "Кто создаёт карточку осмотра и какой штраф начисляется за просрочку?"
-    a = Anchor(SourceRef("d", "Справка", "Отдел", 1, "3.1", 0),
-               "Карточку осмотра архивируют по окончании года.", "", 1)
+@pytest.mark.parametrize(("q", "text"), [
+    ("Кто создаёт карточку осмотра и какой штраф начисляется за просрочку?",
+     "Карточку осмотра архивируют по окончании года."),
+    ("Кто утверждает график проверок и какой штраф начисляется за просрочку?",
+     "Диспетчер публикует график проверок."),
+])
+def test_neighbour_without_a_supported_part_cannot_be_a_partial_answer(q, text):
+    a = Anchor(SourceRef("d", "Справка", "Отдел", 1, "3.1", 0), text, "", 1)
     data = {"outcome": "low_confidence", "claims": [{"ref": model_ref("S1", a), "text": a.text}]}
     result = assemble(q, data, {"S1": a}, ["Отдел"], False, {})
     assert result.outcome is Outcome.NO_BASIS and not result.statements
