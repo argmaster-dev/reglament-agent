@@ -100,9 +100,12 @@ _REIMBURSE_RULE = re.compile(r'\b(?:производится|производя�
 _REIMBURSE_CLAUSES = re.compile(r'[;.!?]|,\s*(?:а|но|затем|после чего)\s+')
 _PARTY = r'сотрудник|работник|подрядчик|заказчик|поставщик|клиент'
 _PAYEE = re.compile(rf'\b({_PARTY})(?:у|ам)\b')
-_EXPENSE_OWNER = re.compile(rf'\b(?:расход[ыа-я]*|затрат[ыа-я]*)\s+({_PARTY})(?:а|ов)\b')
+_EXPENSE_OWNER = re.compile(rf'\b(?:расход\w*|затрат\w*)\s+({_PARTY})(?:а|ов)\b')
 _MONEY = re.compile(r'\b(?:расход|затрат|стоимост|покупк|затрачен|денежн|деньг)\w*')
 _PASSIVE = re.compile(r'\b(?:возмеща|компенсиру)(?:ется|ются)\b')
+_ASK_METHOD = re.compile(r'\b(?:как|поряд\w*|процедур\w*)\b')
+_METHOD = re.compile(r'\b(?:после|при|через|согласно|посредством|по|ежемесячно|необходимо|требуется|нужно|'
+                     r'в течение|в срок|на основании|на счет|путем|в размере|полностью|частично|не)\b')
 _COST_WORDS = re.compile(r'\b(?:как\w*|внутренн\w*|поряд\w*|правил\w*|регламент\w*|'
                          r'стоимост\w*|расход\w*|затрат\w*|покупк\w*|закупк\w*|приобретени\w*)\b')
 
@@ -119,6 +122,7 @@ def _payees(text):
 class Reimbursement:
     objects: frozenset[str]
     payees: frozenset[str]
+    asks_method: bool
 
     def supported_by(self, sentence):
         for clause in _REIMBURSE_CLAUSES.split(fold(sentence)):
@@ -128,6 +132,8 @@ class Reimbursement:
             if verb and re.match(r'\s+ли\b', clause[verb.end():]):
                 continue
             if not (verb or _REIMBURSE_RULE.search(clause)):
+                continue
+            if self.asks_method and not _METHOD.search(clause):
                 continue
             if self.objects and self.objects <= terms(clause) and self.payees <= _payees(clause):
                 return True
@@ -142,9 +148,10 @@ def reimbursement_request(question, departments):
         return None
     # Use distinguishing subject terms from the question, irrespective of word order.
     # Department, question wording and generic cost/purchase terms cannot identify the expense.
-    subject = _COST_WORDS.sub(' ', _PAYEE.sub(' ', _REIMBURSE.sub(' ', q)))
+    subject = _EXPENSE_OWNER.sub(' ', q) if _PASSIVE.search(q) else q
+    subject = _COST_WORDS.sub(' ', _PAYEE.sub(' ', _REIMBURSE.sub(' ', subject)))
     objects = terms(subject) - terms(' '.join(departments)) - _COURTESY_WORDS
-    return Reimbursement(frozenset(objects), frozenset(_payees(q)))
+    return Reimbursement(frozenset(objects), frozenset(_payees(q)), bool(_ASK_METHOD.search(q)))
 
 
 def _signing_work(text, action):
