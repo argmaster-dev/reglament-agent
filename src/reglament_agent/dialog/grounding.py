@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 from reglament_agent.answer import Answer, Outcome, SourceRef, Statement, Variant
 
-from . import employment, guards, performer, project_procedures, relevance
+from . import employment, guards, performer, project_procedures, relevance, workflow_scope
 from .checks import (
     Claim,
     Evidence,
@@ -284,11 +284,18 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
     entitlements = employment.requested_parts(question, parts)
     if entitlements and out == Outcome.OFF_TOPIC:
         out = Outcome.NO_BASIS
+    workflow_refs = None
+    if not (parts or invention or variants or scopes or frequencies or procedures or entitlements or relevance.asks_deadline(question)):
+        workflow_refs = workflow_scope.applicable_refs(question, (by_ref[ref] for ref in claims_by_ref))
+        if workflow_refs is not None:
+            statements.sort(key=lambda s: (by_ref[s.sources[0]].rank, s.sources[0].sentence))
     point_terms = None
 
     def supports(part, anchor):
         if part in entitlements:
             return entitlements[part].supported_by(anchor.text)
+        if workflow_refs is not None:
+            return anchor.ref in workflow_refs
         if part in procedures:
             return procedures[part].supported_by(anchor)
         if part in frequencies:
@@ -323,7 +330,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
                 }
                 enough = bool(matched)
                 covered.update(matched)
-            elif (question in scopes or question in frequencies or question in procedures or question in entitlements) and not invention:
+            elif (question in scopes or question in frequencies or question in procedures or question in entitlements or workflow_refs is not None) and not invention:
                 enough = supports(question, a) and (not performer_request or performer_request.supported_by(a.text))
             elif performer_request and not invention:
                 enough = performer_request.supported_by(a.text)
@@ -390,7 +397,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         )
     # Check the final displayed sentences, including neighbours and inferred external references.
     # Recompute coverage from what remains visible after expansion.
-    if scopes or frequencies or procedures or entitlements:
+    if scopes or frequencies or procedures or entitlements or workflow_refs is not None:
         by_ref.update((a.ref, a) for a in rows)
         applicable = []
         covered = set()
@@ -402,7 +409,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
                 covered.update(matched)
             else:
                 claim = claims_by_ref.get(ref) or Claim(st.text, SentenceRef(ref.doc_id, ref.point, ref.sentence))
-                reason = "topic_mismatch" if procedures or entitlements else (
+                reason = "topic_mismatch" if procedures or entitlements or workflow_refs is not None else (
                     "frequency_scope_mismatch" if frequencies else "reimbursement_scope_mismatch"
                 )
                 dropped.append(Verdict(claim, False, [reason]))
