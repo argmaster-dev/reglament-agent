@@ -10,7 +10,7 @@ from tests.dialog.test_cache import Model, ask, publish, route_for, user, world
 BASE = "Кто подписывает договор в ТД?"
 
 
-@pytest.mark.parametrize("old_policy", ["extract-v7-document-subject", "extract-v8-scoped-evidence"])
+@pytest.mark.parametrize("old_policy", ["extract-v7-document-subject", "extract-v8-scoped-evidence", "extract-v9-operation-evidence"])
 def test_new_evidence_rules_invalidate_exact_and_similar_answers(isolated, monkeypatch, old_policy):
     conn, _ = isolated
     employee = UserContext("reader@example.org", "employee", "chat", "request")
