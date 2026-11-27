@@ -227,10 +227,9 @@ async def test_client_n3_queue_position_overflow_and_journal():
 
 
 async def test_health_reports_slots_busy_waiting(monkeypatch):
-    import weakref
     from reglament_agent.model import queue as queue_mod
 
-    monkeypatch.setattr(queue_mod, "_REGISTRY", weakref.WeakSet())  # isolate from other clients
+    monkeypatch.setattr(queue_mod, "_chat_slot", None)
     gate = asyncio.Event()
 
     async def h(req):
@@ -238,6 +237,7 @@ async def test_health_reports_slots_busy_waiting(monkeypatch):
         return httpx.Response(200, json=chat_body())
 
     c = OllamaClient(ModelSettings(chat_slots=2), transport=httpx.MockTransport(h))
+    queue_mod.register_chat_slot(c.slot)
     ts = [asyncio.create_task(c.chat_json([], SCHEMA, step=str(i))) for i in range(3)]
     while c.slot_status()["waiting"] < 1:
         await asyncio.sleep(0)
@@ -254,3 +254,32 @@ async def test_health_reports_slots_busy_waiting(monkeypatch):
     body = await health_check(Settings(database_url="", ollama_url="http://o.test", mail_port=1,
                                        timeout=1, transport=httpx.MockTransport(refuse)))
     assert (body["generation"]["busy"], body["generation"]["waiting"]) == (0, 0)
+
+
+async def test_health_ignores_indexer_embedding_client(monkeypatch):
+    """The standard indexer client (open_embedder) has its own slot; /health must not add it up."""
+    from reglament_agent.ingest.embedding import open_embedder
+    from reglament_agent.model import queue as queue_mod
+
+    monkeypatch.setattr(queue_mod, "_chat_slot", None)
+    monkeypatch.setenv("EMBEDDER", "ollama")
+    chat = OllamaClient(ModelSettings(chat_slots=3, generation_max_waiters=1))
+    queue_mod.register_chat_slot(chat.slot)
+
+    def refuse(request):
+        raise httpx.ConnectError("down")
+
+    def read():
+        cfg = Settings(database_url="", ollama_url="http://o.test", mail_port=1, timeout=1,
+                       transport=httpx.MockTransport(refuse))
+        return asyncio.run(health_check(cfg))["generation"]
+
+    expected = chat.slot_status()
+    assert (expected["slots"], expected["max_waiting"]) == (3, 3)
+    before = await asyncio.to_thread(read)
+    def with_indexer():
+        with open_embedder():  # real function, creates its own OllamaClient + GenerationSlot
+            return read()
+    during = await asyncio.to_thread(with_indexer)
+    after = await asyncio.to_thread(read)
+    assert before == during == after == expected

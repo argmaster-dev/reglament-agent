@@ -67,11 +67,14 @@ docker compose up -d --build --wait
 ```bash
 MODEL_CHAT_SLOTS=4
 MODEL_GENERATION_MAX_WAITERS=4   # очередь до 16 ожидающих
+CHAT_MAX_IN_FLIGHT=20            # не меньше 4 + 16, иначе пятый запрос получит «стенд занят» до очереди модели
 MODEL_EMBED_NUM_GPU=99
 OLLAMA_NUM_PARALLEL=4   # переменная сервера Ollama, не приложения
 ```
 
-Состояние слотов: `OllamaClient.slot_status()` возвращает `{slots, busy, waiting, max_waiting}`; тот же блок отдаёт `GET /health` в поле `generation`. В журнале вызовов (`CallRecord`) у каждого chat-вызова есть `slots`, `busy` (занято слотов на момент старта, включая этот вызов), `waiting` (сколько уже ждало к его приходу) и `queue_ms`.
+`CHAT_MAX_IN_FLIGHT` ограничивает общее число одновременных ходов чата, включая поиск, поэтому его нужно держать не меньше `MODEL_CHAT_SLOTS` × (1 + `MODEL_GENERATION_MAX_WAITERS`), иначе лишний запрос получит «стенд занят» раньше, чем попадёт в очередь модели.
+
+Состояние слотов: `OllamaClient.slot_status()` возвращает `{slots, busy, waiting, max_waiting}`; тот же блок отдаёт `GET /health` в поле `generation` (только очередь чата; клиент индексации со своим слотом в него не входит). В журнале вызовов (`CallRecord`) у каждого chat-вызова есть `slots`, `busy` (занято слотов на момент старта, включая этот вызов), `waiting` (сколько уже ждало к его приходу) и `queue_ms`.
 
 ## Структура
 

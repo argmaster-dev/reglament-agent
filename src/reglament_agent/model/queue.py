@@ -29,16 +29,24 @@ class _Waiter:
         self.last_position = 0
 
 
-_REGISTRY: "weakref.WeakSet[GenerationSlot]" = weakref.WeakSet()
+_chat_slot: "weakref.ref[GenerationSlot] | None" = None
+
+
+def register_chat_slot(slot: "GenerationSlot | None") -> None:
+    """Mark the one queue the chat service uses; /health reports only this one.
+
+    Other clients (indexer embeddings, scripts) own their own slots but are not the chat queue.
+    """
+    global _chat_slot
+    _chat_slot = weakref.ref(slot) if slot is not None else None
 
 
 def generation_status(default_slots: int = 1) -> dict:
-    """Process-wide generation state for /health: {slots, busy, waiting, max_waiting}."""
-    live = list(_REGISTRY)
-    if not live:
+    """Chat generation queue state for /health: {slots, busy, waiting, max_waiting}."""
+    slot = _chat_slot() if _chat_slot else None
+    if slot is None:
         return {"slots": default_slots, "busy": 0, "waiting": 0, "max_waiting": None}
-    st = [s.slot_status() for s in live]
-    return {k: sum(x[k] for x in st) for k in ("slots", "busy", "waiting", "max_waiting")}
+    return slot.slot_status()
 
 
 class GenerationQueueFull(RuntimeError):
@@ -57,7 +65,6 @@ class GenerationSlot:
         self.max_waiting = max_waiting
         self.active = 0
         self._queue: deque[_Waiter] = deque()
-        _REGISTRY.add(self)
 
     @property
     def waiting(self) -> int:
