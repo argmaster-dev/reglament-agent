@@ -91,18 +91,28 @@ def terms(text):
 
 # A reimbursement is a transfer to a beneficiary. An expense posted to a project
 # or paid from a budget establishes neither the beneficiary nor the reimbursed purchase.
-_REIMBURSE = re.compile(r'\b(?:возмещ|возмест|компенс)\w*')
+_REIMBURSE = re.compile(r'\b(?:возмещ|возмест|компенсир|компенсац)\w*')
 _REIMBURSE_VERB = re.compile(r'\b(?:возмеща(?:ет|ют|ется|ются)|возмест(?:ит|ят)|компенсиру(?:ет|ют|ется|ются))\b')
 _REIMBURSE_RULE = re.compile(r'\b(?:производится|производятся|выплачивается|выплачиваются|положен[аоы]?|'
-                             r'предусмотрен[аоы]?|подлеж\w*\s+(?:возмещению|компенсации))\b')
+                             r'предусмотрен[аоы]?|подлеж\w*\s+(?:возмещению|компенсации)|'
+                             r'(?:возмещению|компенсации)\s+(?:не\s+)?подлеж\w*|'
+                             r'для\s+(?:возмещения|компенсации)\b[^,;.]*?\b(?:необходимо|требуется|нужно))\b')
 _REIMBURSE_CLAUSES = re.compile(r'[;.!?]|,\s*(?:а|но|затем|после чего)\s+')
-_PAYEE = re.compile(r'\b(сотрудник|работник|подрядчик|заказчик|поставщик|клиент)(?:у|ам)\b')
+_PARTY = r'сотрудник|работник|подрядчик|заказчик|поставщик|клиент'
+_PAYEE = re.compile(rf'\b({_PARTY})(?:у|ам)\b')
+_EXPENSE_OWNER = re.compile(rf'\b(?:расход[ыа-я]*|затрат[ыа-я]*)\s+({_PARTY})(?:а|ов)\b')
+_MONEY = re.compile(r'\b(?:расход|затрат|стоимост|покупк|затрачен|денежн|деньг)\w*')
+_PASSIVE = re.compile(r'\b(?:возмеща|компенсиру)(?:ется|ются)\b')
 _COST_WORDS = re.compile(r'\b(?:как\w*|внутренн\w*|поряд\w*|правил\w*|регламент\w*|'
                          r'стоимост\w*|расход\w*|затрат\w*|покупк\w*|закупк\w*|приобретени\w*)\b')
 
 
 def _payees(text):
-    return {'сотрудник' if role == 'работник' else role for role in _PAYEE.findall(text)}
+    roles = _PAYEE.findall(text)
+    if not roles and _PASSIVE.search(text):
+        # In the passive voice the owner of the reimbursed expenses can name the beneficiary.
+        roles = _EXPENSE_OWNER.findall(text)
+    return {'сотрудник' if role == 'работник' else role for role in roles}
 
 
 @dataclass(frozen=True)
@@ -114,7 +124,10 @@ class Reimbursement:
         for clause in _REIMBURSE_CLAUSES.split(fold(sentence)):
             if not _REIMBURSE.search(clause):
                 continue
-            if not (_REIMBURSE_VERB.search(clause) or _REIMBURSE_RULE.search(clause)):
+            verb = _REIMBURSE_VERB.search(clause)
+            if verb and re.match(r'\s+ли\b', clause[verb.end():]):
+                continue
+            if not (verb or _REIMBURSE_RULE.search(clause)):
                 continue
             if self.objects and self.objects <= terms(clause) and self.payees <= _payees(clause):
                 return True
@@ -123,7 +136,9 @@ class Reimbursement:
 
 def reimbursement_request(question, departments):
     q = fold(question)
-    if not _REIMBURSE.search(q):
+    operation = _REIMBURSE.search(q)
+    # Compensation can also describe an engineering or scheduling adjustment.
+    if not operation or (operation[0].startswith('компенс') and not (_payees(q) or _MONEY.search(q))):
         return None
     # Use distinguishing subject terms from the question, irrespective of word order.
     # Department, question wording and generic cost/purchase terms cannot identify the expense.
