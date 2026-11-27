@@ -18,7 +18,7 @@ REFUSALS = [Outcome.NO_BASIS, Outcome.CONFLICT, Outcome.EXTERNAL_DOC]  # EXTERNA
 @pytest.mark.parametrize("outcome", REFUSALS)
 def test_every_refusal_shows_ticket_and_where_answer_comes(outcome):
     md = R.answer_markdown(Answer(outcome, "Ответа нет.", ticket=TICKET))
-    assert "2026-0042" in md
+    assert "Обращение № 2026-0042" in md  # в карточке, а не только в ссылке на статус
     assert "в этот диалог" in md and "почт" in md
 
 
