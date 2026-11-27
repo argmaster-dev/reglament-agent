@@ -17,6 +17,7 @@ from reglament_agent.answer import (
     Outcome,
     Scope,
     ScopeOrigin,
+    SourceRef,
     Statement,
     Variant,
 )
@@ -27,8 +28,9 @@ from reglament_agent.quality.mail import MailSettings
 from reglament_agent.quality.tickets import create_ticket
 from reglament_agent.storage.retrieve import Candidates, retrieve
 from reglament_agent.storage.search import preview
+from reglament_agent.storage.sources import active_process
 
-from . import context, grounding, guards, relevance, spelling, state
+from . import context, grounding, guards, processes, relevance, spelling, state
 from .lexicon import fold, words
 
 _LOG = logging.getLogger(__name__)
@@ -176,6 +178,11 @@ class Dialog:
         stages_by_doc = {doc: stages for doc, _, stages in cards}
         options = topic.get("options", [])
         axis = topic.get("axis", "department")
+        option_refs = [SourceRef(**r) if r else None for r in topic.get("option_refs", [])]
+        selected = None
+        if axis == "intent":
+            selected = next((ref for label, ref in zip(options, option_refs)
+                             if context.normalized_reply(label) == context.normalized_reply(message)), None)
         confirming = topic.get("confirm_department")
         catalog = departments or (options if axis == "department" else [])
         dept = context.department_in(message, catalog)
@@ -196,18 +203,17 @@ class Dialog:
         follow = not operational and bool(topic.get("subject")) and bool(
             short
             or stage_reply
-            or (pending and (choice or unknown or confirming_yes or not context.new_question(message)))
+            or (pending and (selected or choice or unknown or confirming_yes or not context.new_question(message)))
         )
         profile = state.get_profile(conn, user.email)
+        note = None
         if position and not dept:
             state.update_profile(conn, user.email, position=position)
             note = f"Запомнил должность: {position}."
             trace["steps"].append("remember_position")
-            if pending:
-                prompt = Clarification(topic["clarify"], options, len(topic.get("history", [])) + 1)
-                reply = Answer(Outcome.CLARIFY, clarification=prompt, profile_note=note)
-                return reply, topic["subject"], None
-            return Answer(Outcome.ANSWER, note), message, None
+            if not pending:
+                return Answer(Outcome.ANSWER, note), message, None
+            follow = True
         if declared_dept and short and not pending:
             state.set_department(conn, user.email, declared_dept)
             topic.pop("ignored_department", None)
@@ -238,8 +244,7 @@ class Dialog:
         if operational:
             trace["steps"].append("off_topic")
             return Answer(Outcome.OFF_TOPIC, guards.OFF_TOPIC_MESSAGE), question, None
-        variants = (pending and follow and unknown) or multi
-        note = None
+        variants = (pending and follow and unknown and axis != "intent") or multi
         if follow and confirming_yes:
             profile = state.confirm_department(conn, user.email, confirming)
             dept = profile.department
@@ -265,7 +270,9 @@ class Dialog:
             topic["ignored_department"] = confirming
 
         origin = ScopeOrigin.NONE
-        if dept:
+        if selected:
+            dept, origin = selected.department, ScopeOrigin.CLARIFICATION
+        elif dept:
             temporary = short and not context.named_department(message, dept) and not declared_dept
             origin = (
                 ScopeOrigin.CLARIFICATION if pending and follow and not temporary else ScopeOrigin.QUESTION
@@ -275,16 +282,17 @@ class Dialog:
             origin = ScopeOrigin.CLARIFICATION
         elif profile.department and not variants and profile.department != topic.get("ignored_department"):
             dept, origin = profile.department, ScopeOrigin.PROFILE
-        stage = explicit_stage or (topic.get("stage") if follow else None) or context.stage_in(question)
+        stage = (None if selected else explicit_stage) or (topic.get("stage") if follow else None) or context.stage_in(question)
         scope = Scope(dept, stage, origin)
         topic.update(subject=question, department=dept, stage=stage)
 
-        def clarify(available, dimension="department", *, ask=None, confirm=None):
+        def clarify(available, dimension="department", *, ask=None, confirm=None, refs=()):
             attempt = len(topic.get("history", [])) + 1
             if attempt > 3:
                 reply = Answer(Outcome.NO_BASIS, "Не удалось определить область вопроса.", scope=scope)
                 reply.ticket = self._ticket(conn, user, message, question, "clarify_exhausted", topic, trace)
                 topic.pop("options", None)
+                topic.pop("option_refs", None)
                 topic.pop("confirm_department", None)
                 return reply
             if ask is None:
@@ -293,17 +301,20 @@ class Dialog:
                     if dimension == "stage"
                     else "Ответ зависит от подразделения. В каком вы работаете?"
                 )
-            topic.update(options=available, clarify=ask, axis=dimension, confirm_department=confirm)
+            topic.update(options=available, clarify=ask, axis=dimension, confirm_department=confirm,
+                         option_refs=[asdict(ref) if ref else None for ref in refs])
             trace["steps"].append("clarify_" + dimension)
             return Answer(
                 Outcome.CLARIFY,
-                clarification=Clarification(ask, available, attempt),
+                clarification=Clarification(ask, available, attempt, list(refs), dimension),
                 scope=scope,
                 profile_note=note,
             )
 
         if pending and follow and not variants:
-            resolved = (
+            if axis == "intent" and not selected:
+                return clarify(options, axis, ask=topic["clarify"], refs=option_refs), question, None
+            resolved = selected or (
                 explicit_stage
                 if axis == "stage"
                 else declared_dept or confirming_yes or (dept if origin == ScopeOrigin.QUESTION else None)
@@ -311,6 +322,7 @@ class Dialog:
             if not resolved:
                 return clarify(options, axis, ask=topic["clarify"], confirm=confirming), question, None
         topic.pop("options", None)
+        topic.pop("option_refs", None)
         topic.pop("confirm_department", None)
         definition = context.definition(question)
         if definition:
@@ -342,6 +354,10 @@ class Dialog:
         await status("Ищу основания в действующих регламентах…")
 
         def ambiguity(points):
+            options = processes.options(question, points)
+            if options:
+                return clarify([name for name, _ in options], "intent", ask="Какой процесс вас интересует?",
+                               refs=[ref for _, ref in options])
             rows = grounding.anchors(points)
             related = relevance.applicable_refs(question, rows, department=dept)
             by_department, by_stage = {}, {}
@@ -360,14 +376,25 @@ class Dialog:
                     return clarify(available, "stage")
             return None
 
-        if not variants and (not dept or not stage):
+        if not selected and not variants and (not dept or not stage):
             candidates = await asyncio.to_thread(self.shortlist, conn, question, department=dept, stage=stage)
             clarification = ambiguity(candidates)
             if clarification:
                 trace["candidates"] = describe(candidates)
                 return clarification, question, None
         trace["steps"].append("retrieve")
-        (vector,) = await self.model.embed([question], step="retrieve", request_id=request_id)
+        if selected:
+            points = await asyncio.to_thread(active_process, conn, selected)
+            if not points:
+                reply = Answer(Outcome.NO_BASIS, "Выбранный пункт больше не входит в действующую редакцию.", scope=scope)
+                reply.ticket = self._ticket(conn, user, message, question, "no_basis", topic, trace)
+                return reply, question, None
+            question = f"{question.rstrip(' ?')} — {points[0].section_title}?"
+            trace["restated"] = question
+            trace["steps"].append("selected_process")
+            found = Candidates(points, [])
+        else:
+            (vector,) = await self.model.embed([question], step="retrieve", request_id=request_id)
         if multi:
             parts = [
                 await asyncio.to_thread(
@@ -389,7 +416,7 @@ class Dialog:
             found = Candidates(
                 [p for d, part in zip(named, parts) if d in departments for p in part.points], []
             )
-        else:
+        elif not selected:
             found = await asyncio.to_thread(
                 self.search, conn, question, vector, department=dept, stage=stage, limit=28,
                 faq=PublishedFaqStore(),
@@ -415,7 +442,7 @@ class Dialog:
         rows = grounding.anchors(found.points)
         if not departments:
             departments = sorted({p.department for p in found.points})
-        if not variants:
+        if not variants and not selected:
             clarification = ambiguity(found.points)
             if clarification:
                 return clarification, question, None
@@ -469,7 +496,7 @@ class Dialog:
             result = Answer(
                 Outcome.VARIANTS, variants=self._merge_variants(named, faqs, own), caveat=result.caveat
             )
-        if result.outcome == Outcome.NO_BASIS and relevance.request_qualifiers(question):
+        if result.outcome == Outcome.NO_BASIS and not selected and relevance.request_qualifiers(question):
             # No silent substitution: name the points about the same noun for another object or direction,
             # including those of other departments.
             wider = rows
@@ -485,6 +512,8 @@ class Dialog:
                     f"{result.summary}\nТочного пункта для этого объекта и направления нет. "
                     f"Есть пункты о том же предмете, но для другого объекта или направления:\n{near}"
                 )
+        if result.outcome == Outcome.ANSWER:
+            result.related = processes.related(result.statements, found.points)
         result.scope, result.profile_note = scope, note
         if result.outcome in _ESCALATE:
             result.ticket = self._ticket(conn, user, message, question, result.outcome.value, topic, trace)

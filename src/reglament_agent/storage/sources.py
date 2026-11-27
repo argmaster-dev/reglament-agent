@@ -63,3 +63,17 @@ def point_view(conn: Connection, ref: SourceRef) -> PointView:
     path = [f"Раздел {section}. {heading}", *(".".join(pieces[:i]) for i in range(2, len(pieces)+1))]
     return PointView(title, department, stages, version, uploaded.isoformat(), path, number, sentences,
                      ref.sentence, ref.column, neighbours, blocks)
+
+
+def active_process(conn: Connection, selected: SourceRef, limit: int = 28) -> list[Hit]:
+    """Read the selected point first and its process in the same still-active version."""
+    rows = conn.execute("""
+        SELECT p.point_id,d.doc_id,v.version_id,p.number,p.text,0.0,d.title,d.department,
+               v.version_number,p.sentences,p.blocks,p.section_title
+        FROM documents d JOIN document_versions v ON v.version_id=d.active_version_id
+        JOIN points chosen ON chosen.version_id=v.version_id AND chosen.number=%s
+        JOIN points p ON p.version_id=v.version_id AND p.section_number=chosen.section_number
+        WHERE d.status='active' AND d.doc_id=%s AND v.version_number=%s AND p.number<>p.section_number
+        ORDER BY p.point_id<>chosen.point_id,p.position LIMIT %s
+    """, (selected.point, selected.doc_id, selected.version_no, limit))
+    return [Hit(*row[:10], read_blocks(row[10]), 0.0, False, row[11]) for row in rows]
