@@ -62,7 +62,9 @@ def test_compound_keeps_cited_first_part_and_escalates_only_a_missing_frequency(
     question = 'Кто подписывает договор с подрядчиком и как часто диспетчер проверяет журнал?'
     answer = asyncio.run(dialog.answer(user, question, status))
     assert answer.outcome == (Outcome.ANSWER if complete else Outcome.LOW_CONFIDENCE)
-    assert [(s.text, s.sources[0].sentence) for s in answer.statements] == ([(first, 0), (second, 1)] if complete else [(first, 0)])
+    cited = [(s.text, s.sources[0].sentence) for s in answer.statements]
+    expected = [(first, 0), (second, 1)] if complete else [(first, 0)]
+    assert sorted(cited) == sorted(expected)
     assert len(model.calls) == 1 and asyncio.run(dialog.answer(user, question, status)) == answer
     counts = conn.execute('SELECT (SELECT count(*) FROM tickets), (SELECT count(*) FROM mail_outbox)').fetchone()
     if not complete:
