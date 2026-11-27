@@ -4,6 +4,11 @@ services:
     mem_limit: 128m
     memswap_limit: 128m
     cpus: 0.3
+    environment:
+      MAIL_MAILPIT_URL: http://mailpit:8025
+      MODEL_OLLAMA_URL: ${CONTAINER_OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [backend, local_access]
   migrate:
     mem_limit: 192m
     memswap_limit: 192m
