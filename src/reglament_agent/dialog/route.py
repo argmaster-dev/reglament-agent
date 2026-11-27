@@ -497,7 +497,11 @@ class Dialog:
             raise ModelOutputError("invalid claim structure")
         trace["proposal"] = data
         trace["evidence"] = {key: asdict(a.ref) for key, a in items.items()}
-        result = grounding.assemble(question, response.data, items, departments, variants, trace, rows, invention)
+        # Keep retrieval and model references intact. Verify the fact a requested regulation must establish.
+        evidence_question = processes.evidence_subject(question)
+        if evidence_question != question:
+            trace["evidence_question"] = evidence_question
+        result = grounding.assemble(evidence_question, response.data, items, departments, variants, trace, rows, invention)
         if variants and not multi and axis == "stage" and result.outcome == Outcome.VARIANTS:
             statements = [s for v in result.variants for s in v.statements]
             result.variants = [

@@ -32,6 +32,26 @@ _FIND_DOCUMENT = re.compile(
 )
 
 
+_NAV_POLITENESS = re.compile(r"^\s*(?:(?:подскажи(?:те)?|скажи(?:те)?|пожалуйста)\s*,?\s+)*")
+_CONTENT_CLAUSE = re.compile(
+    r"\b(?:о\s+том|про\s+то|указано|сказано|описано|прописано|определено|установлено|объясняется|разъясняется)"
+    r"\s*,\s*(?=(?:кто|кому|кем|что|чем|как\w*|сколько|когда|куда|где|долж\w*|можно|нужно)\b)"
+)
+_SEPARATE_REQUEST = re.compile(r"[.;?!]|\b(?:а также|и)\s+(?:кто|что|как\w*|когда|сколько|где)\b")
+
+
+def evidence_subject(question):
+    """A document lookup can introduce one or more factual questions inside a content clause."""
+    text = fold(question)
+    start = _NAV_POLITENESS.match(text).end()
+    request = _FIND_DOCUMENT.match(text, start)
+    if request:
+        bridge = _CONTENT_CLAUSE.search(text, request.start())
+        if bridge and not _SEPARATE_REQUEST.search(text[start:bridge.start()]):
+            return question[bridge.end():].strip()
+    return question
+
+
 def document_summary(question, statements):
     """Name the regulations behind a verified answer when the user asks where to find them."""
     if not _FIND_DOCUMENT.search(fold(question)):
