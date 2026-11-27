@@ -330,24 +330,23 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             statements = [Statement(a.text, [a.ref]) for a in refs[:1]]
             out = Outcome.EXTERNAL_DOC
     if data["outcome"] == Outcome.ANSWER and relevance.start_permission(fold(question)):
-        # A heading introducing alternatives is inseparable from the list it governs.
-        # Return the whole point, including qualifications on individual alternatives.
-        intros = [a for a in items.values() if relevance.entry_condition(fold(a.text)) and a.ref.sentence == 0]
-        if intros:
-            source = intros[0].ref
-            if all(a.ref.doc_id == source.doc_id and a.ref.point == source.point for a in intros):
-                complete = [a for a in rows if a.ref.doc_id == source.doc_id and a.ref.point == source.point]
-                # The optional prerequisite named by the user must occur in this same provision.
-                prerequisite = re.search(r"\bбез\s+([\w-]+)", fold(question))
-                if complete and (
-                    not prerequisite or word_key(prerequisite[1]) in relevance.terms(" ".join(a.text for a in complete))
-                ):
-                    statements = [Statement(a.text, [a.ref]) for a in complete]
-                    for a in complete:
-                        anchor = SentenceRef(a.ref.doc_id, a.ref.point, a.ref.sentence)
-                        result = verify_claims([Claim(a.text, anchor)], {anchor: Evidence(anchor, a.text)})
-                        kept.extend(result.kept)
-                    out = Outcome.ANSWER
+        # An individual option can omit the subject of its heading. Restore its list only
+        # when the verified quotes belong to that provision and its own heading introduces alternatives.
+        selected_points = {(ref.doc_id, ref.version_no, ref.point) for ref in claims_by_ref}
+        if len(selected_points) == 1:
+            point = next(iter(selected_points))
+            complete = [a for a in rows if (a.ref.doc_id, a.ref.version_no, a.ref.point) == point]
+            alternatives = any(a.ref.sentence == 0 and relevance.entry_condition(fold(a.text)) for a in complete)
+            prerequisite = re.search(r"\bбез\s+([\w-]+)", fold(question))
+            if alternatives and (
+                not prerequisite or word_key(prerequisite[1]) in relevance.terms(" ".join(a.text for a in complete))
+            ):
+                statements = [Statement(a.text, [a.ref]) for a in complete]
+                for a in complete:
+                    anchor = SentenceRef(a.ref.doc_id, a.ref.point, a.ref.sentence)
+                    result = verify_claims([Claim(a.text, anchor)], {anchor: Evidence(anchor, a.text)})
+                    kept.extend(result.kept)
+                out = Outcome.ANSWER
     if statements and out in (Outcome.ANSWER, Outcome.VARIANTS):
         statements = relevance.companion_sentences(
             relevance.expand_selected(question, statements, items, rows or items.values()), rows
