@@ -199,7 +199,7 @@ class Dialog:
         short = context.scope_only(message, dept)
         stage_reply = explicit_stage and len(words(message)) <= 4
         confirming_yes = pending and confirming and context.normalized_reply(message) == "да"
-        redirect = guards.redirect_for(message)
+        redirect = guards.redirect_for(message, departments=departments)
         follow = redirect is None and bool(topic.get("subject")) and bool(
             short
             or stage_reply

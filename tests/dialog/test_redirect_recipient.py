@@ -22,6 +22,7 @@ from tests.dialog.test_route import status
     "Что закон относит к коммерческой тайне?",
     "По какой статье Трудового кодекса оспаривают приказ об увольнении?",
     "Что говорит закон об авторском праве?",
+    "Как рассчитывают алименты при переменном заработке?",
 ])
 def test_legal_redirect_is_saved_without_ticket_or_substantive_answer(isolated, question):
     conn, dsn = isolated
@@ -44,6 +45,7 @@ def test_legal_redirect_is_saved_without_ticket_or_substantive_answer(isolated, 
     "Пускают на монтаж в праздник. Какие документы подать в дирекцию?",
     "Договор содержит персональные данные. Что по нашим правилам считается персональными данными?",
     "По закону работы пришлись на праздник. Как оформить командировку?",
+    "Как бухгалтерии отразить удержание алиментов в расчетном листке?",
 ])
 def test_internal_process_continues_to_regulations(isolated, question):
     _, dsn = isolated
