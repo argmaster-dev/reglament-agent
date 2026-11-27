@@ -197,13 +197,22 @@ def cited_sections(answer: Answer) -> set[str]:
     }
 
 
+def normalise_question(question: str) -> str:
+    """Нижний регистр, всё кроме букв, цифр и дефиса — пробелы, по пробелу с обеих сторон."""
+    return " " + " ".join(re.sub(r"[^\w\-]|_", " ", question.lower()).split()) + " "
+
+
+def when_hits(term: str, question: str) -> bool:
+    """Признак совпадает, только если начинается на границе слова; пробел в конце признака — слово целиком."""
+    return " " + term.lower().lstrip() in normalise_question(question)
+
+
 def select_advice(catalog: Catalog | None, answer: Answer, question: str, limit: int = ASPECT_LIMIT) -> list[Advice]:
     if catalog is None or answer.outcome not in ADVICE_OUTCOMES or getattr(answer, "redirect", None):
         return []
     sections = cited_sections(answer)
     if not sections:
         return []
-    q = question.lower()
     hits, general, seen = [], [], set()
     for rubric in catalog.rubrics:
         if not rubric.sections & sections:
@@ -216,6 +225,6 @@ def select_advice(catalog: Catalog | None, answer: Answer, question: str, limit:
                 continue
             if not a.when:
                 general.append(a)
-            elif any(w in q for w in a.when):
+            elif any(when_hits(w, question) for w in a.when):
                 hits.append(a)
     return [Advice(a, tuple(catalog.laws[i] for i in a.laws)) for a in (hits + general)[:limit]]

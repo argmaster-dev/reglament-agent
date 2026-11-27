@@ -172,6 +172,30 @@ def test_when_hit_goes_first_and_is_case_insensitive(cat):
     assert ids(A.select_advice(cat, answer("7.1"), "обычный вопрос")) == ["general-1", "general-2"]  # без when-аспект скрыт
 
 
+@pytest.mark.parametrize("term,question,hit", [
+    ("карточка", "Что в карточке и оплатить картой?", False),
+    ("карточка", "Заполнить карточка проекта", True),
+    ("чек ", "Нужен ли чек-лист проекта?", False),
+    ("чек ", "Нужен ли чек?", True),
+    ("чек ", "Выдать чек, пожалуйста", True),
+    ("акт", "Как подписать контракт?", False),
+    ("акт", "Когда подписывается акт сдачи", True),
+    ("по карте", "можно оплатить по карте?", True),
+    ("гос", "Как подписать договор с госзаказчиком?", True),
+    ("44-фз", "Подходит ли 44-ФЗ?", True),
+    ("кп ", "Подготовить КП", True),
+    ("кп ", "кпд проекта", False),
+])
+def test_when_matches_from_word_start_only(term, question, hit):
+    assert A.when_hits(term, question) is hit
+
+
+def test_when_in_selection_uses_word_boundary(cat):
+    spaced = A.parse_catalog(CAT.replace('when = ["nda", "тайн"]', 'when = ["чек "]'), LAWS)
+    assert "secret" not in ids(A.select_advice(spaced, answer("7.1"), "Нужен чек-лист?"))
+    assert "secret" in ids(A.select_advice(spaced, answer("7.1"), "Нужен чек?"))
+
+
 def test_limit_of_two_and_no_duplicates(cat):
     extra = "".join(
         f'\n  [[rubric.aspect]]\n  id = "g{i}"\n  text = "t"\n  laws = ["zk-1"]\n  quote = "в письменной форме"\n'
@@ -329,5 +353,5 @@ def test_real_catalogue_is_valid_and_grounded():
             for f in fragments:
                 assert any(f in t for t in texts), f"{a['id']}: фрагмента нет в статье: {f[:60]}"
     assert A.load_catalog(directory, env={}) is not None
-    assert len(raw["rubric"]) == 10 and sum(len(r["aspect"]) for r in raw["rubric"]) == 20
+    assert len(raw["rubric"]) == 10 and sum(len(r["aspect"]) for r in raw["rubric"]) == 21
     assert all(len(a["short"]) <= 170 and a["short"].strip() for r in raw["rubric"] for a in r["aspect"])
