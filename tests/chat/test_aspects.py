@@ -329,5 +329,5 @@ def test_real_catalogue_is_valid_and_grounded():
             for f in fragments:
                 assert any(f in t for t in texts), f"{a['id']}: фрагмента нет в статье: {f[:60]}"
     assert A.load_catalog(directory, env={}) is not None
-    assert len(raw["rubric"]) == 10 and sum(len(r["aspect"]) for r in raw["rubric"]) == 19
+    assert len(raw["rubric"]) == 10 and sum(len(r["aspect"]) for r in raw["rubric"]) == 20
     assert all(len(a["short"]) <= 170 and a["short"].strip() for r in raw["rubric"] for a in r["aspect"])
