@@ -134,6 +134,12 @@ def test_invalid_data_is_rejected(tmp_path, old, new):
     assert A.load_catalog(write(tmp_path, CAT.replace(old, new, 1)), env={}) is None
 
 
+def test_quote_fragments_joined_by_ellipsis():
+    assert A.quote_is_grounded("Первое. … Второе.", ["Первое.", "а Второе."])
+    assert not A.quote_is_grounded("Первое. … Третье.", ["Первое.", "а Второе."])
+    assert not A.quote_is_grounded("…", ["x"])
+
+
 def test_broken_toml_does_not_crash(tmp_path):
     assert A.load_catalog(write(tmp_path, "[[rubric"), env={}) is None
 
@@ -214,6 +220,17 @@ def test_escaping_of_law_names():
     assert "<script>" not in md and "<i>" not in md and "&lt;script&gt;" in md
 
 
+def test_chat_uses_short_with_fallback_to_text():
+    law = A.Law("x", "Акт", "1", "432", "T", "t", "r", "https://e.test", "2026-01-01", short="ГК РФ")
+    full = A.Aspect("a", "r", "Полный совет.", (), ("x",), "t", short="Коротко.")
+    plain = A.Aspect("b", "r", "Полный совет.", (), ("x",), "t")
+    md = R.advice_md([A.Advice(full, (law,)), A.Advice(plain, (law,))])
+    assert "- Коротко. (ГК РФ, ст. 432)" in md and "- Полный совет. (ГК РФ, ст. 432)" in md
+    assert md.count("Полный совет.") == 1
+    c = A.parse_catalog(CAT.replace('  id = "general-1"', '  id = "general-1"\n  short = "Кратко один."'), LAWS)
+    assert c.rubrics[0].aspects[0].short == "Кратко один."
+
+
 def test_no_block_markup_without_advice():
     assert "На что обратить внимание" not in R.answer_markdown(answer("7.1"))
 
@@ -255,5 +272,11 @@ def test_real_catalogue_is_valid_and_grounded():
         for a in r.get("aspect", []):
             assert a.get("quote", "").strip(), f"{a['id']}: пустая цитата"
             assert a["laws"] and all(i in laws for i in a["laws"]), f"{a['id']}: закон не найден"
-            assert any(norm(a["quote"]) in norm(laws[i]["text"]) for i in a["laws"]), f"{a['id']}: цитаты нет в статье"
+            fragments = [norm(f).strip(" .") for f in a["quote"].split("…") if f.strip(" .")]
+            assert fragments, f"{a['id']}: пустая цитата"
+            texts = [norm(laws[i]["text"]) for i in a["laws"]]
+            for f in fragments:
+                assert any(f in t for t in texts), f"{a['id']}: фрагмента нет в статье: {f[:60]}"
     assert A.load_catalog(directory, env={}) is not None
+    assert len(raw["rubric"]) == 10 and sum(len(r["aspect"]) for r in raw["rubric"]) == 19
+    assert all(len(a["short"]) <= 170 and a["short"].strip() for r in raw["rubric"] for a in r["aspect"])

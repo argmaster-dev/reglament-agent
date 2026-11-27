@@ -290,7 +290,7 @@ def advice_md(advice: list[Advice]) -> str:
     """Отдельный блок после ответа по регламенту. Тексты каталога экранируются, как любой чужой текст."""
     esc = html.escape
     bullets = [
-        f"- {esc(item.aspect.text)} ({'; '.join(esc(law.reference) for law in item.laws)})" for item in advice
+        f"- {esc(item.aspect.chat_text)} ({'; '.join(esc(law.reference) for law in item.laws)})" for item in advice
     ]
     return f"**{ADVICE_TITLE}**\n\n_{ADVICE_LABEL}_\n\n" + "\n".join(bullets)
 

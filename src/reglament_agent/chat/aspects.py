@@ -58,6 +58,12 @@ class Aspect:
     when: tuple[str, ...]
     laws: tuple[str, ...]
     quote: str
+    short: str = ""
+
+    @property
+    def chat_text(self) -> str:
+        """Краткий совет для чата; полный `text` остаётся в каталоге."""
+        return self.short or self.text
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,14 @@ class Advice:
 
 def _norm(text: str) -> str:
     return " ".join(text.split())
+
+
+def quote_is_grounded(quote: str, texts: list[str]) -> bool:
+    """Цитата может склеивать фрагменты через «…»; каждый фрагмент дословно встречается в одном из текстов."""
+    fragments = [_norm(f).strip(" .") for f in quote.split("…")]
+    fragments = [f for f in fragments if f]
+    normed = [_norm(t) for t in texts]
+    return bool(fragments) and all(any(f in t for t in normed) for f in fragments)
 
 
 def _need(entry: dict, key: str, where: str) -> str:
@@ -128,12 +142,13 @@ def parse_catalog(aspects_toml: str, laws_toml: str) -> Catalog:
                 if i not in laws:
                     raise CatalogError(f"{where}: закон {i!r} не найден в laws.toml")
             quote = _need(a, "quote", where)
-            if not any(_norm(quote) in _norm(laws[i].text) for i in ids):
+            if not quote_is_grounded(quote, [laws[i].text for i in ids]):
                 raise CatalogError(f"{where}: цитаты нет в тексте указанных статей")
             when = a.get("when", [])
             if not isinstance(when, list) or not all(isinstance(w, str) and w for w in when):
                 raise CatalogError(f"{where}: when должен быть списком строк")
-            aspects.append(Aspect(aid, rid, _need(a, "text", where), tuple(w.lower() for w in when), tuple(ids), quote))
+            aspects.append(Aspect(aid, rid, _need(a, "text", where), tuple(w.lower() for w in when), tuple(ids), quote,
+                                  str(a.get("short", "")).strip()))
         rubrics.append(Rubric(rid, str(r.get("title", rid)), frozenset(sections), tuple(aspects)))
     return Catalog(tuple(rubrics), laws)
 
