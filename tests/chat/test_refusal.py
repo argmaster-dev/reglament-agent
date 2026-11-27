@@ -46,9 +46,24 @@ def test_ticket_number_is_a_small_secondary_line_in_the_element(outcome):
     md = R.answer_markdown(a)
     assert "2026-0042" not in md  # не в тексте ответа и не заголовок
     note = R.refusal_element(a, resolver)
-    assert note["ticket"]["text"].startswith("Обращение № 2026-0042") and note["ticket"]["href"] == "/tickets/2026-0042"
+    assert note["ticket"]["text"] == "Обращение № 2026-0042" and note["ticket"]["href"] == "/tickets/2026-0042"
     jsx = (Path(__file__).parents[2] / "public/elements/RefusalNote.jsx").read_text()
     assert "<small" in jsx and "fontSize" in jsx  # мелкий кегль
+
+
+@pytest.mark.parametrize("delivery", ["pending", "sent", "error"])
+def test_refusal_never_shows_a_stale_delivery_state(delivery):
+    ticket = TicketInfo("2026-0042", "r", delivery, ["вопрос"])
+    a = Answer(Outcome.NO_BASIS, "Нет.", ticket=ticket)
+    visible = R.answer_markdown(a) + str(R.refusal_element(a, resolver)).lower()
+    assert all(w not in visible.lower() for w in ("ожида", "отправлено", "ошибка отправки", "pending"))
+    assert "по почте" in visible  # фраза-лид от состояния доставки не зависит
+
+
+def test_near_chips_stay_on_one_compact_row():
+    jsx = (Path(__file__).parents[2] / "public/elements/RefusalNote.jsx").read_text()
+    for needle in ('flexWrap: "nowrap"', 'overflowX: "auto"', 'whiteSpace: "nowrap"', 'textOverflow: "ellipsis"'):
+        assert needle in jsx
 
 
 @pytest.mark.parametrize("outcome", REFUSALS)
