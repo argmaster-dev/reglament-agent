@@ -100,6 +100,7 @@ def vocabulary(question, rows):
     if entitlements and len(entitlements) == len(parts):
         rows = [a for a in rows if any(rule.supported_by(a.text) for rule in entitlements.values())]
     ranked = sorted(rows, key=lambda a: -relevance.score(question, a))
+    procedure = project_procedures.focused(question)
     result = {}
     size = 0
     deadline = any(relevance.asks_deadline(part) for part in relevance.question_parts(question))
@@ -107,7 +108,8 @@ def vocabulary(question, rows):
     for a in ranked:
         if len(result) >= 44 or size > 8500:
             break
-        if not relevance.matches_request(question, a, point_terms=point_terms):
+        if ((procedure and not procedure.supported_by(a))
+                or not relevance.matches_request(question, a, point_terms=point_terms)):
             continue
         result[f"S{len(result) + 1}"] = a
         size += len(a.text) + min(len(a.context), 100) + 30
@@ -472,6 +474,8 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             department = next(iter(sourced_departments))
             summaries[out] = f"Если речь {procedure.value}, этот порядок описан в регламенте подразделения «{department}»."
     notes = ["Часть утверждений не подтверждена источниками."] if caveat else []
+    if out == Outcome.ANSWER and (condition := getattr(procedures.get(question), "caveat", None)):
+        notes.append(condition)
     if out == Outcome.ANSWER and statements and point_terms and (request := RequestLeadTime.from_question(question)):
         if all(relevance.request_deadline_basis(request, known[ref], point_terms) == "generic"
                for statement in statements for ref in statement.sources):

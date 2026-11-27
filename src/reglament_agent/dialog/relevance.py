@@ -959,7 +959,7 @@ def applicable_refs(question, rows, *, department=None):
         relevant = [a for a in rows if states_deadline(q, a, department=department, point_terms=point_terms)]
     elif signing_role(q):
         relevant = [a for a in rows if matches_request(q, a)]
-    elif procedure := project_procedures.requested(q):
+    elif procedure := project_procedures.requested(question):
         # The ordinary scope clarification compares only rules for the requested procedure.
         relevant = [a for a in rows if procedure.supported_by(a)]
     elif re.search(r"без\s+\w+", q):

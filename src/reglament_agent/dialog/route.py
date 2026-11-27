@@ -30,7 +30,7 @@ from reglament_agent.storage.retrieve import Candidates, retrieve
 from reglament_agent.storage.search import preview
 from reglament_agent.storage.sources import active_process
 
-from . import context, employment, grounding, guards, processes, relevance, similar, spelling, state
+from . import context, employment, grounding, guards, processes, project_procedures, relevance, similar, spelling, state
 from .lexicon import fold, words
 
 _LOG = logging.getLogger(__name__)
@@ -382,6 +382,8 @@ class Dialog:
         await status("Ищу основания в действующих регламентах…")
 
         intent_candidates = []
+        procedure = project_procedures.focused(question) if not (selected or multi or variants or invention) else None
+        procedure_points = []
         broad = processes.broad_subject(question, scope)
         role_needs_direction = not dept and len(departments) > 1 and context.asks_role_overview(question)
 
@@ -408,14 +410,17 @@ class Dialog:
                 for code in stages_by_doc.get(anchor.ref.doc_id, []):
                     by_stage.setdefault(code, set()).add(sentence)
             if not dept and len({frozenset(rows) for rows in by_department.values()}) > 1:
-                return clarify(departments or sorted(by_department))
+                return clarify(sorted(by_department) if procedure else departments or sorted(by_department))
             if not stage and len({frozenset(rows) for rows in by_stage.values()}) > 1:
                 available = [label for code, label in context.STAGE_LABELS.items() if code in by_stage]
                 if len(available) > 1:
                     return clarify(available, "stage")
             return None
 
-        if not selected and not variants and (not dept or not stage):
+        if procedure:
+            shortlist = await asyncio.to_thread(self.shortlist, conn, procedure.search_query, department=dept, stage=stage)
+            procedure_points = [p for p in shortlist if any(procedure.supported_by(a) for a in grounding.anchors([p]))]
+        elif not selected and not variants and (not dept or not stage):
             candidates = await asyncio.to_thread(self.shortlist, conn, question, department=dept, stage=stage)
             if broad or role_needs_direction:
                 # Let a published expert answer settle the question before asking for a process or direction.
@@ -485,6 +490,11 @@ class Dialog:
             reply.variants = self._merge_variants(named, faqs, [])
             trace["steps"].append("published_faq")
             return reply, question, None
+        if procedure_points:
+            ids = {p.point_id for p in procedure_points}
+            found = Candidates([*procedure_points, *(p for p in found.points if p.point_id not in ids)], found.faq)
+            trace["candidates"] = describe(found.points)
+            trace["steps"].append("procedure_shortlist")
         rows = grounding.anchors(found.points)
         if not departments:
             departments = sorted({p.department for p in found.points})

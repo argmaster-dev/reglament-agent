@@ -4,6 +4,8 @@ import re
 from enum import Enum
 
 from .lexicon import fold
+from .procurement import Procurement
+from .reported_delay import ReportedDelay
 
 _HOW = re.compile(r"\b(?:как|каким документом|в каком порядке|каков порядок)\b")
 _EXCEPTION = re.compile(r"\b(?:без|кроме|если|не|ли|когда|сколько)\b")
@@ -71,7 +73,13 @@ class ProjectProcedure(Enum):
         return False
 
 
+def focused(question):
+    return ReportedDelay.requested(question) or Procurement.requested(question)
+
+
 def requested(question):
+    if procedure := focused(question):
+        return procedure
     q = fold(question)
     if not _HOW.search(q) or _EXCEPTION.search(q):
         return None
