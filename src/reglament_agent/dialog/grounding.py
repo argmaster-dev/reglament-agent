@@ -27,6 +27,7 @@ _ACTION_WORDS = re.compile(
 # Finite or infinitive verb endings: every sentence contributes its own verbs, not a fixed list of stems.
 _VERB_FORM = re.compile(r"^\w{3,}(?:е[тм]|ит|ют|ут|ят|ат|ться|ть|ти)$")
 _NOUN_ENDING = re.compile(r"(?:ость|ости|сть|сти)$")
+_INSTRUMENTAL_MODIFIER = re.compile(r"^\w{3,}(?:ым|им|ой|ою|ей|ею|ыми|ими)$")
 _INSTRUMENTAL_PREPOSITIONS = {"с", "со", "над", "перед", "пред", "под", "за", "между"}
 # Frequent regulation nouns that end like verb forms.
 _NOUNS = {
@@ -44,12 +45,15 @@ def sentence_actions(tokens):
         return bool(_VERB_FORM.match(w)) and not _NOUN_ENDING.search(w) and w not in _NOUNS
 
     actions = set()
-    for index, word in enumerate(tokens):
-        # The ending «-ем» is shared with verbs. A governing preposition marks a noun here.
-        if index and word.endswith("ем") and tokens[index - 1] in _INSTRUMENTAL_PREPOSITIONS:
-            continue
-        if _ACTION_WORDS.match(word) or verb(word):
+    after_preposition = False
+    for word in tokens:
+        # A noun in the instrumental case may be separated from its preposition by adjectives.
+        nominal = after_preposition and word.endswith("ем")
+        if not nominal and (_ACTION_WORDS.match(word) or verb(word)):
             actions.add(word)
+        after_preposition = word in _INSTRUMENTAL_PREPOSITIONS or (
+            after_preposition and bool(_INSTRUMENTAL_MODIFIER.fullmatch(word))
+        )
     return actions
 
 
@@ -110,41 +114,46 @@ def model_ref(key, anchor):
     return {"id": key, "doc_id": ref.doc_id, "point": ref.point, "sentence": ref.sentence}
 
 
-def prompt(question, items, variants, invention=False):
-    choices = [model_ref(k, a) for k, a in items.items()]
+def _claim_schema(refs, actors=(), actions=(), columns=()):
     fields = {
-        "ref": {"type": "object", "enum": choices} if choices else {"type": "null"},
-        "actor": {"type": "string"},
-        "action": {"type": "string"},
+        "ref": {"type": "object", "enum": refs} if refs else {"type": "null"},
+        "actor": {"type": "string", "enum": sorted({"", *actors})},
+        "action": {"type": "string", "enum": sorted({"", *actions})},
         "negated": {"type": "boolean"},
-        "qualifier": {"type": "string"},
+        "qualifier": {"type": "string", "enum": sorted({"", *columns})},
         "object": {"type": "string"},
         "text": {"type": "string"},
     }
+    return {"type": "object", "properties": fields, "required": list(fields)}
+
+
+def prompt(question, items, variants, invention=False):
     who = bool(
         re.search(r"\bкто\b|ответственн\w* за", fold(question)) or relevance.signing_role(question)
     )
-    # Enumerated values prevent paraphrased action and role names from losing their source binding.
-    actor_names, actions, columns = {""}, {""}, {""}
-    for a in items.values():
-        tokens = words(a.text)
-        if who:
-            actor_names.update(" ".join(tokens[i:j]) for i, j, _ in find_roles(tokens))
-            actions.update(sentence_actions(tokens))
-        if a.ref.column:
-            columns.add(a.ref.column)
-    for name, values in [("actor", actor_names), ("action", actions), ("qualifier", columns)]:
-        fields[name]["enum"] = sorted(values)
-    outcomes = MODEL_OUTCOMES
+    if who and items:
+        # Pin the reference first. Each grammar branch offers only the vocabulary of that sentence or cell.
+        choices = []
+        for key, anchor in items.items():
+            tokens = words(anchor.text)
+            actors = (" ".join(tokens[i:j]) for i, j, _ in find_roles(tokens))
+            choices.append(_claim_schema(
+                [model_ref(key, anchor)], actors, sentence_actions(tokens), [anchor.ref.column or ""],
+            ))
+        claim = {"anyOf": choices} if len(choices) > 1 else choices[0]
+    else:
+        refs = [model_ref(key, anchor) for key, anchor in items.items()]
+        columns = [anchor.ref.column for anchor in items.values() if anchor.ref.column]
+        claim = _claim_schema(refs, columns=columns)
     schema = {
         "type": "object",
         "properties": {
             "claims": {
                 "type": "array",
                 "maxItems": 10,
-                "items": {"type": "object", "properties": fields, "required": list(fields)},
+                "items": claim,
             },
-            "outcome": {"type": "string", "enum": outcomes},
+            "outcome": {"type": "string", "enum": MODEL_OUTCOMES},
         },
         "required": ["claims", "outcome"],
     }

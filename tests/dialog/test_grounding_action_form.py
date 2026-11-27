@@ -13,14 +13,15 @@ def sources():
 
     return {
         "S1": anchor("1.1", "Архитектор проводит первичную проверку заявки по контрольному листу."),
-        "S2": anchor("2.2", "Бухгалтер направляет запрос с перечнем вопросов и с приложением."),
+        "S2": anchor("2.2", "Бухгалтер направляет запрос с утверждённым перечнем вопросов и с подписанным итоговым приложением."),
         "S3": anchor("3.3", "Мы ведём реестр и проверяем карточки."),
     }
 
 
 def test_action_options_exclude_instrumental_nouns_and_preserve_finite_verbs():
     _, schema = prompt(QUESTION, sources(), False)
-    actions = set(schema["properties"]["claims"]["items"]["properties"]["action"]["enum"])
+    actions = {word for choice in schema["properties"]["claims"]["items"]["anyOf"]
+               for word in choice["properties"]["action"]["enum"]}
 
     assert {"проводит", "направляет", "ведем", "проверяем"} <= actions
     assert not {"перечнем", "приложением"} & actions
