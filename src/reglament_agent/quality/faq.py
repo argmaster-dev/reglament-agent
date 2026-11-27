@@ -112,8 +112,14 @@ def _answer_mail(ticket: dict, answer: str, kind: str, basis: list[dict]) -> tup
 
 def answer_ticket(conn: Connection, *, number: str, expert_email: str, answer: str, basis_kind: str,
                   basis_points: Sequence[tuple], visibility: str, faq_question: str | None = None,
-                  alt_questions: Sequence[str] = (), embedder: Embedder | None = None) -> dict:
-    """Answer an open ticket in ONE transaction. Raises TicketError (e.g. already answered)."""
+                  alt_questions: Sequence[str] = (), embedder: Embedder | None = None,
+                  department: str | None = None, source: str = "cabinet", notify_mail: bool = True) -> dict:
+    """Answer an open ticket in ONE transaction. Raises TicketError (e.g. already answered).
+
+    `department` binds an «outside» FAQ entry to a department (None: visible to everyone).
+    `source` is 'cabinet' or 'email'; `notify_mail=False` skips the outbox letter (the employee
+    already received the expert's own reply as a copy).
+    """
     answer = (answer or "").strip()
     if not answer:
         raise TicketError("Ответ не может быть пустым.")
@@ -141,26 +147,65 @@ def answer_ticket(conn: Connection, *, number: str, expert_email: str, answer: s
         if visibility == "faq":
             faq_id = cur.execute(
                 "INSERT INTO faq_entries (question, alt_questions, answer, basis_kind, doc_id, version_id, "
-                "basis, author_email, ticket_id, embedding) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::vector) "
+                "basis, author_email, ticket_id, embedding, department) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::vector,%s) "
                 "RETURNING id", (question, alts, answer, basis_kind, doc_id, version_id, Jsonb(basis),
-                                 expert_email, ticket["id"], vector)).fetchone()["id"]
+                                 expert_email, ticket["id"], vector,
+                                 department if basis_kind == "outside" else None)).fetchone()["id"]
         cur.execute("INSERT INTO ticket_answers (ticket_id, expert_email, answer, basis_kind, basis, "
-                    "visibility, faq_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                    (ticket["id"], expert_email, answer, basis_kind, Jsonb(basis), visibility, faq_id))
+                    "visibility, faq_id, source) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (ticket["id"], expert_email, answer, basis_kind, Jsonb(basis), visibility, faq_id, source))
         cur.execute("UPDATE tickets SET status='answered', updated_at=now() WHERE id=%s", (ticket["id"],))
-        subject, body = _answer_mail(ticket, answer, basis_kind, basis)
-        cur.execute("INSERT INTO mail_outbox (ticket_id, kind, to_addr, subject, body, message_id_header) "
-                    "VALUES (%s,'expert_answer',%s,%s,%s,%s)",
-                    (ticket["id"], ticket["user_email"], subject, body,
-                     message_id_for(number, "expert_answer")))
-        cur.execute("INSERT INTO chat_notifications (user_email, dialog_id, ticket_number, kind, payload) "
-                    "VALUES (%s,%s,%s,'answer',%s)",
-                    (ticket["user_email"], ticket["dialog_id"], number,
-                     Jsonb({"answer": answer, "basis_kind": basis_kind, "basis": basis,
-                            "question": ticket["question"], "expert_email": expert_email,
-                            "visibility": visibility})))
+        if notify_mail:
+            subject, body = _answer_mail(ticket, answer, basis_kind, basis)
+            cur.execute("INSERT INTO mail_outbox (ticket_id, kind, to_addr, subject, body, message_id_header) "
+                        "VALUES (%s,'expert_answer',%s,%s,%s,%s)",
+                        (ticket["id"], ticket["user_email"], subject, body,
+                         message_id_for(number, "expert_answer")))
+        _notify_user(cur, ticket, answer, basis_kind, basis, expert_email, visibility)
     return {"number": number, "faq_id": faq_id, "basis_kind": basis_kind, "basis": basis,
             "visibility": visibility}
+
+
+def _notify_user(cur, ticket: dict, answer: str, kind: str, basis: list[dict], expert_email: str,
+                 visibility: str, updated: bool = False) -> None:
+    payload = {"answer": answer, "basis_kind": kind, "basis": basis, "question": ticket["question"],
+               "expert_email": expert_email, "visibility": visibility}
+    if updated:
+        payload["updated"] = True
+    cur.execute("INSERT INTO chat_notifications (user_email, dialog_id, ticket_number, kind, payload) "
+                "VALUES (%s,%s,%s,'answer',%s)",
+                (ticket["user_email"], ticket["dialog_id"], ticket["number"], Jsonb(payload)))
+
+
+def replace_ticket_answer(conn: Connection, *, number: str, expert_email: str, answer: str,
+                          source: str = "email") -> dict:
+    """«Ответ последний»: the newer expert answer replaces the stored one and its FAQ entry.
+
+    The FAQ entry keeps its id, question, basis and status (a withdrawn entry stays withdrawn);
+    the employee gets a fresh notification. Raises TicketError when there is nothing to replace.
+    """
+    answer = (answer or "").strip()
+    if not answer:
+        raise TicketError("Ответ не может быть пустым.")
+    with conn.transaction():
+        cur = conn.cursor(row_factory=dict_row)
+        ticket = cur.execute("SELECT * FROM tickets WHERE number=%s FOR UPDATE", (number,)).fetchone()
+        if ticket is None:
+            raise TicketError(f"Обращение {number} не найдено.")
+        old = cur.execute("SELECT * FROM ticket_answers WHERE ticket_id=%s FOR UPDATE", (ticket["id"],)).fetchone()
+        if old is None or ticket["status"] != "answered":
+            raise TicketError(f"Обращение {number} ещё не отвечено.")
+        cur.execute("UPDATE ticket_answers SET answer=%s, expert_email=%s, source=%s, updated_at=now() "
+                    "WHERE id=%s", (answer, expert_email, source, old["id"]))
+        if old["faq_id"] is not None:
+            cur.execute("UPDATE faq_entries SET answer=%s, author_email=%s, updated_at=now() WHERE id=%s",
+                        (answer, expert_email, old["faq_id"]))
+        cur.execute("UPDATE tickets SET updated_at=now() WHERE id=%s", (ticket["id"],))
+        _notify_user(cur, ticket, answer, old["basis_kind"], old["basis"], expert_email, old["visibility"],
+                     updated=True)
+    return {"number": number, "faq_id": old["faq_id"], "basis_kind": old["basis_kind"], "basis": old["basis"],
+            "visibility": old["visibility"], "updated": True}
 
 
 def close_ticket(conn: Connection, number: str, expert_email: str, kind: str, ref: str | None = None) -> None:
@@ -357,13 +402,14 @@ def search_rows(conn: Connection, question: str, vector: list[float], *, departm
         raise ValueError("limit must be between 1 and 50")
     rows = conn.cursor(row_factory=dict_row).execute("""
         WITH eligible AS (
-            SELECT f.*, d.department AS dept, d.title AS dtitle, v.version_number AS vno
+            SELECT f.*, coalesce(d.department, f.department) AS dept, d.title AS dtitle, v.version_number AS vno
             FROM faq_entries f LEFT JOIN documents d ON d.doc_id = f.doc_id
             LEFT JOIN document_versions v ON v.version_id = f.version_id
             WHERE f.status = 'active'
               AND (f.basis_kind = 'outside'
                    OR (d.status = 'active' AND d.active_version_id = f.version_id))
-              AND (%(dept)s::text IS NULL OR f.basis_kind = 'outside' OR d.department = %(dept)s)
+              AND (%(dept)s::text IS NULL OR (f.basis_kind = 'outside' AND (f.department IS NULL OR f.department = %(dept)s))
+                   OR d.department = %(dept)s)
               AND (%(stage)s::text IS NULL OR f.basis_kind = 'outside' OR %(stage)s = ANY(d.stages))),
         v AS (SELECT id, 1 - (embedding <=> %(vec)s::vector) AS sim,
                      row_number() OVER (ORDER BY embedding <=> %(vec)s::vector, id) AS r FROM eligible),

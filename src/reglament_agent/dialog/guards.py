@@ -1,0 +1,380 @@
+"""Rules about what the user's text may do: invent content, steer the route, assert a false premise.
+
+The patterns describe request styles and word families, never the content of a regulation.
+"""
+
+import math
+import re
+from typing import Literal
+
+from . import context
+from .checks import _numbers
+from .lexicon import find_roles, fold, glossary, words
+
+MIN_LENGTH, MAX_LENGTH = 3, 2000
+
+LEGAL_MESSAGE = "Это вопрос законодательства. По нему лучше обратиться к юристам."
+OFF_TOPIC_MESSAGE = "Этот вопрос не касается регламентов компании — обратитесь к своему руководителю."
+
+# Ask for a policy even when the subject is money, a particular deal or correspondence.
+_PROCEDURE = re.compile(
+    r"\b(?:регламент|положени|инструкци|правил|порядок|порядк|методик|формул|услови|обязан|положен|предусмотрен|ограничени)\w*"
+    r"|\b(?:как|кто|где|можно ли|нужно ли|имею ли право|каким образом)\b"
+    r"|\b(?:применять|применяется|использовать|учитывать)\b"
+)
+_METRIC = re.compile(r"\b(?:марж|преми|бонус|прибыл|выручк)\w*")
+_RECORD = re.compile(
+    r"\b(?:меня|мне|мо[йяею]|моих|наша?|нашу|текущ\w*|фактическ\w*|сегодня|сейчас|"
+    r"(?:по|этой|эта|той|конкретной) сделк\w*|сделк\w*\s+№|за квартал|за месяц)\b"
+)
+_EXCHANGE = re.compile(
+    r"\b(?:курс\w*\s+(?:\w+\s+)?(?:валют|доллар|евро|юан|рубл|фунт|usd|eur)\w*"
+    r"|стоит\s+(?:доллар|евро|юан|фунт)\w*)\b"
+)
+_TASK = re.compile(
+    r"\b(?:сделай(?:те)?|отправь(?:те)?|напиши(?:те)?|разошли(?:те)?|подготовь(?:те)?|"
+    r"составь(?:те)?|сформируй(?:те)?)\b.{0,65}"
+    r"\b(?:follow[\s-]?up|фолл?оу[\s-]?ап|письм\w*|напоминани\w*|сообщени\w*|рассылк\w*)\b"
+)
+
+# Classify the intent (choice for a private recipient or purpose), without a catalog of products.
+_CHOICE = re.compile(
+    r"\b(?:подобрать|подбери(?:те)?|выбрать|выбери(?:те)?|посоветуй(?:те)?|порекомендуй(?:те)?)\b"
+)
+_PRIVATE_PURPOSE = re.compile(
+    r"\b(?:для себя(?: лично)?|для личного пользования)\b"
+    r"|\b(?:для|на|в|к)\s+(?:(?:семейн|личн|домашн)\w*\s+\w+|(?:отдых|поход|пикник|рыбалк)\w*)\b"
+    r"|\b(?:для(?:\s+(?:сво\w*|домашн\w*|взросл\w*))?|мо(?:ему|ей)|сво(?:ему|ей))\s+"
+    r"(?:семь\w*|ребенк\w*|дет(?:ей|ям)|питомц\w*|кот(?:а|у|ят|енк[ау])|кошк\w*|собак\w*|щенк\w*)\b"
+)
+_WORK_RULE = re.compile(
+    r"\b(?:регламент|инструкци|положени|поряд|процедур|смет|закуп|договор|документ|заказчик|сделк"
+    r"|компани|подразделени|служебн|предприяти|финансир|согласовани|сотрудник|клиент)\w*\b"
+    r"|\bправил(?:о|а|у|ом|е|ам|ами|ах)?\b|\bпроект(?:а|у|е|ом|ы|ов|ам|ами|ах|н\w*)?\b"
+)
+# These are work subjects even when the reason for arranging them is personal.
+_EMPLOYMENT_SUBJECT = re.compile(r"\b(?:отпуск|отгул|больничн|командировк|дежурств|график)\w*\b")
+_ADVICE_FILLERS = {"мне", "помоги", "помогите", "пожалуйста", "пожалуй",
+                  "прошу", "как", "что", "это", "бы", "ты", "вы", "что-нибудь", "нибудь", "который", "нужно"}
+# Specific household actions convey a purpose themselves. Preparing things remotely
+# or welding something at home does not, so ambiguous verbs need separate evidence.
+_HOME_SETTING = re.compile(r"\b(?:дома|в домашних условиях|на (?:своей|домашней) кухне)\b")
+_KITCHEN_SETTING = re.compile(r"\b(?:завтрак|обед|ужин)\w*\b|\b(?:в духовке|на сковороде|на пару|в кастрюле)\b")
+_DOMESTIC_ACTION = re.compile(
+    r"\b(?:испечь|испеки(?:те)?|выпекать|выпекай(?:те)?|запечь|запеки(?:те)?|запекать|запекай(?:те)?"
+    r"|пожарить|пожарь(?:те)?|замесить|замеси(?:те)?|постирать|постирай(?:те)?|погладить|погладь(?:те)?"
+    r"|пропылесосить|пропылесось(?:те)?)\b"
+)
+_PREPARE = re.compile(r"\b(?:(?:при)?готовить|(?:при)?готовь(?:те)?)\b")
+_BOIL_OR_WELD = re.compile(r"\b(?:сварить|свари(?:те)?)\b")
+_REQUEST_FORM = re.compile(
+    r"\b(?:как|что|чем|како\w*|каки\w*|сколько|можно|ли|подскажи(?:те)?|расскажи(?:те)?|помоги(?:те)?|научи(?:те)?)\b"
+)
+_RECIPE_ADVICE = re.compile(
+    r"\b(?:посоветуй(?:те)?|порекомендуй(?:те)?|подскажи(?:те)?|дай(?:те)?|предложи(?:те)?|"
+    r"напиши(?:те)?|покажи(?:те)?|како[йе])\s+(?:(?:мне|нам|простой|подходящий|новый)\s+){0,2}рецепт(?:ы)?\b"
+)
+_WORK_PREPARATION = re.compile(
+    r"\b(?:отчет|заявк|презентаци|реестр|бланк|файл|кейтеринг|корпоративн|рабоч|офисн)\w*\b"
+    r"|\bакт(?:ов|ами|ах|ом|а|у|е|ы)?\b"
+    r"|\b(?:коммерческ\w*\s+предложени\w*|технологическ\w*\s+(?:карт|процесс)\w*|из дома по работ\w*|поставщик\w*)\b"
+)
+_REFERENCE_WORDS = {"его", "ее", "это", "этот", "эту", "этого", "эти", "их", "него", "нее", "такой", "такую",
+                    "этим", "этом", "все", "данный", "дома", "для", "нас", "нам", "себя", "потом", "еще", "сейчас"}
+_FX_APPLICATION = re.compile(
+    r"\b(?:закладывать|фиксировать|подставлять|указать|указывать|применить|применять|использовать|учитывать)\b"
+    r"|\b(?:для|при)\s+(?:(?:предварительн|проектн)\w*\s+)?(?:расчет|оформлени|составлени|заполнени)\w*"
+    r"\s+(?:смет|бюджет|стоимост|цен|предложени|договор|счет)\w*\b"
+)
+
+
+def _personal_choice(q):
+    choice = _CHOICE.search(q)
+    if not choice or _WORK_RULE.search(q):
+        return False
+    purpose = _PRIVATE_PURPOSE.search(q)
+    if not purpose or find_roles(words(q)):
+        return False
+    # «Помоги выбрать для себя» still needs clarification. Require a named subject of the choice.
+    subject = _CHOICE.sub(" ", q[:purpose.start()] + " " + q[purpose.end():])
+    return not _EMPLOYMENT_SUBJECT.search(subject) and any(
+        len(w) > 2 and w not in _ADVICE_FILLERS for w in words(subject)
+    )
+
+
+def _household_instruction(q):
+    # A UI label or a quoted utterance need not be the requested action.
+    request = re.sub(r'«[^»]*»|"[^"]*"', ' ', q)
+    advice = _RECIPE_ADVICE.search(request)
+    specific = _DOMESTIC_ACTION.search(request)
+    action = specific
+    if not action and _KITCHEN_SETTING.search(request):
+        action = _BOIL_OR_WELD.search(request) or _PREPARE.search(request)
+    if not action and _HOME_SETTING.search(request):
+        action = _PREPARE.search(request)
+    if not advice:
+        if not action:
+            return False
+        # Infinitives can merely name a task. Accept a question, a request for help, or an imperative.
+        if action[0].endswith(("ть", "чь")) and not (_REQUEST_FORM.search(request) or "?" in request):
+            return False
+    if _WORK_RULE.search(q) or _WORK_PREPARATION.search(q) or _EMPLOYMENT_SUBJECT.search(q):
+        return False
+    tokens = words(q)
+    # «по» can be an ordinary preposition. Other glossary abbreviations identify work subjects such as КП.
+    if find_roles(tokens) or any(token != "по" and token in tokens for token in map(fold, glossary())):
+        return False
+    # A pronoun alone can continue a real work question. Require an independently named subject.
+    subject = _HOME_SETTING.sub(" ", request[(advice or action).end():])
+    if any(len(w) > 2 and w not in _ADVICE_FILLERS and w not in _REFERENCE_WORDS for w in words(subject)):
+        return True
+    # An open request for ideas ("что ... испечь?") supplies its own subject. A pronoun may refer
+    # to the work item in the previous turn and does not independently establish a domestic request.
+    return bool(specific and "что" in words(request[:specific.start()]) and not set(tokens) & _REFERENCE_WORDS)
+
+
+def operational_request(text):
+    """Requests for actual records, market data or external work have no regulatory answer."""
+    q = fold(text)
+    if _personal_choice(q) or _household_instruction(q):
+        return True
+    if _PROCEDURE.search(q):
+        return False
+    if q.startswith("когда") and not re.search(r"\b(?:мне|нам|мо[яию]|наш[ау])\b", q):
+        return False
+    if _EXCHANGE.search(q):
+        return not _FX_APPLICATION.search(q)
+    return bool(_TASK.search(q) or (_METRIC.search(q) and _RECORD.search(q)))
+
+
+# A legal aspect of an internal task does not make the requested workflow a legal consultation.
+_INTERNAL_PROCESS = re.compile(
+    r"\b(?:регламент\w*|crm|ткп|у нас)\b"
+    r"|\b(?:внутренн\w*|корпоративн\w*)\s+(?:правил|поряд|полити|инструкц|положен|процесс)\w*"
+    r"|\bнаш\w*\s+(?:компани|организаци|поряд|правил|положен|инструкц|политик|процедур|отдел|проект)\w*"
+    r"|\b(?:карточк\w*\s+проект\w*|заявк\w*\s+на\s+\w+|на согласование)\b"
+    r"|\b(?:оформ|заполн|пода|согласу|утвержд)\w*\b[^.!?]{0,32}\b(?:командиров|смет|табел|заявк)\w*"
+)
+_HANDOFF = re.compile(r"\b(?:кто|кому|куда|как)\b[^.!?]{0,60}\b(?:согласу|согласова|эскалир|переда|завод)\w*")
+_LAW_SOURCE = re.compile(
+    r"\b(?:закон(?:[ауеы]|ом|ов|ами|ах)?|законн[аоы]|правомерн[аоы]|законодательств\w*|(?:трудов|гражданск|налогов|семейн|уголовн)\w*\s+кодекс\w*)\b"
+    r"|\b(?:(?:по|согласно)\s+(?:тк|гк|нк|ск|ук|коап)|(?:тк|гк|нк|ск|ук|коап)\s+рф|\d+[‐‑–-]фз)\b"
+)
+_STATUTORY_ISSUE = re.compile(
+    r"\b(?:исков\w*\s+давност\w*|подсудност\w*|срок\w*\s+обжаловани\w*)\b"
+    r"|\b(?:налогов\w*\s+ставк\w*|ставк\w*\s+(?:налог\w*|ндс|ндфл))\b"
+    r"|\b(?:расторг\w*|расторж\w*|отказ\w*|прекра\w*)\b[^.!?]{0,65}\bодносторонн\w*\b"
+)
+_LEGAL_DEFINITION = re.compile(
+    r"\b(?:что (?:такое|считается|признается|относится)|определени\w*)\b"
+    r"[^.!?]{0,75}\b(?:персональн\w*\s+данн\w*|коммерческ\w*\s+тайн\w*|"
+    r"доверенност\w*|правонарушени\w*|авторск\w*\s+прав\w*)\b"
+)
+
+# A family-law term can also be a label in an internal system. Look for a question
+# about entitlement or legal procedure; family vocabulary by itself is insufficient.
+_ALIMONY = re.compile(r"\bалимент(?:ы|ов|ами|ам|ах|н(?:ый|ая|ое|ые|ую|ых|ой|ом|ым|ого|ому|ыми))\b")
+_FAMILY_SUBJECT = re.compile(
+    r"\b(?:(?:установ|устанавл|оспор|оспарива|призн)\w*\s+(?:отцовств|материнств)\w*"
+    r"|брачн\w*\s+договор\w*|(?:расторжен|расторгн)\w*\s+брак\w*|совместно\s+нажит\w*\s+имуществ\w*"
+    r"|родительск\w*\s+(?:прав|обязанност)\w*)\b"
+)
+_FAMILY_RULE = re.compile(
+    r"\b(?:обяза\w*|положен\w*|име\w*\s+право|вправе|требова\w*|основани\w*|установ\w*|устанавл\w*"
+    r"|призн\w*|оспор\w*|оспарива\w*|суд(?:а|у|е|ом|ы|ов|ам|ами|ах|ебн\w*)?|лишени\w*|лишит\w*|восстанов\w*|раздел\w*|делит\w*|делят\w*"
+    r"|достан\w*|растор\w*|заключ\w*|недействительн\w*)\b"
+)
+_MAINTENANCE_RULE = re.compile(
+    r"\b(?:размер\w*|сумм\w*|дол[ияю]|сколько|рассчит\w*|расчет\w*|взыск\w*|взима\w*|удерж\w*"
+    r"|плат(?:ить|ят|ит|им|ил[аи]?|еж\w*)|выплат\w*|получа\w*|задолженност\w*|подать\s+на)\b"
+)
+# Payroll and personnel records are internal workflows even without the word «регламент».
+_PERSONNEL_RECORD = re.compile(
+    r"\b(?:(?:расчетн|платежн|зарплатн)\w*\s+(?:ведомост|листк|листок|систем|программ)\w*"
+    r"|карточк\w*\s+(?:сотрудник|работник)\w*|1[сc])\b"
+)
+_RECORD_WORK = re.compile(
+    r"\b(?:поле|поля|полях|граф\w*|заполн\w*|указ\w*|указыва\w*|отраз\w*|отраж\w*|внести|внос\w*"
+    r"|занести|занос\w*|регистр\w*|зарегистр\w*|провести|провод\w*|ввод\w*|ввести|оформ\w*|сохран\w*)\b"
+)
+
+
+def _family_law(text):
+    alimony = _ALIMONY.search(text)
+    return ((alimony or _FAMILY_SUBJECT.search(text)) and _FAMILY_RULE.search(text)
+            or alimony and _MAINTENANCE_RULE.search(text))
+
+
+def _legal_request(text):
+    return _LAW_SOURCE.search(text) or _STATUTORY_ISSUE.search(text) or _LEGAL_DEFINITION.search(text) or _family_law(text)
+
+
+def _asks_about_work_scope(message, departments):
+    # A department named in a separate introduction isn't the subject of a personal legal question.
+    for sentence in re.findall(r"[^.!?;]+[.!?;]?", message):
+        if sentence.endswith("?") or _legal_request(sentence):
+            if context.department_in(sentence, departments) or context.stage_in(sentence):
+                return True
+    return False
+
+
+def redirect_for(text: str, *, departments=()) -> Literal["legal", "manager"] | None:
+    """Route the request using scope named in the message, independent of the stored employee profile."""
+    q = fold(text)
+    if _legal_request(q):
+        personnel_work = _PERSONNEL_RECORD.search(q) and _RECORD_WORK.search(q)
+        handoff = _HANDOFF.search(q)
+        if handoff and _family_law(q) and re.search(r"\b(?:в суд|суду|приставу|судье)\b", q):
+            # A handoff to a judicial authority can itself be the legal proceeding.
+            handoff = re.search(r"\b(?:бухгалтер\w*|кадров\w*|отдел\w*)\b", q)
+        if not (_INTERNAL_PROCESS.search(q) or personnel_work or handoff or _asks_about_work_scope(q, departments)):
+            return "legal"
+    if operational_request(q):
+        return "manager"
+    return None
+
+
+# Verbs of invention and guessing, matched by stem so any inflection is covered.
+_INVENT_VERB = re.compile(
+    r"\b(?:при|вы)ду?м(?:ай|ать|аешь|аете|ал\w*|ает|ают|ку|ка)\b|\b(?:при|вы)думан\w*|\bсочин\w*|\bизмысл\w*"
+    r"|\b(?:с)?фантазир\w*|\bвообраз\w*|\bпредположи\w*|\bприкин\w*|\bприкид\w*|\bнаугад\b|\bнавскидку\b"
+    r"|\bна свое[мй] усмотрени\w*|\bот себя\b|\bпредставь\b",
+    re.IGNORECASE,
+)
+_APPROXIMATE = re.compile(
+    r"\b(?:при)?мерн\w*\s+(?:срок|значени|цифр|числ|вариант|оценк|размер|сумм)\w*"
+    r"|\b(?:примерно|приблизительно|ориентировочно|хотя бы)\s+(?:назови|скажи|дай|укажи)\w*"
+    r"|\b(?:назови|скажи|дай|укажи)\w*\s+(?:хотя бы\s+)?(?:при)?(?:мерн|близительн|ентировочн)\w*"
+    r"|\bприблизительн\w+\s+(?:срок|значени|цифр|числ|размер|сумм)\w*",
+    re.IGNORECASE,
+)
+_AS_OFFICIAL = re.compile(
+    r"\b(?:назов\w*|выда\w*|объяв\w*|подай\w*|предста\w*|сошл\w*|оформ\w*)\b.{0,40}\b"
+    r"(?:официальн|действующ|настоящ|реальн)\w*"
+    r"|\b(?:как|за)\s+(?:официальн|действующ)\w*"
+    r"|\bофициальн\w*\s+(?:назов|выда|числ|цифр)\w*"
+    r"|\bкак\s+(?:он|она|оно)\s+должн\w*\s+(?:звуч|выгляд)\w*"
+    r"|\bсформулиру\w*\s+(?:за|вместо)\s+\w+",
+    re.IGNORECASE,
+)
+
+_INSTRUCTION_LEAD = re.compile(
+    r"\b(?:игнорир\w*|забуд\w*|отмени\w*|отключи\w*|сними\w*|нарушь\w*|обойди\w*)\b[^.!?:;]{0,50}?"
+    r"\b(?:инструкц|правил|предыдущ|прежн|ограничен|запрет|указани|настройк)\w*"
+    r"(?:\s+(?:инструкц|правил|предыдущ|прежн|ограничен|запрет|указани|настройк)\w*)*\s*(?:и\s+|,\s*|[:.]\s*)?",
+    re.IGNORECASE,
+)
+_ROLE_LABEL = re.compile(
+    r"\b(?:system|assistant|developer|систем\w*|ассистент\w*)\s*(?:prompt|промпт)?\s*:\s*"
+    r"(?:(?:ограничени|правил|запрет|инструкци)\w*\s+(?:сняты|отключены|отменены)\s*[.!]?\s*)?",
+    re.IGNORECASE,
+)
+_MODE_PHRASE = re.compile(
+    r"\b(?:правила|ограничения|запреты|инструкции)\s+(?:сняты|отключены|отменены)\s*[.!]?"
+    r"|\bрежим\s+(?:разработчика|администратора|без ограничений)\b|\bты теперь\s+\w+",
+    re.IGNORECASE,
+)
+_FORMAT = re.compile(
+    r"\bзаполни\w*\s+поле\s+\w+\s+значением\s+[«\"'][^»\"']*[»\"']\s*[:,]?"
+    r"|\b(?:ответь|ответьте|выведи|верни|дай)\w*\s+в\s+формате\s+[\w-]+\s*"
+    r"|\bв\s+формате\s+(?:json|xml|csv|yaml|html|markdown)\b\s*"
+    r"|\b(?:json|xml|yaml)\s*[:=]",
+    re.IGNORECASE,
+)
+_NO_REFERENCES = re.compile(
+    r"\b(?:только\s+(?:цифр\w*|число|да|нет)\s*[,.]?\s*)?"
+    r"(?:без|не\s+(?:указывай|приводи|давай|цитируй|упоминай))\s+"
+    r"(?:(?:ссылок|цитат|источников|пунктов|номеров)\w*(?:\s+на\s+\w+)?)"
+    r"(?:\s*(?:и|,)\s*(?:без\s+)?(?:ссылок|цитат|источников|пунктов|номеров)\w*)*\s*[:,]?\s*",
+    re.IGNORECASE,
+)
+_ANSWER_VERB = re.compile(
+    r"\b(?:просто\s+)?(?:ответь|ответьте|скажи|скажите|подтверди|подтвердите|согласись)\b\s*(?:,?\s*что\b|:)?\s*"
+    r"(?:[«\"](?:да|нет)[»\"]\s*)?",
+    re.IGNORECASE,
+)
+_MARKUP = re.compile(r"<script.*?</script>|<[^<>]{1,300}>|\{[^{}]{0,300}\}|\[\[.*?\]\]", re.IGNORECASE | re.DOTALL)
+
+
+def fabrication_intent(text):
+    """The user asks to invent, guess or present a made-up value as official."""
+    q = fold(text)
+    return bool(_INVENT_VERB.search(q) or _APPROXIMATE.search(q) or _AS_OFFICIAL.search(q))
+
+
+def _tidy(text):
+    text = re.sub(r"\s+([,.:;?!])", r"\1", text)
+    text = re.sub(r"([,:;])\s*([,.:;?!])", r"\2", text)
+    text = re.sub(r"\s*[—–-]+\s*(?=[.?!]?$)", "", text)
+    text = re.sub(r"([?!])\s*\.", r"\1", text)
+    text = re.sub(r"^[\s,.:;—-]+", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text[:1].upper() + text[1:] if text else text
+
+
+def neutralize(text):
+    """Drop instructions that try to change the route or the answer format, keep the factual part."""
+    cleaned = text
+    for pattern in (_MARKUP, _ROLE_LABEL, _MODE_PHRASE, _INSTRUCTION_LEAD, _FORMAT, _NO_REFERENCES, _ANSWER_VERB):
+        cleaned = pattern.sub(" ", cleaned)
+    cleaned = _tidy(cleaned)
+    if cleaned == _tidy(text):
+        return text
+    # Nothing factual remains: keep the original so that the ordinary route decides.
+    return cleaned if len(words(cleaned)) >= 2 else text
+
+
+_DELIVERY = re.compile(
+    r"(?:\b(?:и|но|а|затем|потом)\s+)?\b(?:назови|выдай|выдать|сошлись|подай|оформи|объяви|ответь\s+уверенно)\w*\b[^.?!]*",
+    re.IGNORECASE,
+)
+_HEDGES = re.compile(
+    r"\b(?:(?:при)?мерн\w*|приблизительн\w*|ориентировочн\w*|разумн\w*|правдоподобн\w*|любой|любое|любую"
+    r"|официальн\w*|хотя бы|примерно|приблизительно|ориентировочно|уверенно)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_invention(text):
+    """The factual part of an invention request, used for retrieval and as the topic to be grounded."""
+    cleaned = _DELIVERY.sub(" ", text)
+    for pattern in (_INVENT_VERB, _HEDGES):
+        cleaned = pattern.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+(?:и|но|а|или)\s*([.?!]|$)", r"\1", _tidy(cleaned))
+    cleaned = _tidy(cleaned)
+    return cleaned if len(words(cleaned)) >= 2 else text
+
+
+def required_overlap(count):
+    """How many question terms an exact sentence must cover when the user asked to invent."""
+    return math.ceil(0.75 * count)
+
+
+_ASSERTION = re.compile(
+    r"мне сказали|слышал\w*|говорят|верно|ведь\b|подтверди\w*|запомни|разве|правда ли|не так ли|"
+    r"это новое правило|с сегодняшнего дня|теперь\b|,\s*да\s*\?|\bда\?\s*$"
+)
+_POINT_NUMBER = re.compile(r"(?:\bп\.?|пункт\w*|раздел\w*|ст\.?|статья|статьи)\s*\d+(?:[.,]\d+)*", re.IGNORECASE)
+
+
+def premise_caveat(question, sentences):
+    """A server-written correction when the question states a number or an actor the source does not."""
+    q = _POINT_NUMBER.sub(" ", fold(question))
+    asked = _numbers(q)
+    asserted = bool(_ASSERTION.search(q))
+    asked_roles = {canon for _, _, canon in find_roles(words(q))}
+    for sentence in sentences:
+        have = _numbers(sentence)
+        wrong_number = bool(asked - have)
+        found = {canon for _, _, canon in find_roles(words(sentence))}
+        wrong_actor = asserted and bool(found) and bool(asked_roles) and not asked_roles & found
+        if wrong_number or wrong_actor:
+            return f"В регламенте указано иначе: «{sentence}»"
+    return None
+
+
+_EXECUTOR = re.compile(r"\bкто\b|\bкем\b|\bкому\b|\bкого\b|\bчь[яеиё]\w*|ответственн|исполнител|\bна ком\b")
+
+
+def asks_executor(question):
+    return bool(_EXECUTOR.search(fold(question)))

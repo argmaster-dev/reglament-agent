@@ -5,7 +5,8 @@ export default function LawPanel() {
     <p style={{whiteSpace:"pre-wrap"}}>{props.text}</p>
     <footer style={{marginTop:12}}>
       <p>{props.revision}</p>
-      <p>{props.source_url ? <a href={props.source_url} target="_blank" rel="noopener noreferrer">источник</a> : "источник не указан"}</p>
+      {props.official_publication ? <p>Официальная публикация: {props.official_publication}{props.official_url ? <> · <a href={props.official_url} target="_blank" rel="noopener noreferrer">официальный портал</a></> : null}</p> : null}
+      <p>{props.source_url ? <a href={props.source_url} target="_blank" rel="noopener noreferrer">текст редакции</a> : "источник не указан"}</p>
       <p>{props.retrieved}</p>
       <p style={{fontSize:".85em"}}><em>{props.note}</em></p>
     </footer>

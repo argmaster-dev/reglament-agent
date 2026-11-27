@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Awaitable, Callable, Protocol
+from typing import Awaitable, Callable, Literal, Protocol
 
 from .ingest.model import Block
 
@@ -71,6 +71,7 @@ class Statement:
 class Variant:
     department: str
     statements: list[Statement]  # empty list = «в регламенте не указано»
+    note: str | None = None  # explicit reason shown instead of the empty-variant text
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,8 @@ class Clarification:
     question: str  # «Срок зависит от подразделения. В каком вы работаете?»
     options: list[str]  # button labels; «Не знаю» is added by the channel
     attempt: int  # 1..3
+    option_refs: list[SourceRef | None] = field(default_factory=list)
+    dimension: str = "department"
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,10 @@ class Answer:
     profile_note: str | None = None  # «Запомнил: Техническая дирекция»
     answer_id: str | None = None  # id in the request log (ratings, journal link)
     from_cache: bool = False
+    # Navigation only. These points do not support an assertion in this answer.
+    nearby_sources: list[SourceRef] = field(default_factory=list)
+    redirect: Literal["legal", "manager"] | None = None
+    related: list[SourceRef] = field(default_factory=list)
 
 
 @dataclass

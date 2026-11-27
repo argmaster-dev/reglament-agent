@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from psycopg import Connection
 
+from reglament_agent.dialog.deadlines import ranking_pattern
 from reglament_agent.dialog.lexicon import expand_query, words
 from reglament_agent.ingest.embedding import vector_literal
 from reglament_agent.ingest.text import content_hash
@@ -18,11 +19,6 @@ QUESTION_WORDS = set("какой какая какие какое каких к�
 
 # These forms widen retrieval only; the answer must still cite the actual wording.
 _ABBREVIATION = re.compile(r"\b[A-ZА-ЯЁ][A-ZА-ЯЁ0-9]+\b")
-_ADVANCE_QUESTION = re.compile(r"\b(?:заранее|за сколько|за какое время|за какой срок)\b", re.I)
-# PostgreSQL word boundaries. A duration before an event is different from an SLA after submission.
-_ADVANCE_INTERVAL = (r"\mза\s+(?:[[:alnum:]-]+\s+){0,4}"
-                     r"(?:минут[а-я]*|час(?:а|ов)?|день|дня|дней|сутки|суток|"
-                     r"недел[а-я]*|месяц[а-я]*|год(?:а|ов)?|лет)\s+до\M")
 _RETRIEVAL_FORMS = (
     (re.compile(r'\bмарж\w*'), 'маржинальность'),
     (re.compile(r"\bподпис\w*"), "подписание подписывать"),
@@ -52,7 +48,7 @@ _RANK = """
                     plainto_tsquery('russian', nullif(%(abbr)s, '')) abbr)
     SELECT p.point_id,p.doc_id,p.version_id,p.number,p.text,top.score,d.title,d.department,
            dv.version_number,p.sentences,p.blocks,1 - (p.embedding <=> %(vec)s::vector),
-           top.literal_match OR p.tsv @@ q.terms
+           top.literal_match OR p.tsv @@ q.terms,p.section_title
     FROM domains dom CROSS JOIN q CROSS JOIN LATERAL (
         WITH eligible AS NOT MATERIALIZED (
             SELECT point_id, embedding, tsv, text FROM points WHERE version_id=ANY(dom.versions)
@@ -75,7 +71,7 @@ _RANK = """
              ORDER BY (embedding <=> %(vec)s::vector) + 0,point_id LIMIT %(pool)s)
         ), f AS (
             SELECT point_id, ts_rank_cd(tsv,q.terms) * (1 + coalesce((tsv @@ q.abbr)::int,0)) relev,
-                   %(advance)s AND text ~* %(interval)s AS has_interval
+                   %(deadline)s <> '' AND text ~* %(deadline)s AS has_interval
             FROM eligible WHERE tsv @@ q.terms
             ORDER BY has_interval DESC,relev DESC,point_id LIMIT %(pool)s
         ), phrases AS (
@@ -113,7 +109,7 @@ def search(conn: Connection, query: str, vector: list[float], *, department: str
     params = {"vec": vector_literal(vector), "query": lexical_query(query), "original": query,
               "dept": department, "stage": stage, "pool": pool, "limit": limit, "exact": exact,
               "literal_hash": literal_hash,
-              "advance": bool(_ADVANCE_QUESTION.search(query)), "interval": _ADVANCE_INTERVAL,
+              "deadline": ranking_pattern(query),
               "abbr": " ".join(_ABBREVIATION.findall(query))}
     with conn.transaction():
         if not exact:
@@ -144,19 +140,19 @@ def preview(conn: Connection, query: str, *, department=None, stage=None, limit=
     rows = conn.execute("""
         WITH terms AS (SELECT websearch_to_tsquery('russian', %(q)s) AS q),
         pool AS (SELECT p.point_id,p.doc_id,p.version_id,p.number,p.text,ts_rank_cd(p.tsv,q) AS weight,
-                 d.title,d.department,v.version_number,p.sentences,p.blocks,
+                 d.title,d.department,v.version_number,p.sentences,p.blocks,p.section_title,
                  p.sha256=%(literal_hash)s AS literal_match,
                  row_number() OVER (PARTITION BY d.department ORDER BY
-                    (p.sha256=%(literal_hash)s) DESC,(%(advance)s AND p.text ~* %(interval)s) DESC,
+                    (p.sha256=%(literal_hash)s) DESC,(%(deadline)s <> '' AND p.text ~* %(deadline)s) DESC,
                     ts_rank_cd(p.tsv,q) DESC,p.point_id) AS n
                  FROM documents d JOIN document_versions v ON v.version_id=d.active_version_id
                  JOIN points p ON p.version_id=v.version_id CROSS JOIN terms
                  WHERE d.status='active' AND (p.tsv @@ q OR p.sha256=%(literal_hash)s)
                  AND (%(dept)s::text IS NULL OR d.department=%(dept)s)
                  AND (%(stage)s::text IS NULL OR %(stage)s=ANY(d.stages)))
-        SELECT point_id,doc_id,version_id,number,text,weight,title,department,version_number,sentences,blocks
+        SELECT point_id,doc_id,version_id,number,text,weight,title,department,version_number,sentences,blocks,section_title
         FROM pool WHERE n<=%(limit)s ORDER BY literal_match DESC,n,point_id""",
         {'q':lexical_query(query),'dept':department,'stage':stage,'limit':limit,
          'literal_hash':content_hash(query),
-         'advance':bool(_ADVANCE_QUESTION.search(query)),'interval':_ADVANCE_INTERVAL}).fetchall()
-    return [Hit(*row[:10],read_blocks(row[10]),0.0,True) for row in rows]
+         'deadline':ranking_pattern(query)}).fetchall()
+    return [Hit(*row[:10],read_blocks(row[10]),0.0,True,row[11]) for row in rows]

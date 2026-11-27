@@ -17,6 +17,7 @@ from reglament_agent.answer import (
     Outcome,
     Scope,
     ScopeOrigin,
+    SourceRef,
     Statement,
     Variant,
 )
@@ -25,10 +26,11 @@ from reglament_agent.model.ollama import ModelError, ModelOutputError, OllamaCli
 from reglament_agent.quality.faq import PublishedFaqStore, match_published
 from reglament_agent.quality.mail import MailSettings
 from reglament_agent.quality.tickets import create_ticket
-from reglament_agent.storage.retrieve import retrieve
+from reglament_agent.storage.retrieve import Candidates, retrieve
 from reglament_agent.storage.search import preview
+from reglament_agent.storage.sources import active_process
 
-from . import context, grounding, relevance, state
+from . import context, grounding, guards, processes, relevance, spelling, state
 from .lexicon import fold, words
 
 _LOG = logging.getLogger(__name__)
@@ -50,7 +52,7 @@ def describe(points):
     ]
 
 
-MAX_MESSAGE_CHARS = 2000
+MAX_MESSAGE_CHARS = guards.MAX_LENGTH
 
 class RequestCalls:
     def record(self, call):
@@ -69,6 +71,24 @@ class Dialog:
         self.mail = mail or MailSettings()
         self.profiles = state.Profiles(dsn)
         self.profile_max_age_days = int(os.getenv("DIALOG_PROFILE_MAX_AGE_DAYS", "30"))
+        self._vocabulary = (None, None)
+
+    def vocabulary(self, conn):
+        """Words of the active regulations; rebuilt only when the set of active versions changes."""
+        versions = tuple(
+            conn.execute("SELECT active_version_id FROM documents WHERE status='active' ORDER BY doc_id").fetchall()
+        )
+        if self._vocabulary[0] != versions:
+            texts = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT p.text FROM points p JOIN documents d ON d.active_version_id=p.version_id"
+                    " WHERE d.status='active'"
+                )
+            ]
+            departments = [r[0] for r in conn.execute("SELECT DISTINCT department FROM documents")]
+            self._vocabulary = (versions, spelling.Vocabulary.from_texts(texts + departments))
+        return self._vocabulary[1]
 
     async def answer(self, user, message, on_status):
         return await self._turn(user, message.strip(), on_status, choice=False)
@@ -77,9 +97,11 @@ class Dialog:
         return await self._turn(user, option.strip(), on_status, choice=True)
 
     async def _turn(self, user, message, status, choice):
-        if len(message) > MAX_MESSAGE_CHARS:
-            # Chat checks the same limit, but retry/choice paths reach the dialog directly.
-            return Answer(Outcome.OFF_TOPIC, f"Сообщение длиннее {MAX_MESSAGE_CHARS} символов. Сократите вопрос.")
+        refusal = Answer(
+            Outcome.OFF_TOPIC, f"Вопрос должен содержать от {guards.MIN_LENGTH} до {guards.MAX_LENGTH} символов."
+        )
+        if len(message) > guards.MAX_LENGTH or not message:
+            return refusal
         started = monotonic()
         trace = {"steps": [], "calls": [], "candidates": [], "dropped": []}
         token = _records.set(trace["calls"])
@@ -93,6 +115,9 @@ class Dialog:
                     return prior
                 if prior:
                     conn.execute("DELETE FROM dialog_requests WHERE id=%s", (prior.answer_id,))
+                if len(message) < guards.MIN_LENGTH and not initial.get("options"):
+                    # A short reply is valid only as an answer to an open clarification.
+                    return refusal
                 request_id = str(uuid.uuid4())
                 topic = deepcopy(initial)
                 try:
@@ -116,6 +141,21 @@ class Dialog:
             return Answer(Outcome.ERROR)
         finally:
             _records.reset(token)
+
+    @staticmethod
+    def _merge_variants(named, faqs, assembled):
+        by_department = {v.department: v for v in assembled}
+        merged = []
+        for d in named:
+            faq = faqs.get(d)
+            if faq:
+                refs = [faq.source] + ([faq.basis] if faq.basis else [])
+                merged.append(Variant(d, [Statement(faq.answer, refs)], faq.attribution or None))
+            elif d in by_department and by_department[d].statements:
+                merged.append(by_department[d])
+            else:
+                merged.append(Variant(d, [], f"в регламентах {d} нет основания"))
+        return merged
 
     def _ticket(self, conn, user, message, question, reason, topic, trace):
         profile = state.get_profile(conn, user.email)
@@ -141,8 +181,19 @@ class Dialog:
         stages_by_doc = {doc: stages for doc, _, stages in cards}
         options = topic.get("options", [])
         axis = topic.get("axis", "department")
+        option_refs = [SourceRef(**r) if r else None for r in topic.get("option_refs", [])]
+        selected = None
+        if axis == "intent":
+            selected = next((ref for label, ref in zip(options, option_refs)
+                             if context.normalized_reply(label) == context.normalized_reply(message)), None)
         confirming = topic.get("confirm_department")
-        dept = context.department_in(message, departments or (options if axis == "department" else []))
+        catalog = departments or (options if axis == "department" else [])
+        dept = context.department_in(message, catalog)
+        named = [] if topic.get("options") else context.departments_in(message, departments)
+        # A question about several departments is answered per department, never from one of them.
+        multi = len(named) >= 2
+        if multi:
+            dept = None
         declared_dept = context.personal_department(message, dept)
         position = context.personal_position(message)
         explicit_stage = context.stage_in(message)
@@ -151,22 +202,22 @@ class Dialog:
         short = context.scope_only(message, dept)
         stage_reply = explicit_stage and len(words(message)) <= 4
         confirming_yes = pending and confirming and context.normalized_reply(message) == "да"
-        follow = bool(topic.get("subject")) and bool(
+        redirect = guards.redirect_for(message, departments=departments)
+        follow = redirect is None and bool(topic.get("subject")) and bool(
             short
             or stage_reply
-            or (pending and (choice or unknown or confirming_yes or not context.new_question(message)))
+            or (pending and (selected or choice or unknown or confirming_yes or not context.new_question(message)))
         )
         profile = state.get_profile(conn, user.email)
-        if position and not dept:
+        note = None
+        if position and not dept and redirect is None:
             state.update_profile(conn, user.email, position=position)
             note = f"Запомнил должность: {position}."
             trace["steps"].append("remember_position")
-            if pending:
-                prompt = Clarification(topic["clarify"], options, len(topic.get("history", [])) + 1)
-                reply = Answer(Outcome.CLARIFY, clarification=prompt, profile_note=note)
-                return reply, topic["subject"], None
-            return Answer(Outcome.ANSWER, note), message, None
-        if declared_dept and short and not pending:
+            if not pending:
+                return Answer(Outcome.ANSWER, note), message, None
+            follow = True
+        if declared_dept and short and not pending and redirect is None:
             state.set_department(conn, user.email, declared_dept)
             topic.pop("ignored_department", None)
             note = f"Запомнил подразделение: {declared_dept}."
@@ -174,6 +225,13 @@ class Dialog:
             return Answer(Outcome.ANSWER, note), message, None
 
         question = topic["subject"] if follow else message
+        invention = bool(topic.get("invention")) if follow else guards.fabrication_intent(message)
+        if not follow:
+            question = guards.neutralize(question)
+            if invention:
+                question = guards.strip_invention(question)
+            if redirect is None:
+                question = spelling.correct(question, self.vocabulary(conn))
         if not follow:
             ignored = topic.get("ignored_department")
             offered = topic.get("profile_confirmation_offered")
@@ -182,11 +240,15 @@ class Dialog:
                 topic["ignored_department"] = ignored
             if offered:
                 topic["profile_confirmation_offered"] = True
+            topic["invention"] = invention
         if pending and follow:
             topic.setdefault("history", []).append({"question": topic["clarify"], "answer": message})
         trace["restated"] = question
-        variants = pending and follow and unknown
-        note = None
+        if redirect:
+            trace["steps"].append("off_topic")
+            summary = guards.LEGAL_MESSAGE if redirect == "legal" else guards.OFF_TOPIC_MESSAGE
+            return Answer(Outcome.OFF_TOPIC, summary, redirect=redirect), question, None
+        variants = (pending and follow and unknown and axis != "intent") or multi
         if follow and confirming_yes:
             profile = state.confirm_department(conn, user.email, confirming)
             dept = profile.department
@@ -212,7 +274,9 @@ class Dialog:
             topic["ignored_department"] = confirming
 
         origin = ScopeOrigin.NONE
-        if dept:
+        if selected:
+            dept, origin = selected.department, ScopeOrigin.CLARIFICATION
+        elif dept:
             temporary = short and not context.named_department(message, dept) and not declared_dept
             origin = (
                 ScopeOrigin.CLARIFICATION if pending and follow and not temporary else ScopeOrigin.QUESTION
@@ -222,16 +286,17 @@ class Dialog:
             origin = ScopeOrigin.CLARIFICATION
         elif profile.department and not variants and profile.department != topic.get("ignored_department"):
             dept, origin = profile.department, ScopeOrigin.PROFILE
-        stage = explicit_stage or (topic.get("stage") if follow else None) or context.stage_in(question)
+        stage = (None if selected else explicit_stage) or (topic.get("stage") if follow else None) or context.stage_in(question)
         scope = Scope(dept, stage, origin)
         topic.update(subject=question, department=dept, stage=stage)
 
-        def clarify(available, dimension="department", *, ask=None, confirm=None):
+        def clarify(available, dimension="department", *, ask=None, confirm=None, refs=()):
             attempt = len(topic.get("history", [])) + 1
             if attempt > 3:
                 reply = Answer(Outcome.NO_BASIS, "Не удалось определить область вопроса.", scope=scope)
                 reply.ticket = self._ticket(conn, user, message, question, "clarify_exhausted", topic, trace)
                 topic.pop("options", None)
+                topic.pop("option_refs", None)
                 topic.pop("confirm_department", None)
                 return reply
             if ask is None:
@@ -240,17 +305,20 @@ class Dialog:
                     if dimension == "stage"
                     else "Ответ зависит от подразделения. В каком вы работаете?"
                 )
-            topic.update(options=available, clarify=ask, axis=dimension, confirm_department=confirm)
+            topic.update(options=available, clarify=ask, axis=dimension, confirm_department=confirm,
+                         option_refs=[asdict(ref) if ref else None for ref in refs])
             trace["steps"].append("clarify_" + dimension)
             return Answer(
                 Outcome.CLARIFY,
-                clarification=Clarification(ask, available, attempt),
+                clarification=Clarification(ask, available, attempt, list(refs), dimension),
                 scope=scope,
                 profile_note=note,
             )
 
         if pending and follow and not variants:
-            resolved = (
+            if axis == "intent" and not selected:
+                return clarify(options, axis, ask=topic["clarify"], refs=option_refs), question, None
+            resolved = selected or (
                 explicit_stage
                 if axis == "stage"
                 else declared_dept or confirming_yes or (dept if origin == ScopeOrigin.QUESTION else None)
@@ -258,6 +326,7 @@ class Dialog:
             if not resolved:
                 return clarify(options, axis, ask=topic["clarify"], confirm=confirming), question, None
         topic.pop("options", None)
+        topic.pop("option_refs", None)
         topic.pop("confirm_department", None)
         definition = context.definition(question)
         if definition:
@@ -288,7 +357,22 @@ class Dialog:
 
         await status("Ищу основания в действующих регламентах…")
 
+        intent_candidates = []
+        broad = processes.broad_subject(question, scope)
+        role_needs_direction = not dept and len(departments) > 1 and context.asks_role_overview(question)
+
         def ambiguity(points):
+            if role_needs_direction:
+                return clarify(departments)
+            if broad:
+                # Hybrid ranks remain in candidates; the lexical shortlist is an independent source of choices.
+                trace["intent_shortlist"] = describe(intent_candidates)
+                options = processes.options(question, [*points, *intent_candidates], scope)
+                if options:
+                    refs = [ref for _, ref in options]
+                    trace["intent_options"] = [asdict(ref) for ref in refs]
+                    return clarify([name for name, _ in options], "intent", ask="Какой процесс вас интересует?",
+                                   refs=refs)
             rows = grounding.anchors(points)
             related = relevance.applicable_refs(question, rows, department=dept)
             by_department, by_stage = {}, {}
@@ -307,26 +391,57 @@ class Dialog:
                     return clarify(available, "stage")
             return None
 
-        if not variants and (not dept or not stage):
+        if not selected and not variants and (not dept or not stage):
             candidates = await asyncio.to_thread(self.shortlist, conn, question, department=dept, stage=stage)
-            clarification = ambiguity(candidates)
-            if clarification:
-                trace["candidates"] = describe(candidates)
-                return clarification, question, None
+            if broad or role_needs_direction:
+                # Let a published expert answer settle the question before asking for a process or direction.
+                intent_candidates = candidates
+            else:
+                clarification = ambiguity(candidates)
+                if clarification:
+                    trace["candidates"] = describe(candidates)
+                    return clarification, question, None
         trace["steps"].append("retrieve")
-        (vector,) = await self.model.embed([question], step="retrieve", request_id=request_id)
-        found = await asyncio.to_thread(
-            self.search,
-            conn,
-            question,
-            vector,
-            department=dept,
-            stage=stage,
-            limit=28,
-            faq=PublishedFaqStore(),
-        )
+        if selected:
+            points = await asyncio.to_thread(active_process, conn, selected)
+            if not points:
+                reply = Answer(Outcome.NO_BASIS, "Выбранный пункт больше не входит в действующую редакцию.", scope=scope)
+                reply.ticket = self._ticket(conn, user, message, question, "no_basis", topic, trace)
+                return reply, question, None
+            question = f"{question.rstrip(' ?')} — {points[0].section_title}?"
+            trace["restated"] = question
+            trace["steps"].append("selected_process")
+            found = Candidates(points, [])
+        else:
+            (vector,) = await self.model.embed([question], step="retrieve", request_id=request_id)
+        if multi:
+            parts = [
+                await asyncio.to_thread(
+                    self.search, conn, question, vector, department=d, stage=stage,
+                    limit=max(8, 28 // len(named)), faq=PublishedFaqStore(),
+                )
+                for d in named
+            ]
+            # A published answer settles only its own department; the others are assembled from the points.
+            # Only an answer based on this department's own document may stand for it. An answer without such
+            # a basis (outside the regulations) belongs to no department row and is not shown in the comparison.
+            faqs = {
+                d: match_published(
+                    question, [f for f in part.faq if f.basis and f.basis.department == d]
+                )
+                for d, part in zip(named, parts)
+            }
+            departments = [d for d in named if not faqs[d]]
+            found = Candidates(
+                [p for d, part in zip(named, parts) if d in departments for p in part.points], []
+            )
+        elif not selected:
+            found = await asyncio.to_thread(
+                self.search, conn, question, vector, department=dept, stage=stage, limit=28,
+                faq=PublishedFaqStore(),
+            )
         trace["candidates"] = describe(found.points)
-        faq = match_published(question, found.faq)
+        faq = None if multi else match_published(question, found.faq)
         if faq is not None:
             refs = [faq.source] + ([faq.basis] if faq.basis else [])
             reply = Answer(
@@ -338,15 +453,20 @@ class Dialog:
             )
             trace["steps"].append("published_faq")
             return reply, question, key
+        if multi and not departments:
+            reply = Answer(Outcome.VARIANTS, scope=scope, profile_note=note)
+            reply.variants = self._merge_variants(named, faqs, [])
+            trace["steps"].append("published_faq")
+            return reply, question, None
         rows = grounding.anchors(found.points)
         if not departments:
             departments = sorted({p.department for p in found.points})
-        if not variants:
+        if not variants and not selected:
             clarification = ambiguity(found.points)
             if clarification:
                 return clarification, question, None
         items = grounding.vocabulary(question, rows)
-        messages, schema = grounding.prompt(question, items, variants)
+        messages, schema = grounding.prompt(question, items, variants, invention)
         await status("Проверяю ответ по найденным пунктам…")
         trace["steps"].append("select")
         async with generation_progress(status) as notify:
@@ -377,14 +497,47 @@ class Dialog:
             raise ModelOutputError("invalid claim structure")
         trace["proposal"] = data
         trace["evidence"] = {key: asdict(a.ref) for key, a in items.items()}
-        result = grounding.assemble(question, response.data, items, departments, variants, trace, rows)
-        if variants and axis == "stage" and result.outcome == Outcome.VARIANTS:
+        # Keep retrieval and model references intact. Verify the fact a requested regulation must establish.
+        evidence_question = processes.evidence_subject(question)
+        if evidence_question != question:
+            trace["evidence_question"] = evidence_question
+        result = grounding.assemble(evidence_question, response.data, items, departments, variants, trace, rows, invention)
+        if variants and not multi and axis == "stage" and result.outcome == Outcome.VARIANTS:
             statements = [s for v in result.variants for s in v.statements]
             result.variants = [
                 Variant(label, [s for s in statements if code in stages_by_doc.get(s.sources[0].doc_id, [])])
                 for code, label in context.STAGE_LABELS.items()
             ]
         trace["steps"].append("verify")
+        if multi and result.outcome == Outcome.NO_BASIS and not any(faqs.values()):
+            # Nothing for any named department: an ordinary refusal with a ticket, each department named.
+            marks = [v.note for v in self._merge_variants(named, faqs, [])]
+            result.summary = "\n".join([result.summary, *marks])
+        elif multi and (result.outcome == Outcome.VARIANTS or any(faqs.values())):
+            # A department without a basis is marked in its variant; it does not open a ticket.
+            own = result.variants if result.outcome == Outcome.VARIANTS else []
+            result = Answer(
+                Outcome.VARIANTS, variants=self._merge_variants(named, faqs, own), caveat=result.caveat
+            )
+        if result.outcome == Outcome.NO_BASIS and not selected and relevance.request_qualifiers(question):
+            # No silent substitution: name the points about the same noun for another object or direction,
+            # including those of other departments.
+            wider = rows
+            if dept and not multi:
+                found_all = await asyncio.to_thread(
+                    self.search, conn, question, vector, department=None, stage=stage, limit=28,
+                    faq=PublishedFaqStore(),
+                )
+                wider = grounding.anchors(found_all.points)
+            near, result.nearby_sources = relevance.nearby_evidence(question, wider)
+            if near:
+                result.summary = (
+                    f"{result.summary}\nТочного пункта для этого объекта и направления нет. "
+                    f"Есть пункты о том же предмете, но для другого объекта или направления:\n{near}"
+                )
+        if result.outcome == Outcome.ANSWER:
+            result.summary = processes.document_summary(question, result.statements) or result.summary
+            result.related = processes.related(result.statements, found.points)
         result.scope, result.profile_note = scope, note
         if result.outcome in _ESCALATE:
             result.ticket = self._ticket(conn, user, message, question, result.outcome.value, topic, trace)
@@ -393,6 +546,7 @@ class Dialog:
         return result, question, key if cacheable else None
 
     async def rate(self, user, answer_id, good, reason, forward=False):
+        reason = reason[: guards.MAX_LENGTH] if reason else reason
         def record(conn):
             try:
                 identity = uuid.UUID(answer_id)
