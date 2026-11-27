@@ -30,7 +30,7 @@ from reglament_agent.storage.retrieve import Candidates, retrieve
 from reglament_agent.storage.search import preview
 from reglament_agent.storage.sources import active_process
 
-from . import context, grounding, guards, processes, relevance, similar, spelling, state
+from . import context, employment, grounding, guards, processes, relevance, similar, spelling, state
 from .lexicon import fold, words
 
 _LOG = logging.getLogger(__name__)
@@ -493,6 +493,14 @@ class Dialog:
             if clarification:
                 return clarification, question, None
         items = grounding.vocabulary(question, rows)
+        if not items:
+            parts = relevance.coordinated_parts(question) or [question]
+            if len(employment.requested_parts(question, parts)) == len(parts):
+                result = Answer(Outcome.NO_BASIS, "В действующих регламентах не нашёл кадрового правила по этому вопросу.",
+                                scope=scope, profile_note=note)
+                result.ticket = self._ticket(conn, user, message, question, result.outcome.value, topic, trace)
+                trace["steps"].extend(["employment_evidence_missing", "ticket"])
+                return result, question, None
         messages, schema = grounding.prompt(question, items, variants, invention)
         await status("Проверяю ответ по найденным пунктам…")
         trace["steps"].append("select")

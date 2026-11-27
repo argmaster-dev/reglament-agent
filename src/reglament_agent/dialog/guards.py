@@ -205,14 +205,14 @@ def _family_law(text):
             or alimony and _MAINTENANCE_RULE.search(text))
 
 
-def _legal_request(text):
+def asks_about_law(text):
     return _LAW_SOURCE.search(text) or _STATUTORY_ISSUE.search(text) or _LEGAL_DEFINITION.search(text) or _family_law(text)
 
 
 def _asks_about_work_scope(message, departments):
     # A department named in a separate introduction isn't the subject of a personal legal question.
     for sentence in re.findall(r"[^.!?;]+[.!?;]?", message):
-        if sentence.endswith("?") or _legal_request(sentence):
+        if sentence.endswith("?") or asks_about_law(sentence):
             if context.department_in(sentence, departments) or context.stage_in(sentence):
                 return True
     return False
@@ -221,7 +221,7 @@ def _asks_about_work_scope(message, departments):
 def redirect_for(text: str, *, departments=()) -> Literal["legal", "manager"] | None:
     """Route the request using scope named in the message, independent of the stored employee profile."""
     q = fold(text)
-    if _legal_request(q):
+    if asks_about_law(q):
         personnel_work = _PERSONNEL_RECORD.search(q) and _RECORD_WORK.search(q)
         handoff = _HANDOFF.search(q)
         if handoff and _family_law(q) and re.search(r"\b(?:в суд|суду|приставу|судье)\b", q):
