@@ -2,11 +2,27 @@
 
 import pytest
 
-from reglament_agent.dialog import similar
+from reglament_agent.answer import Scope, UserContext
+from reglament_agent.dialog import similar, state
 from reglament_agent.dialog.route import Dialog
 from tests.dialog.test_cache import Model, ask, publish, route_for, user, world
 
 BASE = "Кто подписывает договор в ТД?"
+
+
+def test_new_evidence_rules_invalidate_exact_and_similar_answers(isolated, monkeypatch):
+    conn, _ = isolated
+    employee = UserContext("reader@example.org", "employee", "chat", "request")
+    scope = Scope(None, None)
+
+    def keys():
+        return state.cache_key(conn, employee, BASE, scope, "model"), state.cache_context(conn, employee, scope, "model")
+
+    exact, context = keys()
+    monkeypatch.setattr(state, "POLICY", "extract-v7-document-subject")
+    previous_exact, previous_context = keys()
+    assert exact != previous_exact
+    assert context != previous_context
 
 
 class Embedder(Model):
