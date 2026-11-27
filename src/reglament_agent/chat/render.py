@@ -41,6 +41,12 @@ PRACTICE_TITLE = "Практика применения"
 PRACTICE_LIMIT = 3
 # «п. 2.2 «Название» (Подразделение): текст»: так маршрут называет близкие пункты в тексте итога.
 _NEAR_LINE = re.compile(r"^п\. (\S+) «(.+?)» \((.+?)\): (.*)$")
+REFUSAL_LEAD = (
+    "В регламентах ответа нет. Я отправил запрос в службу качества по почте, вы в копии. "
+    "Ответ придёт на почту и в этот диалог."
+)
+OFF_TOPIC_HINT = "Этот вопрос не касается регламентов компании — обратитесь к своему руководителю."
+NEAR_LIMIT = 3
 DONT_KNOW = "Не знаю"
 EMPTY_VARIANT = "в регламенте не указано"
 DOWN_REASONS = ["Неверно", "Неполно", "Не то подразделение", "Другое"]
@@ -67,8 +73,7 @@ class ActionSpec:
 
 def outcome_label(answer: Answer) -> str:
     if answer.outcome in TICKET_OUTCOMES:
-        number = f" №{answer.ticket.number}" if answer.ticket else ""
-        return f"✉️ Обращение{number}"
+        return "✉️ Передано в службу качества"
     label = OUTCOME_LABELS[answer.outcome]
     if answer.outcome is Outcome.LOW_CONFIDENCE and answer.ticket:
         label += f" · обращение №{answer.ticket.number}"
@@ -177,7 +182,7 @@ def near_points(answer: Answer) -> list[NearPoint]:
 def near_actions(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> list[ActionSpec]:
     """Buttons that open the near points in the side panel; points that no longer resolve get none."""
     acts = []
-    for near in near_points(answer):
+    for near in near_points(answer)[:NEAR_LIMIT]:
         ref = resolve(near)
         if ref is not None:
             acts.append(ActionSpec("open_source", f"Близкий пункт · {near.label}", ref_payload(ref)))
@@ -203,6 +208,12 @@ def confirmed_line(dates: dict[int, str] | None, ids: list[int]) -> str:
     return "🎓 " + CONFIRMED.capitalize() + (f" · {', '.join(known)}" if known else "")
 
 
+def ticket_note(t: TicketInfo) -> str:
+    """Small secondary line of a refusal: the number is a detail, the lead already says what happens."""
+    delivery = DELIVERY_TEXT.get(t.delivery, t.delivery)
+    return f"_Обращение № {t.number} · {delivery} · [статус](/tickets/{t.number})_"
+
+
 def evidence_groups(answer: Answer, names: dict[SourceRef, str]) -> list[dict]:
     def items(statements):
         return [
@@ -226,6 +237,8 @@ def answer_markdown(
 ) -> str:
     names = names if names is not None else assign_chip_names(answer)
     summary, near = split_near(answer.summary)
+    if answer.outcome is Outcome.OFF_TOPIC and not summary.startswith("Сообщение длиннее"):
+        summary = OFF_TOPIC_HINT  # заменяет общий текст маршрута, без повтора
     parts: list[str] = []
     if answer.outcome is Outcome.LOW_CONFIDENCE:
         parts.append(f"> ⚠️ {answer.caveat or 'Требует подтверждения службой качества'}")
@@ -233,6 +246,8 @@ def answer_markdown(
     scope = scope_line(answer.scope)
     if scope:
         parts.append(f"_{scope}_")
+    if answer.outcome in TICKET_OUTCOMES:
+        parts.append(REFUSAL_LEAD)
     if answer.outcome is Outcome.ERROR:
         parts.append("Не удалось получить ответ, вопрос сохранён. Нажмите «Повторить».")
     elif answer.outcome is Outcome.CLARIFY and answer.clarification:
@@ -255,14 +270,11 @@ def answer_markdown(
     if ids and answer.outcome not in (Outcome.ERROR, Outcome.CLARIFY):
         parts.append(confirmed_line(faq_dates, ids))
     if near:
-        parts.append(
-            "**Близкие пункты**\n"
-            + "\n".join(f"- [{n.label}] «{n.doc_title}»: {n.text}" for n in near)
-        )
+        parts.append("Близкие пункты: " + " · ".join(f"[{n.label}]" for n in near[:NEAR_LIMIT]))
     if answer.caveat and answer.outcome != Outcome.LOW_CONFIDENCE:
         parts.append(f"> {answer.caveat}")
     if answer.ticket:
-        parts.append(ticket_card(answer.ticket))
+        parts.append(ticket_note(answer.ticket) if answer.outcome in TICKET_OUTCOMES else ticket_card(answer.ticket))
     if answer.profile_note:
         parts.append(f"_{answer.profile_note}_")
     return "\n\n".join(parts)

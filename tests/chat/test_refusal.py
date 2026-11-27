@@ -18,19 +18,38 @@ REFUSALS = [Outcome.NO_BASIS, Outcome.CONFLICT, Outcome.EXTERNAL_DOC]  # EXTERNA
 @pytest.mark.parametrize("outcome", REFUSALS)
 def test_every_refusal_shows_ticket_and_where_answer_comes(outcome):
     md = R.answer_markdown(Answer(outcome, "Ответа нет.", ticket=TICKET))
-    assert "Обращение № 2026-0042" in md  # в карточке, а не только в ссылке на статус
-    assert "в этот диалог" in md and "почт" in md
+    assert "Обращение № 2026-0042" in md  # мелкой строкой, а не только в ссылке на статус
+    assert md.index("в копии") < md.index("2026-0042")  # сначала что произошло, номер вторичен
+    assert "по почте" in md and "в этот диалог" in md and "службу качества" in md
+    assert "**✉️ Обращение" not in md  # номер не заголовок
 
 
 @pytest.mark.parametrize("outcome", REFUSALS)
 def test_near_points_are_listed_and_clickable(outcome):
     a = Answer(outcome, SUMMARY, ticket=TICKET)
     md = R.answer_markdown(a)
-    assert "Близкие пункты" in md and "[ОЗ · п. 2.2]" in md and "Закупку до лимита" in md
-    assert md.count("Закупку до лимита") == 1  # не дублируется в тексте итога
+    assert "Близкие пункты: [ОЗ · п. 2.2]" in md
+    assert "Закупку до лимита" not in md  # коротко: только ссылки, без длинного блока
     ref = SourceRef("zakup", "Правила закупок", "ОЗ", 3, "2.2")
     (act,) = R.near_actions(a, lambda near: ref)
     assert act.name == "open_source" and R.ref_from_payload(act.payload) == ref
+
+
+def test_near_points_are_limited_to_three_in_one_line():
+    lines = "\n".join(f"п. 2.{i} «Правила закупок» (ОЗ): Текст {i}." for i in range(1, 6))
+    a = Answer(Outcome.NO_BASIS, f"Нет.\n{lines}", ticket=TICKET)
+    line = next(l for l in R.answer_markdown(a).splitlines() if l.startswith("Близкие пункты"))
+    assert line.count("[ОЗ") == 3
+    assert len(R.near_actions(a, lambda n: SourceRef("zakup", "Правила закупок", "ОЗ", 1, n.point))) == 3
+
+
+def test_off_topic_sends_to_manager_without_ticket():
+    from reglament_agent.dialog.route import _ESCALATE
+    assert Outcome.OFF_TOPIC not in _ESCALATE  # маршрут не заводит обращение и письмо
+    md = R.answer_markdown(Answer(Outcome.OFF_TOPIC, "Я помогаю с вопросами по внутренним регламентам."))
+    assert "обратитесь к своему руководителю" in md and "не касается регламентов" in md
+    assert "Обращение" not in md and "службу качества" not in md and "почт" not in md
+    assert md.count("руководителю") == 1 and "Я помогаю" not in md
 
 
 def test_unresolvable_near_point_gets_no_button():
