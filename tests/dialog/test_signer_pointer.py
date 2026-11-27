@@ -27,3 +27,14 @@ def test_pointer_point_reaches_the_model_and_no_signer_is_invented():
     assert answer.outcome is Outcome.EXTERNAL_DOC
     assert answer.statements[0].sources == [a.ref]
     assert "подписант не указан" in answer.caveat
+
+
+def test_non_signer_question_gets_no_signer_remark():
+    q = "Где описан порядок подбора арендодателей склада?"
+    rows = _rows()[:1]
+    a = rows[0]
+    items = {"S1": a}
+    data = {"outcome": "answer", "claims": [{"ref": model_ref("S1", a), "actor": "", "action": "", "text": a.text}]}
+    answer = assemble(q, data, items, ["Отдел аренды"], False, {}, rows)
+    assert answer.outcome is Outcome.ANSWER
+    assert "подписант" not in (answer.caveat or "")

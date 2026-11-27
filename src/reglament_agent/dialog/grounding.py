@@ -26,11 +26,23 @@ _ACTION_WORDS = re.compile(
 )
 # Finite or infinitive verb endings: every sentence contributes its own verbs, not a fixed list of stems.
 _VERB_FORM = re.compile(r"^\w{3,}(?:е[тм]|ит|ют|ут|ят|ат|ться|ть|ти)$")
+_NOUN_ENDING = re.compile(r"(?:ость|ости|сть|сти)$")
+# Frequent regulation nouns that end like verb forms.
+_NOUNS = {
+    "бюджет", "ответ", "предмет", "объем", "лимит", "аудит", "результат", "формат", "комплект", "документ",
+    "отчет", "акт", "стат", "рейтинг", "бланк", "объект", "эффект", "проект", "пакет", "реестр", "регламент",
+    "контракт", "договорат", "факт", "процент", "элемент", "момент", "инцидент", "клиент", "лист", "заказчик",
+    "график", "приоритет", "бонус", "шаблон", "статус", "перечень", "срок", "платеж", "счет", "кабинет",
+    "осмотр", "ресурс", "запрет", "допуск", "вывоз", "протокол", "маршрут", "маршрутизат", "дом", "том",
+}
 
 
 def sentence_actions(tokens):
     """Verbs of one source sentence; the claimed action must come from the cited sentence itself."""
-    return {w for w in tokens if _ACTION_WORDS.match(w) or _VERB_FORM.match(w)}
+    def verb(w):
+        return bool(_VERB_FORM.match(w)) and not _NOUN_ENDING.search(w) and w not in _NOUNS
+
+    return {w for w in tokens if _ACTION_WORDS.match(w) or verb(w)}
 
 
 @dataclass(frozen=True)
@@ -282,7 +294,11 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
     if out in (Outcome.OFF_TOPIC, Outcome.NO_BASIS):
         statements = []
     known = {**{a.ref: a for a in rows}, **by_ref}
-    pointers = [s for s in statements if s.sources[0] in known and relevance.signer_pointer(fold(question), known[s.sources[0]])]
+    pointers = [
+        s for s in statements
+        if relevance.asks_signer(fold(question)) and s.sources[0] in known
+        and relevance.signer_pointer(fold(question), known[s.sources[0]])
+    ]
     if out in (Outcome.ANSWER, Outcome.EXTERNAL_DOC) and pointers and relevance.asks_signer(fold(question)):
         if len(pointers) == len(statements):
             out = Outcome.EXTERNAL_DOC

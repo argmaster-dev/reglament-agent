@@ -49,3 +49,13 @@ def test_action_from_another_point_is_not_attributed():
     items, answer, trace = _assemble("Кто сверяет комплект актов перед закрытием наряда?", "согласовывает")
     assert answer.outcome is Outcome.NO_BASIS
     assert trace["dropped"] == ["action_missing"]
+
+
+def test_nouns_with_verb_like_endings_are_not_actions():
+    from reglament_agent.dialog.grounding import sentence_actions
+    from reglament_agent.dialog.lexicon import words
+
+    found = sentence_actions(words(
+        "Руководитель проекта отвечает за бюджет и результат, ответственность за часть работ несёт Логист"))
+    assert {"отвечает", "несет"} <= found
+    assert not found & {"бюджет", "результат", "ответственность", "часть"}
