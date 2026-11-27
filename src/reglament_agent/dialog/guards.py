@@ -5,18 +5,21 @@ The patterns describe request styles and word families, never the content of a r
 
 import math
 import re
+from typing import Literal
 
+from . import context
 from .checks import _numbers
 from .lexicon import find_roles, fold, words
 
 MIN_LENGTH, MAX_LENGTH = 3, 2000
 
+LEGAL_MESSAGE = "Это вопрос законодательства. По нему лучше обратиться к юристам."
 OFF_TOPIC_MESSAGE = "Этот вопрос не касается регламентов компании — обратитесь к своему руководителю."
 
 # Ask for a policy even when the subject is money, a particular deal or correspondence.
 _PROCEDURE = re.compile(
     r"\b(?:регламент|положени|инструкци|правил|порядок|порядк|методик|формул|услови|обязан|положен|предусмотрен|ограничени)\w*"
-    r"|\b(?:как|кто|где|когда|можно ли|нужно ли|имею ли право|каким образом)\b"
+    r"|\b(?:как|кто|где|можно ли|нужно ли|имею ли право|каким образом)\b"
     r"|\b(?:применять|применяется|использовать|учитывать)\b"
 )
 _METRIC = re.compile(r"\b(?:марж|преми|бонус|прибыл|выручк)\w*")
@@ -31,7 +34,7 @@ _EXCHANGE = re.compile(
 _TASK = re.compile(
     r"\b(?:сделай(?:те)?|отправь(?:те)?|напиши(?:те)?|разошли(?:те)?|подготовь(?:те)?|"
     r"составь(?:те)?|сформируй(?:те)?)\b.{0,65}"
-    r"\b(?:follow[\s-]?up|фоллоу[\s-]?ап|письм\w*|напоминани\w*|сообщени\w*|рассылк\w*)\b"
+    r"\b(?:follow[\s-]?up|фолл?оу[\s-]?ап|письм\w*|напоминани\w*|сообщени\w*|рассылк\w*)\b"
 )
 
 
@@ -40,7 +43,96 @@ def operational_request(text):
     q = fold(text)
     if _PROCEDURE.search(q):
         return False
+    if q.startswith("когда") and not re.search(r"\b(?:мне|нам|мо[яию]|наш[ау])\b", q):
+        return False
     return bool(_EXCHANGE.search(q) or _TASK.search(q) or (_METRIC.search(q) and _RECORD.search(q)))
+
+
+# A legal aspect of an internal task does not make the requested workflow a legal consultation.
+_INTERNAL_PROCESS = re.compile(
+    r"\b(?:регламент\w*|crm|ткп|у нас)\b"
+    r"|\b(?:внутренн\w*|корпоративн\w*)\s+(?:правил|поряд|полити|инструкц|положен|процесс)\w*"
+    r"|\bнаш\w*\s+(?:компани|организаци|поряд|правил|положен|инструкц|политик|процедур|отдел|проект)\w*"
+    r"|\b(?:карточк\w*\s+проект\w*|заявк\w*\s+на\s+\w+|на согласование)\b"
+    r"|\b(?:оформ|заполн|пода|согласу|утвержд)\w*\b[^.!?]{0,32}\b(?:командиров|смет|табел|заявк)\w*"
+)
+_HANDOFF = re.compile(r"\b(?:кто|кому|куда|как)\b[^.!?]{0,60}\b(?:согласу|согласова|эскалир|переда|завод)\w*")
+_LAW_SOURCE = re.compile(
+    r"\b(?:закон(?:[ауеы]|ом|ов|ами|ах)?|законн[аоы]|правомерн[аоы]|законодательств\w*|(?:трудов|гражданск|налогов|семейн|уголовн)\w*\s+кодекс\w*)\b"
+    r"|\b(?:(?:по|согласно)\s+(?:тк|гк|нк|ск|ук|коап)|(?:тк|гк|нк|ск|ук|коап)\s+рф|\d+[‐‑–-]фз)\b"
+)
+_STATUTORY_ISSUE = re.compile(
+    r"\b(?:исков\w*\s+давност\w*|подсудност\w*|срок\w*\s+обжаловани\w*)\b"
+    r"|\b(?:налогов\w*\s+ставк\w*|ставк\w*\s+(?:налог\w*|ндс|ндфл))\b"
+    r"|\b(?:расторг\w*|расторж\w*|отказ\w*|прекра\w*)\b[^.!?]{0,65}\bодносторонн\w*\b"
+)
+_LEGAL_DEFINITION = re.compile(
+    r"\b(?:что (?:такое|считается|признается|относится)|определени\w*)\b"
+    r"[^.!?]{0,75}\b(?:персональн\w*\s+данн\w*|коммерческ\w*\s+тайн\w*|"
+    r"доверенност\w*|правонарушени\w*|авторск\w*\s+прав\w*)\b"
+)
+
+# A family-law term can also be a label in an internal system. Look for a question
+# about entitlement or legal procedure; family vocabulary by itself is insufficient.
+_ALIMONY = re.compile(r"\bалимент(?:ы|ов|ами|ам|ах|н(?:ый|ая|ое|ые|ую|ых|ой|ом|ым|ого|ому|ыми))\b")
+_FAMILY_SUBJECT = re.compile(
+    r"\b(?:(?:установ|устанавл|оспор|оспарива|призн)\w*\s+(?:отцовств|материнств)\w*"
+    r"|брачн\w*\s+договор\w*|(?:расторжен|расторгн)\w*\s+брак\w*|совместно\s+нажит\w*\s+имуществ\w*"
+    r"|родительск\w*\s+(?:прав|обязанност)\w*)\b"
+)
+_FAMILY_RULE = re.compile(
+    r"\b(?:обяза\w*|положен\w*|име\w*\s+право|вправе|требова\w*|основани\w*|установ\w*|устанавл\w*"
+    r"|призн\w*|оспор\w*|оспарива\w*|суд(?:а|у|е|ом|ы|ов|ам|ами|ах|ебн\w*)?|лишени\w*|лишит\w*|восстанов\w*|раздел\w*|делит\w*|делят\w*"
+    r"|достан\w*|растор\w*|заключ\w*|недействительн\w*)\b"
+)
+_MAINTENANCE_RULE = re.compile(
+    r"\b(?:размер\w*|сумм\w*|дол[ияю]|сколько|рассчит\w*|расчет\w*|взыск\w*|взима\w*|удерж\w*"
+    r"|плат(?:ить|ят|ит|им|ил[аи]?|еж\w*)|выплат\w*|получа\w*|задолженност\w*|подать\s+на)\b"
+)
+# Payroll and personnel records are internal workflows even without the word «регламент».
+_PERSONNEL_RECORD = re.compile(
+    r"\b(?:(?:расчетн|платежн|зарплатн)\w*\s+(?:ведомост|листк|листок|систем|программ)\w*"
+    r"|карточк\w*\s+(?:сотрудник|работник)\w*|1[сc])\b"
+)
+_RECORD_WORK = re.compile(
+    r"\b(?:поле|поля|полях|граф\w*|заполн\w*|указ\w*|указыва\w*|отраз\w*|отраж\w*|внести|внос\w*"
+    r"|занести|занос\w*|регистр\w*|зарегистр\w*|провести|провод\w*|ввод\w*|ввести|оформ\w*|сохран\w*)\b"
+)
+
+
+def _family_law(text):
+    alimony = _ALIMONY.search(text)
+    return ((alimony or _FAMILY_SUBJECT.search(text)) and _FAMILY_RULE.search(text)
+            or alimony and _MAINTENANCE_RULE.search(text))
+
+
+def _legal_request(text):
+    return _LAW_SOURCE.search(text) or _STATUTORY_ISSUE.search(text) or _LEGAL_DEFINITION.search(text) or _family_law(text)
+
+
+def _asks_about_work_scope(message, departments):
+    # A department named in a separate introduction isn't the subject of a personal legal question.
+    for sentence in re.findall(r"[^.!?;]+[.!?;]?", message):
+        if sentence.endswith("?") or _legal_request(sentence):
+            if context.department_in(sentence, departments) or context.stage_in(sentence):
+                return True
+    return False
+
+
+def redirect_for(text: str, *, departments=()) -> Literal["legal", "manager"] | None:
+    """Route the request using scope named in the message, independent of the stored employee profile."""
+    q = fold(text)
+    if _legal_request(q):
+        personnel_work = _PERSONNEL_RECORD.search(q) and _RECORD_WORK.search(q)
+        handoff = _HANDOFF.search(q)
+        if handoff and _family_law(q) and re.search(r"\b(?:в суд|суду|приставу|судье)\b", q):
+            # A handoff to a judicial authority can itself be the legal proceeding.
+            handoff = re.search(r"\b(?:бухгалтер\w*|кадров\w*|отдел\w*)\b", q)
+        if not (_INTERNAL_PROCESS.search(q) or personnel_work or handoff or _asks_about_work_scope(q, departments)):
+            return "legal"
+    if operational_request(q):
+        return "manager"
+    return None
 
 
 # Verbs of invention and guessing, matched by stem so any inflection is covered.
