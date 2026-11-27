@@ -33,6 +33,7 @@ from chainlit.server import app as fastapi_app  # noqa: E402
 from reglament_agent.answer import Answer, Outcome, SourceRef, UserContext  # noqa: E402
 from reglament_agent.storage.sources import faq_confirmations, resolve_point  # noqa: E402
 from reglament_agent.chat import render as R  # noqa: E402
+from reglament_agent.chat.aspects import cached_catalog, select_advice  # noqa: E402
 from reglament_agent.chat import session as S  # noqa: E402
 from reglament_agent.chat import start_page  # noqa: E402
 from reglament_agent.admin import routes as admin_routes  # noqa: E402
@@ -260,10 +261,12 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
     await clear_clarification()
     names = R.assign_chip_names(answer)
     faq_dates, near_refs = await asyncio.to_thread(_lookup_answer_extras, answer)
+    advice = select_advice(cached_catalog(), answer, text)
     specs = (
         R.clarify_actions(answer)
         + R.answer_actions(answer, text, message_id)
         + R.near_actions(answer, lambda n: near_refs.get((n.doc_title, n.department, n.point)))
+        + R.law_actions(advice)
     )
     if answer.outcome is Outcome.CLARIFY:
         specs = R.clarify_actions(answer)
@@ -275,7 +278,7 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
     )
     msg = cl.Message(content="", elements=elements)
     # Only verified statements reach the stream; raw model tokens may still lose their basis.
-    for part in R.answer_markdown(answer, names, separate_evidence=bool(evidence), faq_dates=faq_dates).splitlines(keepends=True):
+    for part in R.answer_markdown(answer, names, separate_evidence=bool(evidence), faq_dates=faq_dates, advice=advice).splitlines(keepends=True):
         await msg.stream_token(part)
     msg.actions = _actions(specs)
     await msg.send()
@@ -344,6 +347,17 @@ async def open_source(action: cl.Action) -> None:
         [cl.CustomElement(name="SourcePoint", props=R.point_panel(pv), display="side")]
     )
     await cl.ElementSidebar.set_title(ref.label)
+
+
+@cl.action_callback("open_law")
+async def open_law(action: cl.Action) -> None:
+    catalog = cached_catalog()
+    law = catalog.laws.get(action.payload.get("law_id")) if catalog else None
+    if law is None:
+        await cl.Message(content="Текст статьи недоступен.").send()
+        return
+    await cl.ElementSidebar.set_elements([cl.CustomElement(name="LawPanel", props=R.law_panel(law), display="side")])
+    await cl.ElementSidebar.set_title(law.reference)
 
 
 @cl.action_callback("rate_up")

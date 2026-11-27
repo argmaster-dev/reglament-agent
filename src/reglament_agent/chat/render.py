@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
+from reglament_agent.chat.aspects import Advice, Law
 from reglament_agent.answer import (
     Answer,
     Outcome,
@@ -41,6 +42,8 @@ PRACTICE_TITLE = "Практика применения"
 PRACTICE_LIMIT = 3
 # «п. 2.2 «Название» (Подразделение): текст»: так маршрут называет близкие пункты в тексте итога.
 _NEAR_LINE = re.compile(r"^п\. (\S+) «(.+?)» \((.+?)\): (.*)$")
+ADVICE_TITLE = "На что обратить внимание"
+ADVICE_LABEL = "Не из регламентов — общий совет. Уточните у юриста или в службе качества."
 REFUSAL_LEAD = (
     "В регламентах ответа нет. Я отправил запрос в службу качества по почте, вы в копии. "
     "Ответ придёт на почту и в этот диалог."
@@ -234,6 +237,7 @@ def answer_markdown(
     *,
     separate_evidence=False,
     faq_dates: dict[int, str] | None = None,
+    advice: list[Advice] | None = None,
 ) -> str:
     names = names if names is not None else assign_chip_names(answer)
     summary, near = split_near(answer.summary)
@@ -273,11 +277,46 @@ def answer_markdown(
         parts.append("Близкие пункты: " + " · ".join(f"[{n.label}]" for n in near[:NEAR_LIMIT]))
     if answer.caveat and answer.outcome != Outcome.LOW_CONFIDENCE:
         parts.append(f"> {answer.caveat}")
+    if advice:
+        parts.append(advice_md(advice))
     if answer.ticket:
         parts.append(ticket_note(answer.ticket) if answer.outcome in TICKET_OUTCOMES else ticket_card(answer.ticket))
     if answer.profile_note:
         parts.append(f"_{answer.profile_note}_")
     return "\n\n".join(parts)
+
+
+def advice_md(advice: list[Advice]) -> str:
+    """Отдельный блок после ответа по регламенту. Тексты каталога экранируются, как любой чужой текст."""
+    esc = html.escape
+    bullets = [
+        f"- {esc(item.aspect.text)} ({'; '.join(esc(law.reference) for law in item.laws)})" for item in advice
+    ]
+    return f"**{ADVICE_TITLE}**\n\n_{ADVICE_LABEL}_\n\n" + "\n".join(bullets)
+
+
+def law_actions(advice: list[Advice]) -> list[ActionSpec]:
+    """Кнопка на каждую статью: открывает сохранённый текст в боковой панели."""
+    seen: dict[str, Law] = {}
+    for item in advice:
+        for law in item.laws:
+            seen.setdefault(law.id, law)
+    return [ActionSpec("open_law", f"Статья · {law.reference}", {"law_id": law.id}) for law in seen.values()]
+
+
+def law_panel(law: Law) -> dict:
+    """Что показывает боковая панель статьи: акт, статья, текст, редакция, источник и дата получения."""
+    url = law.source_url if law.source_url.startswith(("http://", "https://")) else ""
+    return {
+        "act": law.act,
+        "article": law.reference,
+        "title": law.title,
+        "text": law.text,
+        "revision": f"редакция {law.revision}",
+        "source_url": url,
+        "retrieved": f"получено {ru_date(law.retrieved)}",
+        "note": ADVICE_LABEL,
+    }
 
 
 def point_panel(pv: PointView) -> dict:
