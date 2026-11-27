@@ -229,6 +229,14 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         if statement not in statements:
             statements.append(statement)
     parts = relevance.coordinated_parts(question)
+    scopes = {part: rule for part in parts or [question]
+              if (rule := relevance.reimbursement_request(part, departments)) is not None}
+    def supports(part, anchor):
+        if part in scopes:
+            return scopes[part].supported_by(anchor.text)
+        return relevance.supports_part(part, anchor, point_terms=point_terms)
+
+    point_terms = None
     compound = bool(parts) and not variants
     # A model can decline an entire question even when one of its citations answers a specific part.
     check_parts = compound and out in (Outcome.ANSWER, Outcome.LOW_CONFIDENCE, Outcome.NO_BASIS)
@@ -246,12 +254,14 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             if check_parts:
                 matched = {
                     part for part in parts
-                    if relevance.supports_part(part, a, point_terms=point_terms)
+                    if supports(part, a)
                     and (not invention or len(relevance.terms(part) & relevance.terms(a.text))
                          >= guards.required_overlap(len(relevance.terms(part))))
                 }
                 enough = bool(matched)
                 covered.update(matched)
+            elif question in scopes and not invention:
+                enough = supports(question, a)
             elif out == Outcome.LOW_CONFIDENCE and not invention:
                 enough = relevance.supports_part(question, a, point_terms=point_terms)
             elif invention:
@@ -301,12 +311,32 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         statements = relevance.companion_sentences(
             relevance.expand_selected(question, statements, items, rows or items.values()), rows
         )
+    # Check the final displayed sentences, including neighbours and inferred external references.
+    # A model-selected accounting rule cannot turn into a reimbursement policy through expansion.
+    if scopes:
+        by_ref.update((a.ref, a) for a in rows)
+        applicable = []
+        covered = set()
+        for st in statements:
+            ref = st.sources[0]
+            matched = {part for part in parts or [question] if supports(part, by_ref[ref])}
+            if matched:
+                applicable.append(st)
+                covered.update(matched)
+            else:
+                claim = claims_by_ref.get(ref) or Claim(st.text, SentenceRef(ref.doc_id, ref.point, ref.sentence))
+                dropped.append(Verdict(claim, False, ["reimbursement_scope_mismatch"]))
+        statements = applicable
+        if not statements:
+            out = Outcome.NO_BASIS
+        elif compound:
+            missing_parts = [part for part in parts if part not in covered]
     if missing_parts and statements:
         # Adjacent referenced sentences or a complete list may cover what the first selected quote omitted.
         by_ref.update((a.ref, a) for a in rows)
         missing_parts = [
             part for part in missing_parts
-            if not any(relevance.supports_part(part, by_ref[s.sources[0]], point_terms=point_terms) for s in statements)
+            if not any(supports(part, by_ref[s.sources[0]]) for s in statements)
         ]
         if missing_parts:
             out = Outcome.LOW_CONFIDENCE
