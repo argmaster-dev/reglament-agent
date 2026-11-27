@@ -34,13 +34,56 @@ _TASK = re.compile(
     r"\b(?:follow[\s-]?up|фоллоу[\s-]?ап|письм\w*|напоминани\w*|сообщени\w*|рассылк\w*)\b"
 )
 
+# Classify the intent (choice for a private recipient or purpose), without a catalog of products.
+_CHOICE = re.compile(
+    r"\b(?:подобрать|подбери(?:те)?|выбрать|выбери(?:те)?|посоветуй(?:те)?|порекомендуй(?:те)?)\b"
+)
+_PRIVATE_PURPOSE = re.compile(
+    r"\b(?:для себя(?: лично)?|для личного пользования)\b"
+    r"|\b(?:для|на|в|к)\s+(?:(?:семейн|личн|домашн)\w*\s+\w+|(?:отдых|поход|пикник|рыбалк)\w*)\b"
+    r"|\b(?:для(?:\s+(?:сво\w*|домашн\w*|взросл\w*))?|мо(?:ему|ей)|сво(?:ему|ей))\s+"
+    r"(?:семь\w*|ребенк\w*|дет(?:ей|ям)|питомц\w*|кот(?:а|у|ят|енк[ау])|кошк\w*|собак\w*|щенк\w*)\b"
+)
+_WORK_RULE = re.compile(
+    r"\b(?:регламент|инструкци|правил|положени|поряд|процедур|смет|закуп|договор|документ|заказчик|сделк"
+    r"|компани|подразделени|служебн|предприяти|финансир|согласовани|сотрудник|клиент)\w*\b"
+    r"|\bпроект(?:а|у|е|ом|ы|ов|ам|ами|ах|н\w*)?\b"
+)
+# These are work subjects even when the reason for arranging them is personal.
+_EMPLOYMENT_SUBJECT = re.compile(r"\b(?:отпуск|отгул|больничн|командировк|дежурств|график)\w*\b")
+_ADVICE_FILLERS = {"мне", "помоги", "помогите", "пожалуйста", "пожалуй",
+                  "прошу", "как", "что", "это", "бы", "ты", "вы", "что-нибудь", "нибудь", "который", "нужно"}
+_FX_APPLICATION = re.compile(
+    r"\b(?:закладывать|фиксировать|подставлять|указать|указывать|применить|применять|использовать|учитывать)\b"
+    r"|\b(?:для|при)\s+(?:(?:предварительн|проектн)\w*\s+)?(?:расчет|оформлени|составлени|заполнени)\w*"
+    r"\s+(?:смет|бюджет|стоимост|цен|предложени|договор|счет)\w*\b"
+)
+
+
+def _personal_choice(q):
+    choice = _CHOICE.search(q)
+    if not choice or _WORK_RULE.search(q):
+        return False
+    purpose = _PRIVATE_PURPOSE.search(q)
+    if not purpose or find_roles(words(q)):
+        return False
+    # «Помоги выбрать для себя» still needs clarification. Require a named subject of the choice.
+    subject = _CHOICE.sub(" ", q[:purpose.start()] + " " + q[purpose.end():])
+    return not _EMPLOYMENT_SUBJECT.search(subject) and any(
+        len(w) > 2 and w not in _ADVICE_FILLERS for w in words(subject)
+    )
+
 
 def operational_request(text):
     """Requests for actual records, market data or external work have no regulatory answer."""
     q = fold(text)
+    if _personal_choice(q):
+        return True
     if _PROCEDURE.search(q):
         return False
-    return bool(_EXCHANGE.search(q) or _TASK.search(q) or (_METRIC.search(q) and _RECORD.search(q)))
+    if _EXCHANGE.search(q):
+        return not _FX_APPLICATION.search(q)
+    return bool(_TASK.search(q) or (_METRIC.search(q) and _RECORD.search(q)))
 
 
 # Verbs of invention and guessing, matched by stem so any inflection is covered.
