@@ -42,6 +42,20 @@ def test_explicit_time_relation_and_named_role_exclude_neighbouring_rules():
     assert list(items.values()) == [right]
 
 
+def test_deadline_uses_the_owner_of_the_timed_action_not_the_recipient_of_a_later_delivery():
+    from reglament_agent.dialog import relevance
+
+    question = "За сколько дней до передачи отчёта заказчику оформляют заявку на аудит?"
+    first = anchor("4.1", "Заявку на аудит оформляют за три рабочих дня до передачи отчёта.")
+    second = anchor("4.2", "Заявку на аудит оформляют за пять дней до передачи отчёта заказчику.")
+    assert relevance.applicable_refs(question, [first, second]) == {first.ref, second.ref}
+    assert not relevance._roles("до передачи отчёта заказчику")
+    owner = relevance._roles("ПА должен оформить заявку")
+    assert owner
+    assert relevance._roles("До передачи отчёта заказчику ПА должен оформить заявку") == owner
+    assert relevance._roles("После передачи отчёта заказчику у ПА есть два дня") == owner
+
+
 def test_deadline_lookalike_in_a_section_cannot_supply_a_different_operation():
     question = "Какой срок подачи заявления на отпуск?"
     right = anchor("4.1", "Работник подаёт заявление на отпуск за пять дней до поездки.")
@@ -103,6 +117,7 @@ def test_deadline_flows_from_scope_to_citations_in_the_indexed_corpus(isolated):
         questions = (
             "За сколько подавать заявку на пресейл?",
             "Какой срок подачи заявки на пресейл?",
+            "За сколько дней до подачи предложения заказчику следует инициировать заявку на пресейл?",
             "Сколько дней даётся на подачу заявки на пресейл?",
             "В течение какого времени подаётся заявка на пресейл?",
             "Подскажите, сколько дней отводится на подачу пресейл-заявки?",

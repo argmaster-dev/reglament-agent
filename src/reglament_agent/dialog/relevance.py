@@ -316,8 +316,27 @@ def _point_key(anchor):
     return anchor.ref.doc_id, anchor.ref.version_no, anchor.ref.point
 
 
+_DUTY_BOUNDARY = re.compile(
+    r"\b(?:у|чтобы|нужно|надо|следует|необходимо|требуется|должен|должна|должны|обязан\w*)\b"
+)
+_PERSONAL_PREDICATE = re.compile(r"(?:должен|должна|должны|обязан\w*|\w+(?:ает|яет|ует|ают|яют|уют|ится|ит))")
+
+
 def _roles(text):
-    return {role for _, _, role in find_roles(words(text))}
+    """A role in the reference event is not necessarily the owner of the timed action."""
+    owners = set()
+    for clause in re.split(r"[,;:.!?\n]", fold(text)):
+        tokens = words(clause)
+        for start, end, role in find_roles(tokens):
+            prefix = " ".join(tokens[:start])
+            event = _REFERENCE_EVENT.split(prefix)[-1]
+            if event != prefix and not _DUTY_BOUNDARY.search(event):
+                # «до передачи отчёта заказчику» is a timing reference. An explicit
+                # predicate starts a main clause even without a separating comma.
+                if end == len(tokens) or not _PERSONAL_PREDICATE.fullmatch(tokens[end]):
+                    continue
+            owners.add(role)
+    return owners
 
 
 @dataclass
