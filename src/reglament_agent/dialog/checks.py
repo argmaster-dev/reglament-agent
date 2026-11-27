@@ -133,6 +133,19 @@ def _dist(a: int, span: tuple[int, int, str]) -> int:
     return min(abs(a - s), abs(a - (e - 1)))
 
 
+_GENITIVE = ("а", "я", "ов", "ев", "ей", "ы")
+
+
+def _object_span(toks, spans, p):
+    """Role span in the genitive that directly follows the verbal noun at position p, if any."""
+    if not toks[p].endswith(("ние", "тие")):
+        return None
+    for s in spans:
+        if s[0] == p + 1 and toks[s[1] - 1].endswith(_GENITIVE):
+            return s
+    return None
+
+
 def _check(claim: Claim, ev: Evidence | None) -> list[str]:
     if ev is None:
         return ["unknown_ref"]
@@ -158,11 +171,18 @@ def _check(claim: Claim, ev: Evidence | None) -> list[str]:
 
     if claim.actor and claim.action and actor_ok and action_ok:
         others = [s for s in all_spans if s[2] != actor_spans[0][2]]
-        bound = any(
-            min(_dist(p, s) for s in actor_spans)
-            <= min((_dist(p, s) for s in others), default=10**9)
-            for p in positions
-        )
+
+        def bound_at(p):
+            # «назначение Архитектора»: a role in the genitive right after a verbal noun is the object of the act,
+            # neither a competing nor a valid performer.
+            # Only for the very noun the claim names, not for a synonym stem that happens to sit there.
+            exact = toks[p][:5] == (words(claim.action) or [""])[0][:5]
+            obj = _object_span(toks, all_spans, p) if exact else None
+            mine = [s for s in actor_spans if s != obj]
+            rivals = [s for s in others if s != obj]
+            return bool(mine) and min(_dist(p, s) for s in mine) <= min((_dist(p, s) for s in rivals), default=10**9)
+
+        bound = any(bound_at(p) for p in positions)
         if not bound:
             reasons.append("actor_not_bound")
 

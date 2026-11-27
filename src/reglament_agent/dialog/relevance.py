@@ -43,6 +43,19 @@ _STOP = QUESTION_WORDS | {
 }
 _ADVANCE = re.compile(r"за сколько|заранее|за какое время|за какой срок")
 _INTERVAL = re.compile(r"\bза\b.{0,40}\bдо\b")
+# A question about a time limit, however it is phrased (how far ahead, how long, until when, how many days).
+_DEADLINE_ASK = re.compile(
+    r"срок|за сколько|заранее|за како[ей] (?:время|срок)|в течение како|как долго|как быстро|до како\w* (?:числа|момента)"
+    r"|не позднее како|не раньше како|сколько\s+(?:\w+\s+)?(?:дн|дне|недел|час|месяц|времени|суток)|когда\s+(?:нужно|надо|следует|необходимо|должн|можно|подава|сда)"
+)
+_UNIT = r"(?:дн|недел|час|месяц|минут|суток|квартал)"
+_NUMBER = r"(?:\d+|одн\w*|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|двадцать|тридцать)"
+_TIME_VALUE = re.compile(
+    rf"{_NUMBER}\s+(?:(?:рабоч|календарн)\w*\s+)?{_UNIT}|в течение|не позднее|не менее чем за|заранее|в срок"
+)
+_DEADLINE_WORDS = {word_key(w) for w in (
+    "срок срока сроки время времени день дня дней недели неделя час часов нужно надо следует необходимо "
+    "должен должна можно течение позднее раньше долго быстро сколько какой какого когда числа момента".split())}
 _SIGN = re.compile(r"подпис|заключ")
 _SIGN_ROLE = re.compile(r"подпис(?:ание|ывает|ать|ыва)|заключ(?:ение|ает|ить)")
 _CONTRACTOR = re.compile(r"(?:суб)?подрядчик|внешн\w* исполнител")
@@ -195,6 +208,26 @@ def score(question, anchor):
     return value + 2 / (1 + anchor.rank)
 
 
+def asks_deadline(q):
+    return bool(_DEADLINE_ASK.search(fold(q)))
+
+
+def deadline_subject(question, department=None):
+    scoped = {word_key(word) for word in words(department)} if department else set()
+    return terms(question) - _DEADLINE_WORDS - scoped
+
+
+def states_deadline(question, anchor, *, department=None, point_terms=None):
+    """A sentence with a time value in a point that concerns the subject the question names."""
+    if not _TIME_VALUE.search(fold(anchor.text)):
+        return False
+    keys = deadline_subject(question, department)
+    own = terms(anchor.text + " " + anchor.context)
+    # A note or exception of a point rarely repeats the subject of its heading sentence: the point supplies it.
+    whole = own | (point_terms or {}).get((anchor.ref.doc_id, anchor.ref.point), set())
+    return bool(keys) and len(keys & whole) >= min(2, len(keys))
+
+
 def applicable_refs(question, rows, *, department=None):
     """Only clarify if several scopes have concrete evidence for the requested operation."""
     q = fold(question)
@@ -202,11 +235,25 @@ def applicable_refs(question, rows, *, department=None):
     if asks_amount(q):
         # The amount for an individual transaction also depends on its inputs.
         return set()
-    if _ADVANCE.search(q) or re.search(r"кто .*подпис|кто .*заключ", q):
+    if asks_deadline(q):
+        # The wording of a time-limit question must not decide whether several departments are compared.
+        point_terms = {}
+        for a in rows:
+            point_terms.setdefault((a.ref.doc_id, a.ref.point), set()).update(terms(a.text))
+        relevant = [
+            a for a in rows
+            if states_deadline(q, a, department=department, point_terms=point_terms)
+            or (_ADVANCE.search(q) and matches_request(q, a))
+        ]
+    elif _ADVANCE.search(q) or re.search(r"кто .*подпис|кто .*заключ", q):
         relevant = [a for a in rows if matches_request(q, a)]
     elif re.search(r"без\s+\w+", q):
         keys = terms(q) - scoped_terms
-        relevant = [a for a in rows if len(keys & terms(a.text + " " + a.context)) >= 2]
+        found = {id(a): keys & terms(a.text + " " + a.context) for a in rows}
+        # Two shared common words do not make a sentence about the condition the question names: the words of
+        # the «без …» phrase itself must all be there.
+        phrase = {k for k in terms(" ".join(re.search(r"без\s+((?:\w+\s*){1,2})", q)[1].split())) if k in keys}
+        relevant = [a for a in rows if len(found[id(a)]) >= 2 and phrase <= found[id(a)]]
     else:
         keys = terms(q) - scoped_terms
         relevant = [a for a in rows if keys and keys <= terms(a.text)]
