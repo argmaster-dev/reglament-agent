@@ -92,3 +92,45 @@ def test_profile_department_without_basis_points_to_other_department(isolated):
     reply = asyncio.run(route.answer(user, "Кто создаёт акт от поставщика в ТД?", _status))
     assert reply.outcome == Outcome.NO_BASIS
     assert "п. 2.2" in reply.summary and "ДБРЦТ" in reply.summary
+
+
+VERBS = ["создаёт", "оформляет", "формирует", "подаёт", "готовит", "заводит"]
+OTHER_ACT = "Бухгалтер оформляет согласование спецификации с поставщиком."
+
+
+def test_object_noun_is_required_whatever_the_verb():
+    near = "Менеджер размещает акт вместе с оценкой Поставщика."  # both words, but not «акт от поставщика»
+    rows = [_anchor("7.1", OTHER_ACT), _anchor("7.2", FROM_SUPPLIER, rank=1), _anchor("7.3", near, rank=2)]
+    for verb in VERBS:
+        picked = [a.ref.point for a in vocabulary(f"Кто {verb} акт от поставщика?", rows).values()]
+        assert picked == ["7.2"], verb
+
+
+def test_department_clarification_does_not_depend_on_the_verb(isolated):
+    from reglament_agent.dialog import state
+
+    _, dsn = isolated
+    points = [_hit("ТД", "1.1", ON_SUPPLIER), _hit("ДБРЦТ", "2.2", "Менеджер закупок формирует акт на поставщика."),
+              _hit("ДБРЦТ", "2.3", OTHER_ACT)]
+
+    def search(conn, question, vector, *, department=None, **kw):
+        return Candidates([p for p in points if department in (None, p.department)], [])
+
+    for n, verb in enumerate(VERBS):
+        route = Dialog(dsn, Model(), search=search, shortlist=lambda *a, **k: points)
+        user = UserContext(f"verb{n}@example.org", "employee", "chat", f"v{n}")
+        asked = asyncio.run(route.answer(user, f"Кто {verb} акт от поставщика?", _status))
+        assert asked.outcome == Outcome.CLARIFY, verb
+        asyncio.run(route.profiles.run(lambda conn: state.update_profile(conn, user.email, department="ТД")))
+        user.message_id = f"w{n}"
+        chosen = asyncio.run(route.answer(user, f"Кто {verb} акт от поставщика?", _status))
+        assert chosen.outcome == Outcome.NO_BASIS and "п. 1.1" in chosen.summary, verb
+
+
+def test_later_sentence_continues_the_object_of_its_point():
+    follow = Anchor(SourceRef("synthetic", "Приёмка", "Отдел склада", 1, "8.1", 1),
+                    "Затем документ передаётся директору.", "Бухгалтер создаёт акт на поставщика.", 0)
+    assert relevance.qualifier_conflict(Q, follow)
+    same = Anchor(SourceRef("synthetic", "Приёмка", "Отдел склада", 1, "8.2", 1),
+                  "Затем документ передаётся директору.", "Менеджер создаёт акт от поставщика.", 0)
+    assert not relevance.qualifier_conflict(Q, same) and not relevance.lacks_requested_object(Q, same)

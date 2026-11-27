@@ -174,9 +174,36 @@ def _conflicts(question, text):
     return None
 
 
+def lacks_requested_object(question, anchor):
+    """An executor question names «noun на/от/для X». The sentence (or the first sentence of its point) must mention
+    the noun, whatever verb it uses. «От X» names who originates the object, not a place or a stage, so only the
+    very phrase «noun от X» establishes it; «на/для X» often only scopes the question (a stage, a department)."""
+    wanted = request_qualifiers(question)
+    if not wanted:
+        return False
+    for noun, prep, head in wanted:
+        for text in (anchor.text, anchor.context):
+            present, found = _sentence_qualifiers(text, noun)
+            if present and (prep != "от" or (prep, head) in found):
+                return False
+    return True
+
+
+_VERB_SHAPE = re.compile(r"^\w{4,}(?:ет|ит|ют|ут|ят|ат|ть|ться)$")
+
+
+def question_verbs(question):
+    """Keys of the action verbs of an executor question: the performer is sought, not one particular verb."""
+    q = fold(question)
+    if not re.search(r"\bкто\b", q):
+        return set()
+    return {word_key(w) for w in words(q) if _VERB_SHAPE.match(w) and w not in _STOP}
+
+
 def qualifier_conflict(question, anchor):
     """The sentence names the requested noun for another object or direction than the question asks."""
-    return _conflicts(question, anchor.text) is not None
+    # A later sentence of a point continues the object named in its first sentence.
+    return _conflicts(question, anchor.text) is not None or _conflicts(question, anchor.context) is not None
 
 
 def near_basis(question, rows, limit=3):
@@ -212,7 +239,7 @@ def uncovered_parts(question, statements, rows):
 
 
 def _matches_part(question, anchor):
-    if qualifier_conflict(question, anchor):
+    if qualifier_conflict(question, anchor) or lacks_requested_object(question, anchor):
         return False
     q, sentence, context = fold(question), fold(anchor.text), fold(anchor.context)
     if _ADVANCE.search(q):
@@ -317,7 +344,7 @@ def applicable_refs(question, rows, *, department=None):
         phrase = {k for k in terms(" ".join(re.search(r"без\s+((?:\w+\s*){1,2})", q)[1].split())) if k in keys}
         relevant = [a for a in rows if len(found[id(a)]) >= 2 and phrase <= found[id(a)]]
     else:
-        keys = terms(q) - scoped_terms
+        keys = terms(q) - scoped_terms - question_verbs(q)
         relevant = [a for a in rows if keys and keys <= terms(a.text)]
     return {a.ref for a in relevant}
 
