@@ -10,6 +10,25 @@ from reglament_agent.ingest.parser import load_cards
 from .lexicon import find_roles, fold, glossary, word_key, words
 
 
+_PARENTHETICAL = re.compile(r"\b([A-Za-zА-Яа-яЁё]{2,12})[ \t]*\(([^()\n]{2,180})\)")
+_LINKING_WORDS = {"и", "в", "во", "на", "с", "со", "к", "для", "по"}
+
+
+def _scope_words(text):
+    """Use the employee's own expansion when interpreting a parenthesized abbreviation."""
+    def expand(match):
+        abbreviation, expansion = match.groups()
+        items = words(expansion)
+        if len(items) >= 2:
+            initials = "".join(word[0] for word in items)
+            short = "".join(word[0] for word in items if word not in _LINKING_WORDS)
+            if fold(abbreviation) in (initials, short):
+                return expansion
+        return match.group()
+
+    return words(_PARENTHETICAL.sub(expand, text) if "(" in text else text)
+
+
 def _aliases(dept):
     parts = words(dept)
     equivalent = [parts]
@@ -35,7 +54,7 @@ def _department_spans(keys, department):
 
 def departments_in(text, departments):
     """Every known department the text names, in order of appearance."""
-    keys = [word_key(w) for w in words(text)]
+    keys = [word_key(w) for w in _scope_words(text)]
     found = []
     for dept in departments:
         span = next(_department_spans(keys, dept), None)
@@ -47,7 +66,7 @@ def departments_in(text, departments):
 
 
 def department_in(text, departments):
-    keys = [word_key(w) for w in words(text)]
+    keys = [word_key(w) for w in _scope_words(text)]
     return next((dept for dept in sorted(departments, key=len, reverse=True)
                  if next(_department_spans(keys, dept), None) is not None), None)
 
@@ -63,7 +82,7 @@ def configured_departments():
 
 def scoped_departments_in(text, catalog):
     """Identify a named unit used as a scope, including coordinated scopes like «в А и Б»."""
-    tokens = words(text)
+    tokens = _scope_words(text)
     markers = {"в", "во", "для", "у"}
     if not (markers | {"по", "согласно"}).intersection(tokens):
         return []

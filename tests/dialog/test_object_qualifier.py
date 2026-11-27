@@ -9,6 +9,7 @@ from reglament_agent.dialog.grounding import Anchor, assemble, model_ref, vocabu
 from reglament_agent.dialog.route import Dialog
 from reglament_agent.storage.retrieve import Candidates
 from reglament_agent.storage.sources import Hit
+from tests.dialog.test_quality_rules import seed
 
 Q = "Кто создаёт акт от поставщика?"
 ON_RECEIPT = "Кладовщик создаёт акт на приёмку товара."
@@ -126,8 +127,9 @@ async def _status(_):
 
 
 def test_profile_department_without_basis_points_to_other_department(isolated):
-    _, dsn = isolated
+    conn, dsn = isolated
     points = [_hit("ТД", "1.1", ON_RECEIPT), _hit("ДБРЦТ", "2.2", ON_SUPPLIER)]
+    seed(conn, {point.doc_id: (point.department, [point.text]) for point in points})
 
     def search(conn, question, vector, *, department=None, **kw):
         return Candidates([p for p in points if department in (None, p.department)], [])

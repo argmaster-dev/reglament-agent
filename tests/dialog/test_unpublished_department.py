@@ -65,3 +65,25 @@ def test_named_units_only_restrict_when_used_as_scope():
     assert context.scoped_departments_in("Как указать ИБ в ТЗ?", catalog) == []
     assert context.scoped_departments_in("Кто в ТД согласует договор с Дирекцией ИБ?", catalog) == ["Техническая дирекция"]
     assert context.scoped_departments_in("Кто отвечает в ТД и ИБ?", catalog) == ["Техническая дирекция", "Дирекция ИБ"]
+
+
+@pytest.mark.parametrize("td_published", [False, True])
+def test_employee_supplied_expansion_controls_scope(isolated, td_published):
+    conn, dsn = isolated
+    departments = ["Дирекция ИБ", "Техническая дирекция"] if td_published else ["Дирекция ИБ"]
+    for index, department in enumerate(departments):
+        card = DocumentCard(f"manual-{index}", "Учёт оборудования", department, ("project",), "manual.docx")
+        publish(conn, card, docx(card.title, "1. Учёт", "1.1. Оборудование учитывают в штуках."),
+                FakeEmbedder(), "expert")
+    route = Dialog(dsn, FirstSource())
+    subject = "Какие единицы измерения указать в ТД (технической документации) на оборудование"
+    for index, (question, expected) in enumerate([
+        (subject + "?", None),
+        (subject + " для Дирекции ИБ?", "Дирекция ИБ"),
+        ("Кто выдаёт оборудование в ТД (Технической дирекции)?", "Техническая дирекция"),
+    ]):
+        user = UserContext("employee@example.org", "employee", f"expansion-{index}", str(index))
+        result = asyncio.run(route.answer(user, question, status))
+        assert result.scope.department == expected
+        steps, = conn.execute("SELECT trace->'steps' FROM dialog_requests WHERE id=%s", (result.answer_id,)).fetchone()
+        assert ("unpublished_department" in steps) == (expected == "Техническая дирекция" and not td_published)
