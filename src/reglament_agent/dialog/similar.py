@@ -10,23 +10,19 @@ import math
 import os
 import re
 
+from reglament_agent.conditions import quantity_conditions
+
 from . import context, state
 from .lexicon import fold, words
 
 DEFAULT_MIN_COSINE = 0.97
 CANDIDATES = 200  # newest entries of one context that are compared
 
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
-_NUMBER_WORD = re.compile(
-    r"(?:ноль|нуля|один|одн\w*|дв[аеу]|двух\w*|тр[иё]х?|трем|тремя|четыр\w*|пят\w*|шест\w*|сем[ьи]|семью|"
-    r"восем\w*|девят\w*|десят\w*|одиннадцат\w*|двенадцат\w*|двадцат\w*|тридцат\w*|сорок\w*|"
-    r"сто|ста|сотн\w*|тысяч\w*|миллион\w*|перв\w*|втор\w*|трет\w*|четв[её]рт\w*)"
-)
 _NEGATIONS = {"не", "ни", "нет", "без", "безо", "нельзя", "запрещено", "запрещается", "никогда", "никто", "ничего"}
 _QUESTION_WORDS = {
     "кто": "кто", "кого": "кто", "кому": "кто", "кем": "кто", "ком": "кто",
     "когда": "когда", "сколько": "сколько", "скольки": "сколько", "скольким": "сколько",
-    "где": "где", "куда": "где", "откуда": "где",
+    "где": "где", "куда": "куда", "откуда": "откуда",
     "как": "как", "какой": "какой", "какая": "какой", "какое": "какой", "какие": "какой", "каких": "какой",
     "какого": "какой", "какую": "какой", "каком": "какой", "какому": "какой",
     "почему": "почему", "зачем": "зачем", "чей": "чей", "что": "что", "чем": "что", "чего": "что",
@@ -43,7 +39,7 @@ def settings(env=None):
         threshold = float(env.get("CACHE_SIMILAR_MIN_COSINE", DEFAULT_MIN_COSINE))
     except ValueError:
         threshold = DEFAULT_MIN_COSINE
-    return enabled, threshold
+    return enabled, threshold if 0 < threshold <= 1 else DEFAULT_MIN_COSINE
 
 
 def cosine(a, b):
@@ -57,10 +53,8 @@ def cosine(a, b):
 def signature(text, departments):
     """What must not differ between two questions for one answer to serve both."""
     tokens = words(text)
-    numbers = {n.replace(",", ".") for n in _NUMBER.findall(text)}
-    numbers |= {t for t in tokens if _NUMBER_WORD.fullmatch(t)}
     return {
-        "numbers": frozenset(numbers),
+        "quantities": quantity_conditions(text),
         "negations": frozenset(t for t in tokens if t in _NEGATIONS),
         "departments": frozenset(context.departments_in(text, departments)),
         "stage": context.stage_in(text) or ("presale" if re.search(r"пресейл|предпродаж", fold(text)) else None),
@@ -75,7 +69,7 @@ def same_condition(a, b, departments):
 
 def find(conn, ctx, question, vector, departments, min_cosine):
     """The best cached answer of the same context for a similar question, as (answer, request id, cosine)."""
-    if not vector:
+    if not vector or not 0 < min_cosine <= 1:
         return None
     rows = conn.execute(
         "SELECT answer, id, restated, cache_embedding FROM dialog_requests "
@@ -86,7 +80,7 @@ def find(conn, ctx, question, vector, departments, min_cosine):
     best = None
     for answer, ident, restated, stored in rows:
         score = cosine(vector, stored)
-        if score < min_cosine or (best and score <= best[0]):
+        if not math.isfinite(score) or score < min_cosine or (best and score <= best[0]):
             continue
         if not same_condition(question, restated, departments):
             continue

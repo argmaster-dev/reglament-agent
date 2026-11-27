@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import json
 import logging
 import math
 import os
@@ -11,8 +12,11 @@ import re
 import statistics
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 from psycopg.rows import dict_row
+
+from reglament_agent.conditions import quantity_conditions
 
 log = logging.getLogger(__name__)
 
@@ -208,14 +212,11 @@ def group_hash(key: str) -> str:
     return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 
-def repeated(rows: list[dict]) -> list[dict]:
-    groups: dict[str, list[dict]] = defaultdict(list)
-    for r in rows:
-        key = normalize(r["restated"] or r["question"]) or normalize(r["question"])
-        if key:
-            groups[key].append(r)
-    out = [{"key": k, "hash": group_hash(k), "count": len(v), "example": v[0]["question"], "users": len({x["user_email"] for x in v}),
-            "variants": sorted({x["question"] for x in v})[:5]} for k, v in groups.items() if len(v) >= 2]
+def repeated(rows: list[dict], dept_vocab: frozenset[str] = frozenset()) -> list[dict]:
+    groups = _exact_groups(rows, dept_vocab)
+    out = [{"key": k.normalized, "hash": _group_id(k, dept_vocab), "count": len(v), "example": v[0]["question"],
+            "users": len({x["user_email"] for x in v}), "variants": sorted({x["question"] for x in v})[:5]}
+           for k, v in groups.items() if len(v) >= 2]
     return sorted(out, key=lambda g: (-g["count"], g["key"]))
 
 
@@ -228,7 +229,6 @@ _QWORDS = {"кто": "кто", "кого": "кто", "кому": "кто", "ко
 # основы слов-подразделений; дополняются названиями подразделений из таблицы documents
 _DEPT_STEMS = ("дирекц", "департамент", "отдел", "служб", "бухгалтер", "юридич", "юрист", "закуп", "кадр",
                "безопасност", "казначейств", "логистик", "финанс", "управлени", "комплаенс", "охран")
-_NUM = re.compile(r"\d+(?:[.,]\d+)?")
 
 
 def group_min_cosine() -> float:
@@ -246,10 +246,41 @@ def _words(text: str) -> list[str]:
 def guard_signature(text: str, dept_vocab: frozenset[str] = frozenset()) -> tuple:
     """Mandatory conditions of a question: two questions may be grouped only if all of them coincide."""
     words = _words(text)
-    nums = frozenset(n.replace(",", ".") for n in _NUM.findall(text or ""))
-    depts = frozenset(w for w in words if w in dept_vocab or any(w.startswith(st) for st in _DEPT_STEMS))
-    return (nums, frozenset(w for w in words if w in _NEGATIONS), depts,
-            frozenset(_QWORDS[w] for w in words if w in _QWORDS))
+    departments = {w for w in words if w in dept_vocab or any(w.startswith(st) for st in _DEPT_STEMS)}
+    return (quantity_conditions(text), tuple(sorted(set(words) & _NEGATIONS)), tuple(sorted(departments)),
+            tuple(sorted({_QWORDS[w] for w in words if w in _QWORDS})))
+
+
+class _GroupKey(NamedTuple):
+    normalized: str
+    conditions: tuple
+
+
+def _group_question(row: dict) -> str:
+    return row["restated"] if normalize(row["restated"]) else row["question"]
+
+
+def _exact_groups(rows: list[dict], dept_vocab: frozenset[str]) -> dict[_GroupKey, list[dict]]:
+    groups = defaultdict(list)
+    for row in rows:
+        question = _group_question(row)
+        normalized = normalize(question)
+        if not normalized:
+            continue
+        signature = guard_signature(question, dept_vocab)
+        original = row["question"]
+        original_signature = signature if original == question else guard_signature(original, dept_vocab)
+        # A restatement may supply context or omit a condition present in the original.
+        groups[_GroupKey(normalized, (signature, original_signature))].append(row)
+    return groups
+
+
+def _group_id(key: _GroupKey, dept_vocab: frozenset[str]) -> str:
+    normalized, conditions = key
+    normalized_signature = guard_signature(normalized, dept_vocab)
+    if conditions == (normalized_signature, normalized_signature):
+        return group_hash(normalized)  # preserve existing links for losslessly normalized questions
+    return group_hash(json.dumps(key, ensure_ascii=False, separators=(",", ":")))
 
 
 def dept_vocabulary(conn) -> frozenset[str]:
@@ -269,10 +300,10 @@ def _clean(text: str) -> str:
     return " ".join(_words(text))
 
 
-def _group_dict(key: str, members: list[dict]) -> dict:
+def _group_dict(key: _GroupKey, members: list[dict], dept_vocab: frozenset[str]) -> dict:
     out = Counter(outcome(r) for r in members)
     ticket = sum(1 for r in members if n_tickets(r) > 0)
-    return {"key": key, "hash": group_hash(key), "count": len(members), "example": members[0]["question"],
+    return {"key": key.normalized, "hash": _group_id(key, dept_vocab), "count": len(members), "example": members[0]["question"],
             "users": len({x["user_email"] for x in members}),
             "variants": sorted({x["question"] for x in members})[:5],
             "n_variants": len({x["question"] for x in members}),
@@ -286,30 +317,25 @@ def repeated_groups(rows: list[dict], embedder=None, *, min_cosine: float | None
     """Groups of similar questions (>= 2 requests). Exact groups (`repeated`) are merged greedily by cosine
     similarity of their embeddings, but only when the mandatory conditions (numbers, negations, departments,
     question word) coincide. Any embedder failure -> plain exact grouping."""
-    exact: dict[str, list[dict]] = defaultdict(list)
-    for r in rows:
-        key = normalize(r["restated"] or r["question"]) or normalize(r["question"])
-        if key:
-            exact[key].append(r)
+    exact = _exact_groups(rows, dept_vocab)
     units = sorted(exact.items(), key=lambda kv: (-len(kv[1]), kv[0]))  # largest first: it becomes the representative
-    clusters: list[tuple[str, list[dict]]] = [(k, list(v)) for k, v in units]
+    clusters: list[tuple[_GroupKey, list[dict]]] = [(k, list(v)) for k, v in units]
     if embedder is not None and len(units) > 1:
         try:
             threshold = group_min_cosine() if min_cosine is None else min_cosine
             cache = {} if cache is None else cache
-            text_of = {k: _clean(v[0]["restated"] or v[0]["question"]) for k, v in units}
+            text_of = {k: _clean(_group_question(v[0])) for k, v in units}
             todo = sorted({t for t in text_of.values() if t not in cache})
             if todo:
                 vectors = embedder.embed(todo)
                 if len(vectors) != len(todo):
                     raise ValueError("embedder returned a wrong number of vectors")
                 cache.update(zip(todo, vectors))
-            sig = {k: guard_signature(v[0]["restated"] or v[0]["question"], dept_vocab) for k, v in units}
             clusters = []
-            reps: list[str] = []
+            reps: list[_GroupKey] = []
             for k, v in units:
                 for i, rep in enumerate(reps):
-                    if sig[k] == sig[rep] and _cosine(cache[text_of[k]], cache[text_of[rep]]) >= threshold:
+                    if k.conditions == rep.conditions and _cosine(cache[text_of[k]], cache[text_of[rep]]) >= threshold:
                         clusters[i][1].extend(v)
                         break
                 else:
@@ -322,20 +348,20 @@ def repeated_groups(rows: list[dict], embedder=None, *, min_cosine: float | None
     for key, members in clusters:
         if len(members) >= 2:
             members.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
-            out.append(_group_dict(key, members))
+            out.append(_group_dict(key, members, dept_vocab))
     return sorted(out, key=lambda g: (-g["count"], g["key"]))
 
 
 def build_groups(conn, rows: list[dict]) -> list[dict]:
     """Semantic groups with the embedder chosen by the environment (EMBEDDER); exact grouping on any failure."""
+    vocab = dept_vocabulary(conn)
     try:
         from reglament_agent.ingest.embedding import open_embedder
-        vocab = dept_vocabulary(conn)
         with open_embedder() as emb:
             return repeated_groups(rows, emb, dept_vocab=vocab)
     except Exception:  # noqa: BLE001
         log.warning("analytics: embedder unavailable, exact grouping used", exc_info=True)
-        return repeated_groups(rows)
+        return repeated_groups(rows, dept_vocab=vocab)
 
 
 def unanswered(rows: list[dict]) -> dict[str, list[dict]]:
