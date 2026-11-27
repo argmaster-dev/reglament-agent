@@ -15,6 +15,8 @@ text = """1. Договор считается заключенным, если 
 revision = "ред. от 10.06.2026, с изм. от 22.10.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_5142/adbefccc8d538d42038164bb81d886c76e719d63/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 08.12.1994, № 238-239; Собрание законодательства РФ, 05.12.1994, № 32, ст. 3301"
+official_url = ""
 
 [[law]]
 id = "gk-435"
@@ -30,6 +32,8 @@ text = """1. Офертой признается адресованное одн
 revision = "ред. от 10.06.2026, с изм. от 22.10.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_5142/892c4b89172aef07157d5d6c0e5dcde6e37b3a83/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 08.12.1994, № 238-239; Собрание законодательства РФ, 05.12.1994, № 32, ст. 3301"
+official_url = ""
 
 [[law]]
 id = "gk-437"
@@ -43,6 +47,8 @@ text = """1. Реклама и иные предложения, адресова
 revision = "ред. от 10.06.2026, с изм. от 22.10.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_5142/1a77b2ec302d6a384a228dff59e53680ccffaaca/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 08.12.1994, № 238-239; Собрание законодательства РФ, 05.12.1994, № 32, ст. 3301"
+official_url = ""
 
 [[law]]
 id = "gk-395"
@@ -64,6 +70,8 @@ text = """1. В случаях неправомерного удержания �
 revision = "ред. от 10.06.2026, с изм. от 22.10.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_5142/93383099dc4f06165d8d4aac4eeb159db4f6da3d/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 08.12.1994, № 238-239; Собрание законодательства РФ, 05.12.1994, № 32, ст. 3301"
+official_url = ""
 
 [[law]]
 id = "gk-450"
@@ -85,6 +93,8 @@ text = """1. Изменение и расторжение договора во�
 revision = "ред. от 10.06.2026, с изм. от 22.10.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_5142/c231822b9f355b8c760b3389e80269f0d987870e/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 08.12.1994, № 238-239; Собрание законодательства РФ, 05.12.1994, № 32, ст. 3301"
+official_url = ""
 
 [[law]]
 id = "gk-452"
@@ -99,6 +109,8 @@ text = """1. Соглашение об изменении или о растор
 revision = "ред. от 10.06.2026, с изм. от 22.10.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_5142/ca10f0c19da23330c9d92dacb11df0c92444bca3/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 08.12.1994, № 238-239; Собрание законодательства РФ, 05.12.1994, № 32, ст. 3301"
+official_url = ""
 
 [[law]]
 id = "gk-506"
@@ -111,6 +123,8 @@ text = """По договору поставки поставщик-продав
 revision = "ред. от 24.06.2025, с изм. от 09.06.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_9027/f84987de733d13299eccd0532f4a45b13509548f/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 06, 07, 08.02.1996, № 23, 24, 25; Собрание законодательства РФ, 29.01.1996, № 5, ст. 410"
+official_url = ""
 
 [[law]]
 id = "gk-702"
@@ -124,6 +138,8 @@ text = """1. По договору подряда одна сторона (по�
 revision = "ред. от 24.06.2025, с изм. от 09.06.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_9027/416441e14a600610e2ba0765f72cb72c290cdc3c/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 06, 07, 08.02.1996, № 23, 24, 25; Собрание законодательства РФ, 29.01.1996, № 5, ст. 410"
+official_url = ""
 
 [[law]]
 id = "gk-706"
@@ -140,6 +156,8 @@ text = """1. Если из закона или договора подряда �
 revision = "ред. от 24.06.2025, с изм. от 09.06.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_9027/dae08bc5ec696109c1e4d943d3e6a45896e1f1ac/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 06, 07, 08.02.1996, № 23, 24, 25; Собрание законодательства РФ, 29.01.1996, № 5, ст. 410"
+official_url = ""
 
 [[law]]
 id = "gk-711"
@@ -153,6 +171,8 @@ text = """1. Если договором подряда не предусмот�
 revision = "ред. от 24.06.2025, с изм. от 09.06.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_9027/46561f5271883fcf47f3e9859d3a59eb56bfcd96/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 06, 07, 08.02.1996, № 23, 24, 25; Собрание законодательства РФ, 29.01.1996, № 5, ст. 410"
+official_url = ""
 
 [[law]]
 id = "gk-716"
@@ -170,6 +190,8 @@ text = """1. Подрядчик обязан немедленно предупр
 revision = "ред. от 24.06.2025, с изм. от 09.06.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_9027/0a0cc8dfd273d410f517bdd9e782b401d8b1db57/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 06, 07, 08.02.1996, № 23, 24, 25; Собрание законодательства РФ, 29.01.1996, № 5, ст. 410"
+official_url = ""
 
 [[law]]
 id = "gk-720"
@@ -188,6 +210,8 @@ text = """1. Заказчик обязан в сроки и в порядке, �
 revision = "ред. от 24.06.2025, с изм. от 09.06.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_9027/48e02faf6357243a0fa7806dd7ca2dc2493301a8/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 06, 07, 08.02.1996, № 23, 24, 25; Собрание законодательства РФ, 29.01.1996, № 5, ст. 410"
+official_url = ""
 
 [[law]]
 id = "gk-779"
@@ -201,6 +225,8 @@ text = """1. По договору возмездного оказания ус�
 revision = "ред. от 24.06.2025, с изм. от 09.06.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_9027/a397ec4ca2dd0c96c211ee4e4436628f0cf581a3/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 06, 07, 08.02.1996, № 23, 24, 25; Собрание законодательства РФ, 29.01.1996, № 5, ст. 410"
+official_url = ""
 
 [[law]]
 id = "gk-1235"
@@ -232,6 +258,8 @@ text = """1. По лицензионному договору одна стор�
 revision = "ред. от 23.07.2025 (с изм. и доп., вступ. в силу с 04.01.2026)"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_64629/640cbca01ece35bc535ffe5e6d96b7988d2daf6b/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 22.12.2006, № 289; Парламентская газета, 21.12.2006, № 214-215; Собрание законодательства РФ, 25.12.2006, № 52 (часть I), ст. 5496"
+official_url = ""
 
 [[law]]
 id = "nk-54-1"
@@ -250,6 +278,8 @@ text = """(введена Федеральным законом от 18.07.2017 
 revision = "ред. от 04.08.2026 (с изм. и доп., вступ. в силу с 01.10.2026)"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_19671/456468126824fd90201c25b3613aed69768da607/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 06.08.1998, № 148-149; Собрание законодательства РФ, 03.08.1998, № 31, ст. 3824"
+official_url = ""
 
 [[law]]
 id = "nk-169"
@@ -418,6 +448,8 @@ text = """1. Счет-фактура является документом, сл
 revision = "ред. от 04.08.2026 (с изм. и доп., вступ. в силу с 01.10.2026)"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_28165/66291cb6e9896ddcd8aa96ba17cbcba10085683d/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 10.08.2000, № 153-154; Парламентская газета, 10.08.2000, № 151-152; Собрание законодательства РФ, 07.08.2000, № 32, ст. 3340"
+official_url = ""
 
 [[law]]
 id = "nk-252"
@@ -453,6 +485,8 @@ text = """1. В целях настоящей главы налогоплате�
 revision = "ред. от 04.08.2026 (с изм. и доп., вступ. в силу с 01.10.2026)"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_28165/ef9b3e2f8e3046127b2ef57fccf5141b694e2138/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 10.08.2000, № 153-154; Парламентская газета, 10.08.2000, № 151-152; Собрание законодательства РФ, 07.08.2000, № 32, ст. 3340"
+official_url = ""
 
 [[law]]
 id = "tk-99"
@@ -490,6 +524,8 @@ text = """(в ред. Федерального закона от 30.06.2006 N 90
 revision = "ред. от 25.05.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_34683/ff4c79fea2e01934abc407be13af36cc7a15054c/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 31.12.2001, № 256; Собрание законодательства РФ, 07.01.2002, № 1 (часть I), ст. 3; Парламентская газета, 05.01.2002, № 2-5"
+official_url = ""
 
 [[law]]
 id = "tk-113"
@@ -515,6 +551,8 @@ text = """(в ред. Федерального закона от 30.06.2006 N 90
 revision = "ред. от 25.05.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_34683/7d22494d1486cfffbc4efaf51dc2e5af86ffb8f9/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 31.12.2001, № 256; Собрание законодательства РФ, 07.01.2002, № 1 (часть I), ст. 3; Парламентская газета, 05.01.2002, № 2-5"
+official_url = ""
 
 [[law]]
 id = "tk-153"
@@ -541,6 +579,8 @@ text = """(в ред. Федерального закона от 30.06.2006 N 90
 revision = "ред. от 25.05.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_34683/a6a0176ee414c56cbffecc3d3fe9c161603a3b35/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 31.12.2001, № 256; Собрание законодательства РФ, 07.01.2002, № 1 (часть I), ст. 3; Парламентская газета, 05.01.2002, № 2-5"
+official_url = ""
 
 [[law]]
 id = "tk-166"
@@ -555,6 +595,8 @@ text = """Служебная командировка - поездка рабо�
 revision = "ред. от 25.05.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_34683/9d204a7e952ea1b8293d96849eebc0217b1ab81b/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 31.12.2001, № 256; Собрание законодательства РФ, 07.01.2002, № 1 (часть I), ст. 3; Парламентская газета, 05.01.2002, № 2-5"
+official_url = ""
 
 [[law]]
 id = "tk-168"
@@ -577,6 +619,8 @@ text = """В случае направления в служебную кома�
 revision = "ред. от 25.05.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_34683/20f26d6f52c6bf331795839d40a065b6cb0fb84c/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 31.12.2001, № 256; Собрание законодательства РФ, 07.01.2002, № 1 (часть I), ст. 3; Парламентская газета, 05.01.2002, № 2-5"
+official_url = ""
 
 [[law]]
 id = "fz44-1"
@@ -623,6 +667,8 @@ text = """1. Настоящий Федеральный закон регулир
 revision = "ред. от 04.08.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_144624/ea6152e9068c49297ce8e3244874b570d6bf08bc/"
 retrieved = "2026-11-27"
+official_publication = "Официальный интернет-портал правовой информации (www.pravo.gov.ru), 08.04.2013; Собрание законодательства РФ, 08.04.2013, № 14, ст. 1652; Российская газета, 12.04.2013, № 80"
+official_url = "http://publication.pravo.gov.ru/Document/View/0001201304080023"
 
 [[law]]
 id = "fz223-1"
@@ -703,6 +749,8 @@ text = """1. Целями регулирования настоящего Фед
 revision = "ред. от 08.08.2024"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_116964/7ebde198084b87c82df00e99d34872c74b0229b7/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 22.07.2011, № 159; Собрание законодательства РФ, 25.07.2011, № 30 (часть I), ст. 4571"
+official_url = ""
 
 [[law]]
 id = "fz98-10"
@@ -728,6 +776,8 @@ text = """1. Меры по охране конфиденциальности и�
 revision = "ред. от 08.08.2024"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_48699/0ca1b144b64eaa68cd80ca51ad37ac4047c47775/"
 retrieved = "2026-11-27"
+official_publication = "Собрание законодательства РФ, 09.08.2004, № 32, ст. 3283; Российская газета, 05.08.2004, № 166; Парламентская газета, 05.08.2004, № 144"
+official_url = ""
 
 [[law]]
 id = "fz152-6"
@@ -771,6 +821,8 @@ text = """(в ред. Федерального закона от 25.07.2011 N 26
 revision = "ред. от 26.07.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_61801/315f051396c88f1e4f827ba3f2ae313d999a1873/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 29.07.2006, № 165; Парламентская газета, 03.08.2006, № 126-127; Собрание законодательства РФ, 31.07.2006, № 31 (часть I), ст. 3451"
+official_url = ""
 
 [[law]]
 id = "fz152-19"
@@ -819,6 +871,8 @@ text = """(в ред. Федерального закона от 25.07.2011 N 26
 revision = "ред. от 26.07.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_61801/ca9e5658710519f09ab2fdb8196fcb3eb024a051/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 29.07.2006, № 165; Парламентская газета, 03.08.2006, № 126-127; Собрание законодательства РФ, 31.07.2006, № 31 (часть I), ст. 3451"
+official_url = ""
 
 [[law]]
 id = "fz187-1"
@@ -831,6 +885,8 @@ text = """Настоящий Федеральный закон регулиру�
 revision = "ред. от 07.04.2025"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_220885/314a79f49a806b40b413fda2b160c63163cb3d6d/"
 retrieved = "2026-11-27"
+official_publication = "Официальный интернет-портал правовой информации (www.pravo.gov.ru), 26.07.2017; Российская газета, 31.07.2017, № 167; Собрание законодательства РФ, 31.07.2017, № 31 (часть I), ст. 4736"
+official_url = "http://publication.pravo.gov.ru/Document/View/0001201707260023"
 
 [[law]]
 id = "fz187-7"
@@ -872,6 +928,8 @@ text = """1. Категорирование объекта критическо�
 revision = "ред. от 07.04.2025"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_220885/507db218cf421e2e2fbcaaf66cb113f59fc164c9/"
 retrieved = "2026-11-27"
+official_publication = "Официальный интернет-портал правовой информации (www.pravo.gov.ru), 26.07.2017; Российская газета, 31.07.2017, № 167; Собрание законодательства РФ, 31.07.2017, № 31 (часть I), ст. 4736"
+official_url = "http://publication.pravo.gov.ru/Document/View/0001201707260023"
 
 [[law]]
 id = "fz402-9"
@@ -902,6 +960,8 @@ text = """1. Каждый факт хозяйственной жизни под�
 revision = "ред. от 15.12.2025"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_122855/b24121ba7152f33673608559f2ca844ef5b6a74c/"
 retrieved = "2026-11-27"
+official_publication = "Парламентская газета, 09.12.2011, № 54; Российская газета, 09.12.2011, № 278; Официальный интернет-портал правовой информации (www.pravo.gov.ru), 07.12.2011; Собрание законодательства РФ, 12.12.2011, № 50, ст. 7344"
+official_url = "http://publication.pravo.gov.ru/Document/View/0001201112070017"
 
 [[law]]
 id = "fz99-12"
@@ -1005,6 +1065,8 @@ text = """1. В соответствии с настоящим Федераль�
 revision = "ред. от 04.08.2026"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_113658/6a4a5b5468ba8b99831699f7d048d2a5d7710610/"
 retrieved = "2026-11-27"
+official_publication = "Российская газета, 06.05.2011, № 97; Собрание законодательства РФ, 09.05.2011, № 19, ст. 2716; Парламентская газета, 13.05.2011, № 23"
+official_url = ""
 
 [[law]]
 id = "fz54-1.1"
@@ -1077,6 +1139,8 @@ text = """(введена Федеральным законом от 03.07.2016 
 revision = "ред. от 24.06.2025"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_42359/a1b0f1c99aa2a3ab98dfb729163d3194973bdaee/"
 retrieved = "2026-11-27"
+official_publication = "Собрание законодательства РФ, 26.05.2003, № 21, ст. 1957; Российская газета, 27.05.2003, № 99; Парламентская газета, 27.05.2003, № 95"
+official_url = ""
 
 [[law]]
 id = "fz54-1.2"
@@ -1170,6 +1234,8 @@ text = """(введена Федеральным законом от 03.07.2016 
 revision = "ред. от 24.06.2025"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_42359/d2fc933bc5ec367e9a8713330510af5d9e1a3fe4/"
 retrieved = "2026-11-27"
+official_publication = "Собрание законодательства РФ, 26.05.2003, № 21, ст. 1957; Российская газета, 27.05.2003, № 99; Парламентская газета, 27.05.2003, № 95"
+official_url = ""
 
 [[law]]
 id = "fz54-2"
@@ -1267,3 +1333,5 @@ text = """(в ред. Федерального закона от 03.07.2016 N 29
 revision = "ред. от 24.06.2025"
 source_url = "https://www.consultant.ru/document/cons_doc_LAW_42359/0c17a4091d18f33af58d3c20e17e1ac7f808242e/"
 retrieved = "2026-11-27"
+official_publication = "Собрание законодательства РФ, 26.05.2003, № 21, ст. 1957; Российская газета, 27.05.2003, № 99; Парламентская газета, 27.05.2003, № 95"
+official_url = ""

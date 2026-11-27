@@ -355,3 +355,27 @@ def test_real_catalogue_is_valid_and_grounded():
     assert A.load_catalog(directory, env={}) is not None
     assert len(raw["rubric"]) == 10 and sum(len(r["aspect"]) for r in raw["rubric"]) == 21
     assert all(len(a["short"]) <= 170 and a["short"].strip() for r in raw["rubric"] for a in r["aspect"])
+
+
+def test_law_panel_shows_official_publication_and_only_http_links():
+    from reglament_agent.chat import aspects as A
+    from reglament_agent.chat import render as R
+
+    base = dict(id="x", act="Гражданский кодекс РФ", number="51-ФЗ", article="Статья 432", title="Т",
+                text="Текст", revision="ред. от 01.01.2026", source_url="https://example.org/a", retrieved="2026-11-27")
+    law = A.Law(**base, official_publication="СЗ РФ, 05.12.1994, № 32, ст. 3301",
+                official_url="http://publication.pravo.gov.ru/Document/View/1")
+    panel = R.law_panel(law)
+    assert panel["official_publication"] == "СЗ РФ, 05.12.1994, № 32, ст. 3301"
+    assert panel["official_url"].startswith("http://publication.pravo.gov.ru/")
+    bad = R.law_panel(A.Law(**base, official_url="javascript:alert(1)"))
+    assert bad["official_url"] == "" and bad["official_publication"] == ""
+
+
+def test_real_laws_have_official_publication():
+    from pathlib import Path
+    import tomllib
+
+    path = Path(__file__).resolve().parents[2] / "docx" / "aspects" / "laws.toml"
+    laws = tomllib.loads(path.read_text(encoding="utf-8"))["law"]
+    assert laws and all(law.get("official_publication") for law in laws)

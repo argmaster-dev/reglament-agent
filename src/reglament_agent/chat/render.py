@@ -347,6 +347,8 @@ def law_panel(law: Law) -> dict:
         "text": law.text,
         "revision": f"редакция от {revision}",
         "source_url": url,
+        "official_publication": law.official_publication,
+        "official_url": law.official_url if law.official_url.startswith(("http://", "https://")) else "",
         "retrieved": f"получено {ru_date(law.retrieved)}",
         "note": LAW_FOOTER.format(revision=revision),
     }

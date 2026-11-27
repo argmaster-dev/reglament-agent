@@ -41,6 +41,8 @@ class Law:
     source_url: str
     retrieved: str
     short: str = ""
+    official_publication: str = ""
+    official_url: str = ""
 
     @property
     def reference(self) -> str:
@@ -117,7 +119,9 @@ def parse_catalog(aspects_toml: str, laws_toml: str) -> Catalog:
         where = f"закон {entry.get('id')!r}"
         fields = {k: _need(entry, k, where) for k in ("id", "act", "title", "text", "revision", "source_url", "retrieved")}
         law = Law(**fields, number=str(entry.get("number", "")), article=str(entry.get("article", "")),
-                  short=str(entry.get("short", "")))
+                  short=str(entry.get("short", "")),
+                  official_publication=str(entry.get("official_publication", "")),
+                  official_url=str(entry.get("official_url", "")))
         if law.id in laws:
             raise CatalogError(f"закон {law.id}: повторяется")
         laws[law.id] = law
