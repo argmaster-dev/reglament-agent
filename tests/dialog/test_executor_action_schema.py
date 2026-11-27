@@ -12,7 +12,7 @@ def _items():
 
     return {
         "S1": anchor("1.1", "Архитектор сверяет комплект актов перед закрытием наряда.", 0),
-        "S2": anchor("2.1", "Бухгалтер согласовывает график отпусков.", 1),
+        "S2": anchor("2.1", "Логист согласовывает график отпусков.", 1),
     }
 
 
@@ -37,8 +37,8 @@ def test_schema_contains_verb_of_each_offered_sentence():
     assert "согласовывает" not in by_id["S1"]["action"]["enum"]
     assert {"", "согласовывает"} <= set(by_id["S2"]["action"]["enum"])
     assert "сверяет" not in by_id["S2"]["action"]["enum"]
-    assert "архитектор" in by_id["S1"]["actor"]["enum"] and "бухгалтер" not in by_id["S1"]["actor"]["enum"]
-    assert "бухгалтер" in by_id["S2"]["actor"]["enum"] and "архитектор" not in by_id["S2"]["actor"]["enum"]
+    assert "архитектор" in by_id["S1"]["actor"]["enum"] and "логист" not in by_id["S1"]["actor"]["enum"]
+    assert "логист" in by_id["S2"]["actor"]["enum"] and "архитектор" not in by_id["S2"]["actor"]["enum"]
 
 
 def test_schema_verbs_for_unlisted_stems_in_other_sentences():
