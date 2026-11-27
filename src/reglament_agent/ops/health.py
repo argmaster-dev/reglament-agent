@@ -12,6 +12,7 @@ import httpx
 import psycopg
 from fastapi import APIRouter, Response
 
+from reglament_agent.model.queue import generation_status
 from reglament_agent.model.settings import (
     DEFAULT_CHAT_MODEL,
     DEFAULT_EMBED_MODEL,
@@ -153,6 +154,7 @@ async def health(settings: Settings) -> dict:
         "ok": source_status != "invalid" and all(check["ok"] for check in checks.values()),
         "version": app_version(),
         "checks": checks,
+        "generation": generation_status(ModelSettings().chat_slots),
         "build": build,
         "source_digest_status": source_status,
         "image_digests": image_digests,

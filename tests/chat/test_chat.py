@@ -14,7 +14,7 @@ def test_outcome_labels():
     assert R.outcome_label(Answer(Outcome.ANSWER)) == "✅ Ответ"
     assert R.outcome_label(Answer(Outcome.CLARIFY)) == "❓ Нужно уточнение"
     t = TicketInfo("2026-0001", "r", "sent", ["вопрос"])
-    assert R.outcome_label(Answer(Outcome.NO_BASIS, ticket=t)) == "✉️ Обращение №2026-0001"
+    assert R.outcome_label(Answer(Outcome.NO_BASIS, ticket=t)) == "✉️ Передано в службу качества"
     assert "обращение №2026-0001" in R.outcome_label(Answer(Outcome.LOW_CONFIDENCE, ticket=t))
     assert all(R.OUTCOME_LABELS[o] or True for o in R.OUTCOME_LABELS)
 
