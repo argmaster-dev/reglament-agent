@@ -255,6 +255,28 @@ def external_reference(a):
     )
 
 
+_REGISTER = re.compile(r"\b(?:отме(?:т|ч)|(?:за)?фиксир|(?:за)?пис(?:ат|ыв)|ука(?:з|ж)|внес|внос)\w*")
+_SYSTEM_NAME = re.compile(r"\b(?:crm|erp|сэд)\b")
+
+
+def recording_evidence_matches(question, sentence):
+    """An instruction to register a particular event must bind the event and its system."""
+    clause = re.split(r",\s*что\s+", fold(question), maxsplit=1)
+    if len(clause) != 2 or not _REGISTER.search(clause[0]):
+        return True
+    lead, event = clause
+    systems = set(_SYSTEM_NAME.findall(lead))
+    if len(systems) != 1:
+        return True
+    required = terms(event)
+    # A rule about collecting a debt and a rule about CRM comments cannot jointly
+    # establish that a late payment should be entered as a CRM comment.
+    return any(
+        _REGISTER.search(rule) and systems <= set(_SYSTEM_NAME.findall(rule)) and required <= terms(rule)
+        for rule in re.split(r"[;.!?]|,\s+(?:а|но)\s+", fold(sentence))
+    )
+
+
 # A reference to signing in a deadline is not a condition for starting the work itself.
 _BEFORE_SIGNING = re.compile(r"\b(?:до|перед|не дожидаясь)\s+(?:момента\s+)?(?:подписани\w*|заключени\w*)\s+")
 _WORK_START = re.compile(
@@ -623,6 +645,8 @@ def _matches_part(question, anchor, *, point_terms=None):
     if qualifier_conflict(question, anchor) or lacks_requested_object(question, anchor):
         return False
     q, sentence, context = fold(question), fold(anchor.text), fold(anchor.context)
+    if not recording_evidence_matches(q, sentence):
+        return False
     if asks_deadline(q):
         return states_deadline(q, anchor, department=anchor.ref.department, point_terms=point_terms)
     if (target := pre_signature_target(q)) is not None:

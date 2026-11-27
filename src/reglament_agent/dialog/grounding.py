@@ -252,6 +252,9 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         if check.dropped:
             dropped.extend(check.dropped)
             continue
+        if not relevance.recording_evidence_matches(question, a.text):
+            dropped.append(Verdict(claim, False, ["recorded_event_mismatch"]))
+            continue
         if not parts and relevance.creation_object_is_source(question, a.text):
             dropped.append(Verdict(claim, False, ["creation_object_is_source"]))
             continue
