@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 from reglament_agent.answer import Answer, Outcome, SourceRef, Statement, Variant
 
-from . import guards, project_procedures, relevance
+from . import guards, performer, project_procedures, relevance
 from .checks import (
     Claim,
     Evidence,
@@ -208,6 +208,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
     claims_by_ref = {}
     parts = relevance.coordinated_parts(question)
     antecedents = dict(zip(parts[1:], parts))
+    performer_request = performer.requested(question, departments) if not parts else None
     for raw in data.get("claims", []):
         ref_data = raw.get("ref")
         key = ref_data.get("id") if isinstance(ref_data, dict) else None
@@ -226,6 +227,9 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             negated=raw.get("negated", False),
             qualifier=raw.get("qualifier"),
         )
+        if performer_request and raw.get("text") and raw["text"].split() != a.text.split():
+            dropped.append(Verdict(claim, False, ["quote_reference_mismatch"]))
+            continue
         evidence = {ref: Evidence(ref, a.text, a.ref.column)}
         check = verify_claims([claim], evidence)
         if (
@@ -307,7 +311,9 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
                 enough = bool(matched)
                 covered.update(matched)
             elif (question in scopes or question in frequencies or question in procedures) and not invention:
-                enough = supports(question, a)
+                enough = supports(question, a) and (not performer_request or performer_request.supported_by(a.text))
+            elif performer_request and not invention:
+                enough = performer_request.supported_by(a.text)
             elif out == Outcome.LOW_CONFIDENCE and not invention:
                 enough = relevance.supports_part(question, a, point_terms=point_terms)
             elif invention:
