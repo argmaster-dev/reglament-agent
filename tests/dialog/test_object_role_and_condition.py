@@ -38,3 +38,8 @@ def test_without_phrase_requires_its_own_condition():
     ]
     related = relevance.applicable_refs("Можно ли начать работы без утверждённого лимита затрат?", rows)
     assert {r.doc_id for r in related} == {"stage-a"}
+
+
+def test_executor_question_mentioning_a_time_limit_is_not_a_deadline_question():
+    assert not relevance.asks_deadline("Кто контролирует сроки закупки?")
+    assert relevance.asks_deadline("Какой срок закупки?")

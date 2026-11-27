@@ -209,7 +209,9 @@ def score(question, anchor):
 
 
 def asks_deadline(q):
-    return bool(_DEADLINE_ASK.search(fold(q)))
+    q = fold(q)
+    # «Кто контролирует сроки?» asks for a performer; the time limit is only its subject.
+    return bool(_DEADLINE_ASK.search(q)) and not re.search(r"\bкто\b", q)
 
 
 def deadline_subject(question, department=None):
