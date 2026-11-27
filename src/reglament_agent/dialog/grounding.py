@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 from reglament_agent.answer import Answer, Outcome, SourceRef, Statement, Variant
 
-from . import guards, relevance
+from . import guards, project_procedures, relevance
 from .checks import (
     Claim,
     Evidence,
@@ -266,9 +266,14 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
               if (rule := relevance.reimbursement_request(part, departments)) is not None}
     frequencies = {part: rule for part in parts or [question]
                    if (rule := relevance.frequency_request(part, departments)) is not None}
+    procedures = {part: rule for part in parts or [question]
+                  if not invention and part not in scopes and part not in frequencies and not relevance.asks_deadline(part)
+                  and (rule := project_procedures.requested(part)) is not None}
     point_terms = None
 
     def supports(part, anchor):
+        if part in procedures:
+            return procedures[part].supported_by(anchor)
         if part in frequencies:
             if not frequencies[part].supported_by(anchor.text):
                 return False
@@ -301,7 +306,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
                 }
                 enough = bool(matched)
                 covered.update(matched)
-            elif (question in scopes or question in frequencies) and not invention:
+            elif (question in scopes or question in frequencies or question in procedures) and not invention:
                 enough = supports(question, a)
             elif out == Outcome.LOW_CONFIDENCE and not invention:
                 enough = relevance.supports_part(question, a, point_terms=point_terms)
@@ -366,7 +371,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         )
     # Check the final displayed sentences, including neighbours and inferred external references.
     # Recompute coverage from what remains visible after expansion.
-    if scopes or frequencies:
+    if scopes or frequencies or procedures:
         by_ref.update((a.ref, a) for a in rows)
         applicable = []
         covered = set()
@@ -378,7 +383,9 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
                 covered.update(matched)
             else:
                 claim = claims_by_ref.get(ref) or Claim(st.text, SentenceRef(ref.doc_id, ref.point, ref.sentence))
-                reason = "frequency_scope_mismatch" if frequencies else "reimbursement_scope_mismatch"
+                reason = "topic_mismatch" if procedures else (
+                    "frequency_scope_mismatch" if frequencies else "reimbursement_scope_mismatch"
+                )
                 dropped.append(Verdict(claim, False, [reason]))
         statements = applicable
         if not statements:
@@ -433,6 +440,11 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             out = Outcome.EXTERNAL_DOC
     if out == Outcome.ANSWER and statements:
         summaries[out] = statements[0].text
+        procedure = procedures.get(question)
+        sourced_departments = {s.sources[0].department for s in statements}
+        if procedure and len(sourced_departments) == 1:
+            department = next(iter(sourced_departments))
+            summaries[out] = f"Если речь {procedure.value}, этот порядок описан в регламенте подразделения «{department}»."
     notes = ["Часть утверждений не подтверждена источниками."] if caveat else []
     if pointers and statements and len(pointers) == len(statements):
         notes.append("В этом пункте подписант не указан: он отсылает к другому документу.")
