@@ -53,13 +53,19 @@ _WORK_RULE = re.compile(
 _EMPLOYMENT_SUBJECT = re.compile(r"\b(?:отпуск|отгул|больничн|командировк|дежурств|график)\w*\b")
 _ADVICE_FILLERS = {"мне", "помоги", "помогите", "пожалуйста", "пожалуй",
                   "прошу", "как", "что", "это", "бы", "ты", "вы", "что-нибудь", "нибудь", "который", "нужно"}
-# A cooking or household action needs a personal setting. Preparing a work deliverable
-# remotely is legitimate, as is asking how the employer purchases or serves food.
+# Specific household actions convey a purpose themselves. Preparing things remotely
+# or welding something at home does not, so ambiguous verbs need separate evidence.
 _HOME_SETTING = re.compile(r"\b(?:дома|в домашних условиях|на (?:своей|домашней) кухне)\b")
-_KITCHEN_SETTING = re.compile(r"\b(?:завтрак|обед|ужин)\w*\b|\b(?:в духовке|на сковороде|на пару)\b")
-_HOUSEHOLD_HOW = re.compile(
-    r"\bкак\s+(?:(?:дома|можно|лучше|правильно|самому|самой|быстро)\s+){0,3}"
-    r"(?:приготовить|готовить|сварить|испечь|запечь|пожарить|замесить|постирать|погладить|пропылесосить)\b"
+_KITCHEN_SETTING = re.compile(r"\b(?:завтрак|обед|ужин)\w*\b|\b(?:в духовке|на сковороде|на пару|в кастрюле)\b")
+_DOMESTIC_ACTION = re.compile(
+    r"\b(?:испечь|испеки(?:те)?|выпекать|выпекай(?:те)?|запечь|запеки(?:те)?|запекать|запекай(?:те)?"
+    r"|пожарить|пожарь(?:те)?|замесить|замеси(?:те)?|постирать|постирай(?:те)?|погладить|погладь(?:те)?"
+    r"|пропылесосить|пропылесось(?:те)?)\b"
+)
+_PREPARE = re.compile(r"\b(?:(?:при)?готовить|(?:при)?готовь(?:те)?)\b")
+_BOIL_OR_WELD = re.compile(r"\b(?:сварить|свари(?:те)?)\b")
+_REQUEST_FORM = re.compile(
+    r"\b(?:как|что|чем|како\w*|каки\w*|сколько|можно|ли|подскажи(?:те)?|расскажи(?:те)?|помоги(?:те)?|научи(?:те)?)\b"
 )
 _RECIPE_ADVICE = re.compile(
     r"\b(?:посоветуй(?:те)?|порекомендуй(?:те)?|подскажи(?:те)?|дай(?:те)?|предложи(?:те)?|"
@@ -67,7 +73,8 @@ _RECIPE_ADVICE = re.compile(
 )
 _WORK_PREPARATION = re.compile(
     r"\b(?:отчет|заявк|презентаци|реестр|бланк|файл|кейтеринг|корпоративн|рабоч|офисн)\w*\b"
-    r"|\b(?:коммерческ\w*\s+предложени\w*|из дома по работ\w*|поставщик\w*)\b"
+    r"|\bакт(?:ов|ами|ах|ом|а|у|е|ы)?\b"
+    r"|\b(?:коммерческ\w*\s+предложени\w*|технологическ\w*\s+(?:карт|процесс)\w*|из дома по работ\w*|поставщик\w*)\b"
 )
 _REFERENCE_WORDS = {"его", "ее", "это", "этот", "эту", "этого", "эти", "их", "него", "нее", "такой", "такую",
                     "этим", "этом", "все", "данный", "дома", "для", "нас", "нам", "себя", "потом", "еще", "сейчас"}
@@ -93,10 +100,21 @@ def _personal_choice(q):
 
 
 def _household_instruction(q):
-    advice = _RECIPE_ADVICE.search(q)
-    how = _HOUSEHOLD_HOW.search(q)
-    if not advice and not (how and (_HOME_SETTING.search(q) or _KITCHEN_SETTING.search(q))):
-        return False
+    # A UI label or a quoted utterance need not be the requested action.
+    request = re.sub(r'«[^»]*»|"[^"]*"', ' ', q)
+    advice = _RECIPE_ADVICE.search(request)
+    specific = _DOMESTIC_ACTION.search(request)
+    action = specific
+    if not action and _KITCHEN_SETTING.search(request):
+        action = _BOIL_OR_WELD.search(request) or _PREPARE.search(request)
+    if not action and _HOME_SETTING.search(request):
+        action = _PREPARE.search(request)
+    if not advice:
+        if not action:
+            return False
+        # Infinitives can merely name a task. Accept a question, a request for help, or an imperative.
+        if action[0].endswith(("ть", "чь")) and not (_REQUEST_FORM.search(request) or "?" in request):
+            return False
     if _WORK_RULE.search(q) or _WORK_PREPARATION.search(q) or _EMPLOYMENT_SUBJECT.search(q):
         return False
     tokens = words(q)
@@ -104,8 +122,12 @@ def _household_instruction(q):
     if find_roles(tokens) or any(token != "по" and token in tokens for token in map(fold, glossary())):
         return False
     # A pronoun alone can continue a real work question. Require an independently named subject.
-    subject = _HOME_SETTING.sub(" ", q[(advice or how).end():])
-    return any(len(w) > 2 and w not in _ADVICE_FILLERS and w not in _REFERENCE_WORDS for w in words(subject))
+    subject = _HOME_SETTING.sub(" ", request[(advice or action).end():])
+    if any(len(w) > 2 and w not in _ADVICE_FILLERS and w not in _REFERENCE_WORDS for w in words(subject)):
+        return True
+    # An open request for ideas ("что ... испечь?") supplies its own subject. A pronoun may refer
+    # to the work item in the previous turn and does not independently establish a domestic request.
+    return bool(specific and "что" in words(request[:specific.start()]) and not set(tokens) & _REFERENCE_WORDS)
 
 
 def operational_request(text):
