@@ -51,7 +51,7 @@ turn_admission = TurnAdmission(AdmissionSettings())
 for route in reversed([*history_router.routes, *health_router.routes]):
     fastapi_app.router.routes.insert(0, route)
 start_page.install(fastapi_app)
-admin_routes.install(fastapi_app)
+admin_routes.install(fastapi_app, proposal_model=getattr(services.answerer, "model", None))
 
 
 @cl.data_layer

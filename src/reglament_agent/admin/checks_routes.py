@@ -1,6 +1,9 @@
 """Expert pages: check questions of a regulation document and their runs (admin-b04)."""
 from __future__ import annotations
 
+from functools import partial
+
+from anyio import from_thread
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -76,13 +79,23 @@ def _expert_action(request: Request, doc_id: str):
     return actor, doc
 
 
+async def _ask(app, messages):
+    # FastAPI runs the sync DB route in a worker. Use the chat event loop for its client and FIFO.
+    model = app.state.proposal_model
+    if model is None:  # standalone admin / custom chat factory without a model
+        model = app.state.proposal_model = P.model_factory()
+    result = await model.chat_json(messages, P.SCHEMA, step="check_proposals",
+                                   options={"num_predict": 900, "temperature": 0})
+    return result.data
+
+
 @router.post("/documents/{doc_id}/checks/propose")
 def checks_propose(request: Request, doc_id: str):
     actor, doc = _expert_action(request, doc_id)
     if doc is None:
         return render("forbidden.html", request, 404, message="Документ не найден")
     with jobs.connect() as conn:
-        _, message = P.propose(conn, doc_id, actor)
+        _, message = P.propose(conn, doc_id, actor, partial(from_thread.run, _ask, request.app))
     return _page(request, doc_id, message=message)
 
 
@@ -93,8 +106,10 @@ def checks_accept(request: Request, doc_id: str, proposal_id: int):
         return render("forbidden.html", request, 404, message="Документ не найден")
     with jobs.connect() as conn:
         ok = P.accept(conn, doc_id, proposal_id, actor)
-    return _page(request, doc_id, message=None if ok else "Предложение не принято: пункта уже нет в активной версии "
-                 "или предложение уже обработано.")
+    if not ok:
+        return _page(request, doc_id, message="Предложение не принято: изменилась версия документа, "
+                     "пункт недоступен или предложение уже обработано.")
+    return _page(request, doc_id)
 
 
 @router.post("/documents/{doc_id}/checks/proposals/{proposal_id}/discard")

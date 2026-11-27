@@ -8,14 +8,16 @@ or discards each proposal; accepted ones join the document's check questions (se
 """
 from __future__ import annotations
 
-import asyncio
 import re
+from collections.abc import Callable
 
 from psycopg.rows import dict_row
 
 from reglament_agent.admin import checks as C
+from reglament_agent.model.queue import GenerationQueueFull
 
 MAX_POINTS = 5
+MIN_QUESTIONS = 3
 MAX_QUESTIONS = 5
 MAX_QUESTION_LEN = 300
 MIN_POINT_LEN = 40
@@ -97,25 +99,20 @@ def validate(data, offered: set[str], existing_points: set[str], taken: set[str]
         q, point = q.strip(), point.strip()
         if not q or len(q) > MAX_QUESTION_LEN:
             continue
-        if point not in offered or point not in existing_points:
+        if point not in offered or point not in existing_points or point in used_points:
             continue
         key = C.norm(re.sub(r"[^\w\s]", "", q))
         if not key or key in seen:
             continue
         seen.add(key)
+        used_points.add(point)
         kept.append({"question": q, "expected_point": point})
         if len(kept) >= MAX_QUESTIONS:
             break
     return kept
 
 
-async def _ask(messages: list[dict]) -> dict:
-    result = await model_factory().chat_json(messages, SCHEMA, step="check_proposals",
-                                             options={"num_predict": 900, "temperature": 0})
-    return result.data
-
-
-def propose(conn, doc_id: str, actor: str) -> tuple[list[dict], str | None]:
+def propose(conn, doc_id: str, actor: str, ask: Callable[[list[dict]], dict]) -> tuple[list[dict], str | None]:
     """Ask the model and store valid proposals. Returns (stored proposals, message for the expert)."""
     version_no, points = active_points(conn, doc_id)
     if version_no is None:
@@ -124,19 +121,40 @@ def propose(conn, doc_id: str, actor: str) -> tuple[list[dict], str | None]:
     if not picked:
         return [], "В активной версии нет достаточно содержательных пунктов для вопросов."
     try:
-        data = asyncio.run(_ask(build_messages(picked)))
+        data = ask(build_messages(picked))
+    except GenerationQueueFull:
+        return [], "Очередь запросов к модели заполнена. Попробуйте предложить вопросы позже."
     except Exception as exc:  # noqa: BLE001 - model down, timeout, broken output: a message, never a 500
         return [], ("Модель сейчас недоступна или вернула некорректный ответ, вопросы не предложены. "
                     f"Попробуйте позже ({type(exc).__name__}).")
-    taken = existing_questions(conn, doc_id)
-    good = validate(data, {p["number"] for p in picked}, {p["number"] for p in points}, taken)
-    if not good:
-        return [], "Модель не предложила ни одного подходящего вопроса. Попробуйте ещё раз."
-    conn.execute("DELETE FROM check_proposals WHERE doc_id=%s AND status='proposed'", (doc_id,))
-    for g in good:
-        conn.execute("INSERT INTO check_proposals (doc_id, version_no, question, expected_point, created_by) "
-                     "VALUES (%s,%s,%s,%s,%s)", (doc_id, version_no, g["question"], g["expected_point"], actor))
-    return list_proposals(conn, doc_id), None
+    with conn.transaction():
+        live = locked_version(conn, doc_id)
+        if live is None or live[1] != version_no:
+            return [], "Активная версия документа изменилась. Предложите вопросы заново."
+        offered = {p["number"] for p in picked}
+        good = validate(data, offered, {p["number"] for p in points}, existing_questions(conn, doc_id))
+        if not good:
+            return [], "Модель не предложила ни одного подходящего вопроса. Попробуйте ещё раз."
+        conn.execute("DELETE FROM check_proposals WHERE doc_id=%s AND status='proposed'", (doc_id,))
+        for g in good:
+            conn.execute("INSERT INTO check_proposals (doc_id, version_no, question, expected_point, created_by) "
+                         "VALUES (%s,%s,%s,%s,%s)", (doc_id, version_no, g["question"], g["expected_point"], actor))
+        minimum = min(MIN_QUESTIONS, len(offered))
+        message = None
+        if len(good) < minimum:
+            message = (f"Получен неполный набор: охвачено разделов — {len(good)} из {minimum} необходимых. "
+                       "Можно проверить эти вопросы или запросить новый набор.")
+        return list_proposals(conn, doc_id), message
+
+
+def locked_version(conn, doc_id: str):
+    """Keep the document on this version during a short write transaction, after model inference."""
+    row = conn.execute("SELECT active_version_id FROM documents WHERE doc_id=%s AND status='active' "
+                       "FOR UPDATE", (doc_id,)).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return conn.execute("SELECT version_id, version_number FROM document_versions WHERE version_id=%s",
+                        (row[0],)).fetchone()
 
 
 def existing_questions(conn, doc_id: str) -> set[str]:
@@ -151,26 +169,27 @@ def existing_questions(conn, doc_id: str) -> set[str]:
 
 
 def list_proposals(conn, doc_id: str) -> list[dict]:
-    rows = conn.cursor(row_factory=dict_row).execute(
-        "SELECT id, version_no, question, expected_point FROM check_proposals "
-        "WHERE doc_id=%s AND status='proposed' ORDER BY id", (doc_id,)).fetchall()
-    _, points = active_points(conn, doc_id)
-    live = {p["number"]: p["text"] for p in points}
-    for r in rows:
-        r["point_exists"] = r["expected_point"] in live
-        r["point_text"] = live.get(r["expected_point"], "")
-    return rows
+    return conn.cursor(row_factory=dict_row).execute(
+        "SELECT c.id, c.version_no, c.question, c.expected_point, p.text AS point_text, "
+        "p.point_id IS NOT NULL AS point_exists FROM check_proposals c "
+        "JOIN documents d ON d.doc_id=c.doc_id AND d.status='active' "
+        "JOIN document_versions v ON v.version_id=d.active_version_id AND v.version_number=c.version_no "
+        "LEFT JOIN points p ON p.version_id=v.version_id AND p.number=c.expected_point "
+        "WHERE c.doc_id=%s AND c.status='proposed' ORDER BY c.id", (doc_id,)).fetchall()
 
 
 def accept(conn, doc_id: str, proposal_id: int, actor: str) -> bool:
-    _, points = active_points(conn, doc_id)
-    row = conn.execute("SELECT expected_point FROM check_proposals WHERE id=%s AND doc_id=%s AND status='proposed'",
-                       (proposal_id, doc_id)).fetchone()
-    if row is None or row[0] not in {p["number"] for p in points}:
-        return False
-    conn.execute("UPDATE check_proposals SET status='accepted', decided_by=%s, decided_at=now() WHERE id=%s",
-                 (actor, proposal_id))
-    return True
+    with conn.transaction():
+        version = locked_version(conn, doc_id)
+        if version is None:
+            return False
+        version_id, version_no = version
+        return conn.execute(
+            "UPDATE check_proposals c SET status='accepted', decided_by=%s, decided_at=now() "
+            "WHERE c.id=%s AND c.doc_id=%s AND c.status='proposed' AND c.version_no=%s "
+            "AND EXISTS (SELECT 1 FROM points p WHERE p.version_id=%s AND p.number=c.expected_point)",
+            (actor, proposal_id, doc_id, version_no, version_id),
+        ).rowcount == 1
 
 
 def discard(conn, doc_id: str, proposal_id: int) -> None:

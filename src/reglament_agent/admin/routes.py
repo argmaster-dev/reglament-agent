@@ -51,7 +51,7 @@ def _secret() -> str:
     return os.environ["CHAINLIT_AUTH_SECRET"]
 
 
-def install(app) -> None:
+def install(app, *, proposal_model=None) -> None:
     """Mount routes and the role guard (expert only) in front of Chainlit's catch-all route."""
     from reglament_agent.admin.analytics_routes import router as analytics_router
     from reglament_agent.admin.quality_routes import router as quality_router
@@ -72,16 +72,22 @@ def install(app) -> None:
                 return render("forbidden.html", request, 403)
         return await call_next(request)
 
+    app.state.proposal_model = proposal_model
     app_lifespan = app.router.lifespan_context
 
     @asynccontextmanager
     async def lifespan(application):
-        async with app_lifespan(application) as state:
-            jobs.ensure_runner()
-            try:
-                yield state
-            finally:
-                await jobs.stop_runner()
+        try:
+            async with app_lifespan(application) as state:
+                jobs.ensure_runner()
+                try:
+                    yield state
+                finally:
+                    await jobs.stop_runner()
+        finally:
+            close = getattr(application.state.proposal_model, "aclose", None)
+            if close is not None:
+                await close()
 
     app.router.lifespan_context = lifespan
 

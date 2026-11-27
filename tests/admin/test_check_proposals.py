@@ -1,8 +1,12 @@
 """admin-p03: model-proposed check questions for a document without a gold set (fake model)."""
+import asyncio
+import json
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -13,6 +17,8 @@ from reglament_agent.admin import jobs, routes
 from reglament_agent.chat import session as S
 from reglament_agent.ingest.embedding import FakeEmbedder
 from reglament_agent.ingest.model import DocumentCard
+from reglament_agent.model.ollama import OllamaClient
+from reglament_agent.model.queue import GenerationSlot
 from reglament_agent.storage.publish import publish
 
 DOCX = Path(__file__).resolve().parents[2] / "docx"
@@ -50,9 +56,9 @@ def env(isolated, monkeypatch, tmp_path):
     return conn
 
 
-def client():
+def client(**install_kwargs):
     app = FastAPI()
-    routes.install(app)
+    routes.install(app, **install_kwargs)
     c = TestClient(app, follow_redirects=False)
     c.cookies.set(S.COOKIE_NAME, S.sign_identity(S.Identity("expert@x.local", "expert"), SECRET))
     return c
@@ -113,7 +119,8 @@ def test_unknown_or_not_offered_point_is_dropped(env, monkeypatch):
     offered = {p["number"] for p in pts}
     not_offered = next(p["number"] for p in all_points if p["number"] not in offered)
     data = {"questions": [q(pts[0]["number"], 0), q("99.99", 1), q(not_offered, 2), q("", 3)]}
-    propose(env, monkeypatch, data)
+    response, _ = propose(env, monkeypatch, data)
+    assert "неполный набор" in response.text
     assert [r[:2] for r in stored(env)] == [(q(pts[0]["number"], 0)["question"], pts[0]["number"])]
 
 
@@ -204,3 +211,92 @@ def test_requires_expert_and_known_document(env, monkeypatch):
     assert anon.post(f"/admin/documents/{DOC}/checks/propose").status_code in (302, 303, 401, 403)
     monkeypatch.setattr(P, "model_factory", FakeModel({"questions": []}))
     assert client().post("/admin/documents/nope/checks/propose").status_code == 404
+
+
+def test_only_one_question_per_offered_point():
+    offered = {"1.1", "2.1", "3.1"}
+    repeated = [q("1.1", i) for i in range(P.MAX_QUESTIONS)]
+    rest = [q("2.1"), q("3.1")]
+    assert P.validate({"questions": repeated + rest}, offered, offered) == [repeated[0], *rest]
+    assert P.validate({"questions": repeated}, {"1.1"}, {"1.1"}) == [repeated[0]]
+
+
+def test_single_eligible_section_is_complete(env, monkeypatch):
+    version, points = P.active_points(env, DOC)
+    point = P.pick_points(points)[0]
+    monkeypatch.setattr(P, "active_points", lambda conn, doc_id: (version, [point]))
+    proposals, message = P.propose(env, DOC, "expert", lambda messages: {"questions": [q(point["number"])]})
+    assert message is None and [item["expected_point"] for item in proposals] == [point["number"]]
+
+
+def publish_new_revision(conn):
+    card = next(c for c in CARDS if c["doc_id"] == DOC)
+    data = next((DOCX / "demo").glob("*v2*.docx")).read_bytes()
+    return publish(conn, DocumentCard(DOC, card["title"], card["department"], tuple(card["stages"]),
+                                      card["file"]), data, FakeEmbedder(), "tester")
+
+
+def test_old_proposal_cannot_be_accepted_for_reused_point_number(env):
+    pid = env.execute(
+        "INSERT INTO check_proposals (doc_id, version_no, question, expected_point, created_by) "
+        "VALUES (%s, 1, 'Какой срок?', '1.5', 'expert') RETURNING id", (DOC,)
+    ).fetchone()[0]
+    publish_new_revision(env)
+    ver, points = P.active_points(env, DOC)
+    assert ver == 2 and any(p["number"] == "1.5" and "5 рабочих дней" in p["text"] for p in points)
+    response = client().post(f"/admin/documents/{DOC}/checks/proposals/{pid}/accept")
+    assert stored(env) == [("Какой срок?", "1.5", "proposed")]
+    assert response.status_code == 200 and "Предложение не принято" in response.text
+    assert P.list_proposals(env, DOC) == []
+    assert C.load_all(DOC) is None
+
+
+def test_late_generation_preserves_newer_proposals(env):
+    old_point = picked(env)[0]["number"]
+
+    def slow_reply(messages):
+        publish_new_revision(env)
+        env.execute(
+            "INSERT INTO check_proposals (doc_id, version_no, question, expected_point, created_by) "
+            "VALUES (%s, 2, 'Вопрос новой редакции?', '1.5', 'expert')", (DOC,)
+        )
+        return {"questions": [q(old_point)]}
+
+    _, message = P.propose(env, DOC, "expert", slow_reply)
+    assert message and stored(env) == [("Вопрос новой редакции?", "1.5", "proposed")]
+
+
+@pytest.mark.parametrize("injected", [True, False], ids=["chat-model", "standalone"])
+def test_proposals_share_model_loop_slot_and_shutdown(env, monkeypatch, injected):
+    question = q(picked(env)[0]["number"])
+    loops = []
+
+    async def respond(request):
+        loops.append(asyncio.get_running_loop())
+        if len(loops) == 2:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"message": {"content": json.dumps({"questions": [question]})}})
+
+    model = OllamaClient(slot=GenerationSlot(1, max_waiting=0), transport=httpx.MockTransport(respond))
+    close = AsyncMock(wraps=model.aclose)
+    monkeypatch.setattr(model, "aclose", close)
+    creations = []
+
+    def factory():
+        creations.append(True)
+        return model
+
+    monkeypatch.setattr(P, "model_factory", factory)
+    kwargs = {"proposal_model": model} if injected else {}
+    url = f"/admin/documents/{DOC}/checks/propose"
+    with client(**kwargs) as c:
+        loop = c.portal.call(asyncio.get_running_loop)
+        with c.portal.wrap_async_context_manager(model.slot.acquire()):
+            busy = c.post(url)
+            assert busy.status_code == 200 and "Очередь запросов к модели заполнена" in busy.text and loops == []
+        assert question["question"] in c.post(url).text
+        assert "ModelUnavailable" in c.post(url).text
+        assert loops == [loop, loop] and model.slot.active == 0
+        assert creations == ([] if injected else [True])
+        close.assert_not_awaited()
+    close.assert_awaited_once_with()
