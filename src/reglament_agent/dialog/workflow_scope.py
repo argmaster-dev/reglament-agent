@@ -3,7 +3,7 @@
 import re
 from collections import defaultdict
 
-from .lexicon import fold
+from .lexicon import find_roles, fold, words
 from .relevance import terms
 
 _EQUIVALENT = re.compile(r"\b(?:эквивалент\w*|аналог(?:а|и|ов|ом|у|ами)?|равноценн\w*\s+замен\w*)\b")
@@ -32,6 +32,62 @@ _BEFORE_TRIP = re.compile(r"\b(?:до|перед|накануне|для|при 
 _AFTER_TRIP = re.compile(r"\b(?:после (?:выезда|поездки|прибытия|командировки)|по прибытии|по возвращении)\b")
 _PREPARE = re.compile(r"\b(?:что\b[^,;?!]{0,50}\b(?:подготов|оформ|собра|провери)|как\s+подготовиться)")
 _PREP_ACTION = re.compile(r"\b(?:подготов|оформ|провер|получ|запрос|запраш|соглас|состав|уточн|обеспеч|собир)\w*")
+
+_SITE = re.compile(r"\b(?:объект|площадк|территори)\w*\b")
+_SITE_PARTY = re.compile(r"\b(?:объект|площадк|территори)\w*\s+(?:к\s+)?(заказчик|клиент|поставщик|подрядчик|производител)\w*\b")
+_START_WORK = re.compile(r"\bподготовк\w*\s+к\s+(?:начал|выполнени|проведени)\w*\s+(?:\w+\s+){0,2}работ\w*\b")
+_SITE_WORK = re.compile(r"\bработ\w*\s+на\s+(?:объект|площадк|территори)\w*\b")
+_OTHER_PURPOSE = re.compile(r"\b(?:совещани|повестк|отчет|возвращени|возврат|протокол|презентаци)\w*\b"
+                            r"|\b(?:на|к|для)\s+(?:\w+\s+)?встреч\w*\b")
+_CANCELLED = re.compile(r"\bне (?:выезж|выед)\w*|\b(?:поездк|выезд)\w* отмен\w*")
+_ACTION_ITEM = re.compile(r"(?:согласует|согласовывает|получает|проверяет|инициирует|оформляет|заказывает|готовит|подготавливает|организует|запрашивает|уточняет|составляет|обеспечивает)\b")
+
+
+def _site_party(text):
+    match = _SITE_PARTY.search(text)
+    if not match:
+        return None
+    return "клиент" if match[1] in ("клиент", "заказчик") else match[1]
+
+
+def site_work_steps(question, rows):
+    """Find a complete actor's checklist for starting work at the site, if one point establishes it."""
+    q = fold(question)
+    if not (_TRIP.search(q) and _PREPARE.search(q) and _SITE.search(q)) or _OTHER_PURPOSE.search(q) or _CANCELLED.search(q):
+        return []
+    actors = {role for _, _, role in find_roles(words(_SITE_PARTY.sub("", q)))}
+    if len(actors) != 1:
+        return []
+    actor = next(iter(actors))
+    groups = defaultdict(list)
+    for a in rows:
+        if a.ref.column is None and _START_WORK.search(fold(a.section_title)) and a.context.endswith(":"):
+            lead = words(a.context)
+            if find_roles(lead) == [(0, len(lead), actor)]:
+                groups[a.ref.doc_id, a.ref.version_no, a.ref.point].append(a)
+    destination = _site_party(q)
+    choices = []
+    for group in groups.values():
+        checklist = []
+        for a in sorted(group, key=lambda item: item.ref.sentence):
+            # A colon-headed list continues through semicolons and ends with a full stop.
+            text = fold(a.text)
+            if (a.ref.sentence != len(checklist) + 1 or not _ACTION_ITEM.match(text)
+                    or _AFTER_TRIP.search(text) or _OTHER_PURPOSE.search(text)):
+                break
+            checklist.append(a)
+            if a.text.endswith("."):
+                if any(_SITE_WORK.search(fold(item.text)) and _site_party(fold(item.text)) == destination for item in checklist):
+                    choices.append(checklist)
+                break
+            if not a.text.endswith(";"):
+                break
+    if len(choices) != 1:
+        return []
+    chosen = choices[0]
+    if any(a not in chosen and _BEFORE_TRIP.search(fold(a.text)) and _PREP_ACTION.search(fold(a.text)) for a in rows):
+        return []  # A direct pre-departure rule must remain available for ordinary comparison.
+    return chosen
 
 
 def _applicable_condition(text, question):
@@ -104,7 +160,7 @@ def applicable_refs(question, verified):
             return frozenset()
         select = _escalation
     elif _TRIP.search(q) and _PREPARE.search(q):
-        if re.search(r"\bне (?:выезж|выед)\w*|\b(?:поездк|выезд)\w* отмен\w*", q):
+        if _CANCELLED.search(q):
             return frozenset()
         select = _preparation
     else:

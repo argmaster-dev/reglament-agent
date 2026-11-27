@@ -99,17 +99,20 @@ def vocabulary(question, rows):
     entitlements = employment.requested_parts(question, parts)
     if entitlements and len(entitlements) == len(parts):
         rows = [a for a in rows if any(rule.supported_by(a.text) for rule in entitlements.values())]
-    ranked = sorted(rows, key=lambda a: -relevance.score(question, a))
     procedure = project_procedures.focused(question)
+    deadline = any(relevance.asks_deadline(part) for part in relevance.question_parts(question))
+    site_steps = []
+    if len(parts) == 1 and not (entitlements or procedure or deadline):
+        site_steps = workflow_scope.site_work_steps(question, rows)
+    ranked = site_steps or sorted(rows, key=lambda a: -relevance.score(question, a))
     result = {}
     size = 0
-    deadline = any(relevance.asks_deadline(part) for part in relevance.question_parts(question))
     point_terms = relevance.deadline_context(rows) if deadline else None
     for a in ranked:
         if len(result) >= 44 or size > 8500:
             break
         if ((procedure and not procedure.supported_by(a))
-                or not relevance.matches_request(question, a, point_terms=point_terms)):
+                or (not site_steps and not relevance.matches_request(question, a, point_terms=point_terms))):
             continue
         result[f"S{len(result) + 1}"] = a
         size += len(a.text) + min(len(a.context), 100) + 30
@@ -287,8 +290,14 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
     if entitlements and out == Outcome.OFF_TOPIC:
         out = Outcome.NO_BASIS
     workflow_refs = None
+    site_steps = []
     if not (parts or invention or variants or scopes or frequencies or procedures or entitlements or relevance.asks_deadline(question)):
         workflow_refs = workflow_scope.applicable_refs(question, (by_ref[ref] for ref in claims_by_ref))
+        if workflow_refs is not None and out == Outcome.ANSWER:
+            offered = workflow_scope.site_work_steps(question, rows or items.values())
+            if offered and all(a.ref in by_ref for a in offered) and any(a.ref in claims_by_ref for a in offered):
+                site_steps = offered
+                workflow_refs = workflow_refs.union(a.ref for a in offered)
         if workflow_refs is not None:
             statements.sort(key=lambda s: (by_ref[s.sources[0]].rank, s.sources[0].sentence))
     point_terms = None
@@ -420,6 +429,9 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             out = Outcome.NO_BASIS
         elif compound:
             missing_parts = [part for part in parts if part not in covered]
+    if site_steps and statements and out == Outcome.ANSWER:
+        # One verified selection establishes this exact list; quote the other offered items verbatim.
+        statements = [Statement(a.text, [a.ref]) for a in site_steps]
     if missing_parts and statements:
         # Adjacent referenced sentences or a complete list may cover what the first selected quote omitted.
         by_ref.update((a.ref, a) for a in rows)
@@ -474,6 +486,9 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             department = next(iter(sourced_departments))
             summaries[out] = f"Если речь {procedure.value}, этот порядок описан в регламенте подразделения «{department}»."
     notes = ["Часть утверждений не подтверждена источниками."] if caveat else []
+    if site_steps and out == Outcome.ANSWER:
+        summaries[out] = "Если цель выезда — начать работы на площадке, применяется следующий порядок."
+        notes.append("Если поездка нужна для других целей, уточните их. Этот порядок относится к началу работ.")
     if out == Outcome.ANSWER and (condition := getattr(procedures.get(question), "caveat", None)):
         notes.append(condition)
     if out == Outcome.ANSWER and statements and point_terms and (request := RequestLeadTime.from_question(question)):
