@@ -464,6 +464,22 @@ class Dialog:
             result = Answer(
                 Outcome.VARIANTS, variants=self._merge_variants(named, faqs, own), caveat=result.caveat
             )
+        if result.outcome == Outcome.NO_BASIS and relevance.request_qualifiers(question):
+            # No silent substitution: name the points about the same noun for another object or direction,
+            # including those of other departments.
+            wider = rows
+            if dept and not multi:
+                found_all = await asyncio.to_thread(
+                    self.search, conn, question, vector, department=None, stage=stage, limit=28,
+                    faq=PublishedFaqStore(),
+                )
+                wider = grounding.anchors(found_all.points)
+            near = relevance.near_basis(question, wider)
+            if near:
+                result.summary = (
+                    f"{result.summary}\nТочного пункта для этого объекта и направления нет. "
+                    f"Есть пункты о том же предмете, но для другого объекта или направления:\n{near}"
+                )
         result.scope, result.profile_note = scope, note
         if result.outcome in _ESCALATE:
             result.ticket = self._ticket(conn, user, message, question, result.outcome.value, topic, trace)

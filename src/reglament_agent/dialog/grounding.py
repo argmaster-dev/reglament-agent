@@ -211,6 +211,10 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         if check.dropped:
             dropped.extend(check.dropped)
             continue
+        if relevance.qualifier_conflict(question, a):
+            # The sentence concerns the same noun for another object or direction than the question asks.
+            dropped.append(Verdict(claim, False, ["object_qualifier_mismatch"]))
+            continue
         kept.append(claim)
         claims_by_ref[a.ref] = claim
         # Compose from the exact source. Free-form generator output cannot introduce another rule.

@@ -120,6 +120,64 @@ def question_parts(question):
     return merged or [q]
 
 
+_QUALIFIER_PREPS = ("на", "от", "для")
+_NOUN_QUALIFIER = re.compile(r"\b(\w{3,})\s+(на|от|для)\s+(\w+)")
+
+
+def _head(word):
+    # «поставщик» and «субпоставщик» name the same kind of counterparty.
+    return word_key(word[3:] if word.startswith("суб") and len(word) > 7 else word)
+
+
+def request_qualifiers(question):
+    """(noun key, preposition, head key) for each «noun на/от/для X» phrase of an executor question."""
+    q = fold(question)
+    if not re.search(r"\bкто\b", q):
+        return []
+    return [
+        (word_key(noun), prep, _head(head))
+        for noun, prep, head in _NOUN_QUALIFIER.findall(q)
+        if noun not in _STOP and noun not in _QUALIFIER_PREPS
+    ]
+
+
+def _sentence_qualifiers(sentence, noun):
+    toks = words(sentence)
+    found = [
+        (toks[i + 1], _head(toks[i + 2]))
+        for i in range(len(toks) - 2)
+        if word_key(toks[i]) == noun and toks[i + 1] in _QUALIFIER_PREPS
+    ]
+    present = any(word_key(t) == noun for t in toks)
+    return present, found
+
+
+def _conflicts(question, text):
+    for noun, prep, head in request_qualifiers(question):
+        present, found = _sentence_qualifiers(text, noun)
+        # An unqualified mention carries no contradicting object; a differing preposition or head does.
+        if present and found and (prep, head) not in found:
+            return (noun, prep, head)
+    return None
+
+
+def qualifier_conflict(question, anchor):
+    """The sentence names the requested noun for another object or direction than the question asks."""
+    return _conflicts(question, anchor.text) is not None
+
+
+def near_basis(question, rows, limit=3):
+    """Sentences about the same noun with another object or direction, named openly instead of substituted."""
+    lines, seen = [], set()
+    for a in rows:
+        if _conflicts(question, a.text) and (a.ref.doc_id, a.ref.point) not in seen:
+            seen.add((a.ref.doc_id, a.ref.point))
+            lines.append(f"п. {a.ref.point} «{a.ref.doc_title}» ({a.ref.department}): {a.text}")
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines)
+
+
 def matches_request(question, anchor):
     parts = question_parts(question)
     return any(_matches_part(p, anchor) for p in parts)
@@ -141,6 +199,8 @@ def uncovered_parts(question, statements, rows):
 
 
 def _matches_part(question, anchor):
+    if qualifier_conflict(question, anchor):
+        return False
     q, sentence, context = fold(question), fold(anchor.text), fold(anchor.context)
     if _ADVANCE.search(q):
         return bool(_INTERVAL.search(sentence))
