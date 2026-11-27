@@ -79,6 +79,8 @@ class Clarification:
     question: str  # «Срок зависит от подразделения. В каком вы работаете?»
     options: list[str]  # button labels; «Не знаю» is added by the channel
     attempt: int  # 1..3
+    option_refs: list[SourceRef | None] = field(default_factory=list)
+    dimension: str = "department"
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,7 @@ class Answer:
     # Navigation only. These points do not support an assertion in this answer.
     nearby_sources: list[SourceRef] = field(default_factory=list)
     redirect: Literal["legal", "manager"] | None = None
+    related: list[SourceRef] = field(default_factory=list)
 
 
 @dataclass
