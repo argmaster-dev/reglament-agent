@@ -7,7 +7,7 @@ export default function LawPanel() {
       <p>{props.revision}</p>
       <p>{props.source_url ? <a href={props.source_url} target="_blank" rel="noopener noreferrer">источник</a> : "источник не указан"}</p>
       <p>{props.retrieved}</p>
-      <p><em>{props.note}</em></p>
+      <p style={{fontSize:".85em"}}><em>{props.note}</em></p>
     </footer>
   </article>;
 }

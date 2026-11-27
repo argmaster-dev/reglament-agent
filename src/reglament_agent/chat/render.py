@@ -43,7 +43,9 @@ PRACTICE_LIMIT = 3
 # «п. 2.2 «Название» (Подразделение): текст»: так маршрут называет близкие пункты в тексте итога.
 _NEAR_LINE = re.compile(r"^п\. (\S+) «(.+?)» \((.+?)\): (.*)$")
 ADVICE_TITLE = "На что обратить внимание"
-ADVICE_LABEL = "Не из регламентов — общий совет. Уточните у юриста или в службе качества."
+ADVICE_LABEL = "Справочно, не юридическая консультация — применение к вашему случаю уточните у юристов."
+LAW_FOOTER = "Текст статьи приведён справочно, редакция от {revision}. Применение к вашему случаю — с юридической службой."
+LEGAL_REDIRECT = "Это вопрос законодательства, а не регламентов компании — по нему лучше обратиться к юристам."
 REFUSAL_LEAD = (
     "В регламентах ответа нет. Я отправил запрос в службу качества по почте, вы в копии. "
     "Ответ придёт на почту и в этот диалог."
@@ -182,14 +184,45 @@ def near_points(answer: Answer) -> list[NearPoint]:
     return split_near(answer.summary)[1]
 
 
-def near_actions(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> list[ActionSpec]:
-    """Buttons that open the near points in the side panel; points that no longer resolve get none."""
-    acts = []
-    for near in near_points(answer)[:NEAR_LIMIT]:
-        ref = resolve(near)
-        if ref is not None:
-            acts.append(ActionSpec("open_source", f"Близкий пункт · {near.label}", ref_payload(ref)))
-    return acts
+def near_chips(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> list[dict]:
+    """Near points as clickable chips (label + source payload), at most NEAR_LIMIT, each point once.
+
+    The structured `nearby_sources` of the Answer wins when the route supplies it; otherwise the lines
+    the route appends to the summary are parsed and resolved against the active documents.
+    """
+    refs = list(getattr(answer, "nearby_sources", None) or [])
+    if not refs:
+        refs = [r for r in (resolve(n) for n in near_points(answer)) if r is not None]
+    chips, seen = [], set()
+    for ref in refs:
+        key = (ref.doc_id, ref.point)
+        if key not in seen:
+            seen.add(key)
+            chips.append({"label": f"{ref.department} · п. {ref.point}", "source": ref_payload(ref)})
+    return chips[:NEAR_LIMIT]
+
+
+def refusal_element(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> dict | None:
+    """Props of the small inline element under a refusal: near-point chips and the ticket line."""
+    if answer.outcome not in TICKET_OUTCOMES or getattr(answer, "redirect", None):
+        return None
+    ticket = None
+    if answer.ticket:
+        t = answer.ticket
+        delivery = DELIVERY_TEXT.get(t.delivery, t.delivery)
+        ticket = {"number": t.number, "text": f"Обращение № {t.number} · {delivery}", "href": f"/tickets/{t.number}",
+                  "link": "статус"}
+    near = near_chips(answer, resolve)
+    return {"near": near, "ticket": ticket} if near or ticket else None
+
+
+_ABSENCE = re.compile(r"не наш[её]л|не нашла|ответ\w*[^.]*\bнет\b|\bнет ответа|Точного пункта|Есть пункты о том же", re.I)
+
+
+def drop_absence(summary: str) -> str:
+    """Remove sentences that only restate that there is no answer: the lead sentence says it once."""
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", summary)
+    return " ".join(x for x in sentences if x.strip() and not _ABSENCE.search(x)).strip()
 
 
 def faq_ids(answer: Answer) -> list[int]:
@@ -209,12 +242,6 @@ def ru_date(iso: str) -> str:
 def confirmed_line(dates: dict[int, str] | None, ids: list[int]) -> str:
     known = sorted({ru_date(dates[i]) for i in ids if dates and i in dates})
     return "🎓 " + CONFIRMED.capitalize() + (f" · {', '.join(known)}" if known else "")
-
-
-def ticket_note(t: TicketInfo) -> str:
-    """Small secondary line of a refusal: the number is a detail, the lead already says what happens."""
-    delivery = DELIVERY_TEXT.get(t.delivery, t.delivery)
-    return f"_Обращение № {t.number} · {delivery} · [статус](/tickets/{t.number})_"
 
 
 def evidence_groups(answer: Answer, names: dict[SourceRef, str]) -> list[dict]:
@@ -237,21 +264,29 @@ def answer_markdown(
     *,
     separate_evidence=False,
     faq_dates: dict[int, str] | None = None,
-    advice: list[Advice] | None = None,
 ) -> str:
+    redirect = getattr(answer, "redirect", None)
+    if redirect == "legal":
+        return LEGAL_REDIRECT
+    if redirect == "manager":
+        return f"**{OUTCOME_LABELS[Outcome.OFF_TOPIC]}**\n\n{OFF_TOPIC_HINT}"
     names = names if names is not None else assign_chip_names(answer)
-    summary, near = split_near(answer.summary)
+    summary, _near = split_near(answer.summary)
     if answer.outcome is Outcome.OFF_TOPIC and not summary.startswith("Сообщение длиннее"):
         summary = OFF_TOPIC_HINT  # заменяет общий текст маршрута, без повтора
     parts: list[str] = []
-    if answer.outcome is Outcome.LOW_CONFIDENCE:
-        parts.append(f"> ⚠️ {answer.caveat or 'Требует подтверждения службой качества'}")
-    parts.append(f"**{outcome_label(answer)}**")
     scope = scope_line(answer.scope)
-    if scope:
-        parts.append(f"_{scope}_")
-    if answer.outcome in TICKET_OUTCOMES:
+    refusal = answer.outcome in TICKET_OUTCOMES
+    if refusal:
+        # The first visible text is the lead sentence: no heading, no scope before it, said once.
         parts.append(REFUSAL_LEAD)
+        summary = drop_absence(summary)
+    else:
+        if answer.outcome is Outcome.LOW_CONFIDENCE:
+            parts.append(f"> ⚠️ {answer.caveat or 'Требует подтверждения службой качества'}")
+        parts.append(f"**{outcome_label(answer)}**")
+        if scope:
+            parts.append(f"_{scope}_")
     if answer.outcome is Outcome.ERROR:
         parts.append("Не удалось получить ответ, вопрос сохранён. Нажмите «Повторить».")
     elif answer.outcome is Outcome.CLARIFY and answer.clarification:
@@ -273,49 +308,47 @@ def answer_markdown(
     ids = faq_ids(answer)
     if ids and answer.outcome not in (Outcome.ERROR, Outcome.CLARIFY):
         parts.append(confirmed_line(faq_dates, ids))
-    if near:
-        parts.append("Близкие пункты: " + " · ".join(f"[{n.label}]" for n in near[:NEAR_LIMIT]))
     if answer.caveat and answer.outcome != Outcome.LOW_CONFIDENCE:
         parts.append(f"> {answer.caveat}")
-    if advice:
-        parts.append(advice_md(advice))
-    if answer.ticket:
-        parts.append(ticket_note(answer.ticket) if answer.outcome in TICKET_OUTCOMES else ticket_card(answer.ticket))
+    if refusal and scope:
+        parts.append(f"_{scope}_")
+    if answer.ticket and not refusal:
+        parts.append(ticket_card(answer.ticket))
     if answer.profile_note:
         parts.append(f"_{answer.profile_note}_")
     return "\n\n".join(parts)
 
 
-def advice_md(advice: list[Advice]) -> str:
-    """Отдельный блок после ответа по регламенту. Тексты каталога экранируются, как любой чужой текст."""
-    esc = html.escape
-    bullets = [
-        f"- {esc(item.aspect.chat_text)} ({'; '.join(esc(law.reference) for law in item.laws)})" for item in advice
-    ]
-    return f"**{ADVICE_TITLE}**\n\n_{ADVICE_LABEL}_\n\n" + "\n".join(bullets)
+def advice_element(advice: list[Advice]) -> dict | None:
+    """Props of the inline element AdviceBlock: heading, small disclaimer, bullets with clickable law references.
 
-
-def law_actions(advice: list[Advice]) -> list[ActionSpec]:
-    """Кнопка на каждую статью: открывает сохранённый текст в боковой панели."""
-    seen: dict[str, Law] = {}
-    for item in advice:
-        for law in item.laws:
-            seen.setdefault(law.id, law)
-    return [ActionSpec("open_law", f"Статья · {law.reference}", {"law_id": law.id}) for law in seen.values()]
+    The texts are plain strings: the element renders them as text, never as markup."""
+    if not advice:
+        return None
+    return {
+        "title": ADVICE_TITLE,
+        "note": ADVICE_LABEL,
+        "items": [
+            {"text": item.aspect.chat_text,
+             "laws": [{"label": law.reference, "law_id": law.id} for law in item.laws]}
+            for item in advice
+        ],
+    }
 
 
 def law_panel(law: Law) -> dict:
     """Что показывает боковая панель статьи: акт, статья, текст, редакция, источник и дата получения."""
+    revision = re.sub(r"^(ред\.?\s*)?(от\s*)?", "", law.revision.strip(), flags=re.I)
     url = law.source_url if law.source_url.startswith(("http://", "https://")) else ""
     return {
         "act": law.act,
         "article": law.reference,
         "title": law.title,
         "text": law.text,
-        "revision": f"редакция {law.revision}",
+        "revision": f"редакция от {revision}",
         "source_url": url,
         "retrieved": f"получено {ru_date(law.retrieved)}",
-        "note": ADVICE_LABEL,
+        "note": LAW_FOOTER.format(revision=revision),
     }
 
 

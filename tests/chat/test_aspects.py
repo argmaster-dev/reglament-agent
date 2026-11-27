@@ -168,20 +168,21 @@ def test_variants_statements_count_too(cat):
 
 
 def test_when_hit_goes_first_and_is_case_insensitive(cat):
-    assert ids(A.select_advice(cat, answer("7.1"), "Нужно ли NDA?")) == ["secret", "general-1", "general-2"]
+    assert ids(A.select_advice(cat, answer("7.1"), "Нужно ли NDA?")) == ["secret", "general-1"]
     assert ids(A.select_advice(cat, answer("7.1"), "обычный вопрос")) == ["general-1", "general-2"]  # без when-аспект скрыт
 
 
-def test_limit_of_three_and_no_duplicates(cat):
+def test_limit_of_two_and_no_duplicates(cat):
     extra = "".join(
         f'\n  [[rubric.aspect]]\n  id = "g{i}"\n  text = "t"\n  laws = ["zk-1"]\n  quote = "в письменной форме"\n'
         for i in range(5)
     )
     big = A.parse_catalog(CAT.replace('[[rubric]]\nid = "r2"', extra + '\n[[rubric]]\nid = "r2"'), LAWS)
     got = A.select_advice(big, answer("7.1"), "тайна")
-    assert len(got) == 3 and got[0].aspect.id == "secret"
+    assert len(got) == 2 and got[0].aspect.id == "secret"
     two = A.parse_catalog(CAT.replace('"doc-b:2"', '"doc-a:7"'), LAWS)  # раздел дважды в одной рубрике
-    assert len(set(ids(A.select_advice(two, answer("7.1"), "тайна")))) == 3
+    got2 = ids(A.select_advice(two, answer("7.1"), "тайна"))
+    assert len(set(got2)) == len(got2) == 2
 
 
 @pytest.mark.parametrize("outcome", [Outcome.NO_BASIS, Outcome.OFF_TOPIC, Outcome.CLARIFY, Outcome.EXTERNAL_DOC,
@@ -203,49 +204,98 @@ def test_no_block_when_no_point_is_cited(cat):
 
 
 # ---------- отрисовка ----------
-def test_block_renders_label_references_and_escaping(cat):
+DISCLAIMER = "Справочно, не юридическая консультация — применение к вашему случаю уточните у юристов."
+
+
+def test_block_props_have_disclaimer_references_and_plain_text(cat):
     adv = A.select_advice(cat, answer("7.1"), "nda")
-    md = R.answer_markdown(answer("7.1"), advice=adv)
-    assert "**На что обратить внимание**" in md
-    assert "_Не из регламентов — общий совет. Уточните у юриста или в службе качества._" in md
-    assert "(Закон о тайнах, ст. 9; ЗВД, ст. 5)" in md  # «статья 9» без дубля, короткое имя при наличии
-    assert "&lt;b&gt;важна&lt;/b&gt;" in md and "<b>" not in md
-    assert md.index("Утверждение") < md.index("На что обратить внимание")
-
-
-def test_escaping_of_law_names():
-    law = A.Law("x", "Акт <i>", "1", "1", "T", "t", "r", "https://e.test", "2026-01-01")
-    adv = [A.Advice(A.Aspect("a", "r", "<script>alert(1)</script>", (), ("x",), "t"), (law,))]
-    md = R.advice_md(adv)
-    assert "<script>" not in md and "<i>" not in md and "&lt;script&gt;" in md
+    props = R.advice_element(adv)
+    assert props["title"] == "На что обратить внимание" and props["note"] == DISCLAIMER
+    assert "Не из регламентов" not in props["note"]
+    assert [i["laws"] for i in props["items"]][0] == [
+        {"label": "Закон о тайнах, ст. 9", "law_id": "zk-2"}, {"label": "ЗВД, ст. 5", "law_id": "zk-1"}]
+    assert props["items"][0]["text"] == "Тайна <b>важна</b>."  # элемент выводит текст как текст, не как разметку
+    assert "На что обратить внимание" not in R.answer_markdown(answer("7.1"))  # блок не в markdown (HTML выключен)
 
 
 def test_chat_uses_short_with_fallback_to_text():
     law = A.Law("x", "Акт", "1", "432", "T", "t", "r", "https://e.test", "2026-01-01", short="ГК РФ")
     full = A.Aspect("a", "r", "Полный совет.", (), ("x",), "t", short="Коротко.")
     plain = A.Aspect("b", "r", "Полный совет.", (), ("x",), "t")
-    md = R.advice_md([A.Advice(full, (law,)), A.Advice(plain, (law,))])
-    assert "- Коротко. (ГК РФ, ст. 432)" in md and "- Полный совет. (ГК РФ, ст. 432)" in md
-    assert md.count("Полный совет.") == 1
+    props = R.advice_element([A.Advice(full, (law,)), A.Advice(plain, (law,))])
+    assert [i["text"] for i in props["items"]] == ["Коротко.", "Полный совет."]
+    assert props["items"][0]["laws"][0]["label"] == "ГК РФ, ст. 432"
     c = A.parse_catalog(CAT.replace('  id = "general-1"', '  id = "general-1"\n  short = "Кратко один."'), LAWS)
     assert c.rubrics[0].aspects[0].short == "Кратко один."
 
 
-def test_no_block_markup_without_advice():
-    assert "На что обратить внимание" not in R.answer_markdown(answer("7.1"))
+def test_no_element_without_advice():
+    assert R.advice_element([]) is None
 
 
-def test_law_action_and_panel(cat):
-    adv = A.select_advice(cat, answer("7.1"), "nda")
-    acts = R.law_actions(adv)
-    assert [(a.name, a.payload["law_id"]) for a in acts] == [("open_law", "zk-2"), ("open_law", "zk-1")]
-    assert all("ст." in a.label for a in acts)
+def test_law_panel(cat):
     panel = R.law_panel(cat.laws["zk-1"])
     assert panel["act"].startswith("Закон о вымышленных") and panel["title"] == "Форма договора"
     assert "в письменной форме" in panel["text"]
     assert panel["revision"] == "редакция от 01.02.2026"
+    assert panel["note"] == ("Текст статьи приведён справочно, редакция от 01.02.2026. "
+                             "Применение к вашему случаю — с юридической службой.")
     assert panel["source_url"] == "https://example.test/zk-1" and panel["retrieved"] == "получено 20.11.2026"
     assert R.law_panel(cat.laws["zk-2"])["source_url"] == ""  # небезопасная схема не становится ссылкой
+
+
+# ---------- согласование ----------
+def test_approved_filter(tmp_path):
+    approved = CAT.replace('  id = "general-2"', '  id = "general-2"\n  approved = "юридическая служба, 2026-11-30"')
+    d = write(tmp_path, approved)
+    demo = A.load_catalog(d, env={})
+    strict = A.load_catalog(d, env={"ASPECTS_REQUIRE_APPROVED": "1"})
+    assert ids(A.select_advice(demo, answer("7.1"), "в")) == ["general-1", "general-2"]
+    assert ids(A.select_advice(strict, answer("7.1"), "в")) == ["general-2"]
+    assert A.select_advice(strict, answer("2.1", doc="doc-c", ), "в") == []  # другая рубрика не согласована
+    assert strict.rubrics[0].aspects[1].approved.startswith("юридическая служба")
+
+
+def test_real_revision_reads_once_in_footer():
+    c = A.load_catalog(ROOT / "docx" / "aspects", env={})
+    note = R.law_panel(c.laws["gk-432"])["note"]
+    assert "редакция от ред." not in note and "от от" not in note and note.startswith("Текст статьи приведён справочно, редакция от ")
+
+
+def test_real_data_has_no_approval_yet():
+    c = A.load_catalog(ROOT / "docx" / "aspects", env={})
+    assert c and not any(a.approved for r in c.rubrics for a in r.aspects)
+
+
+# ---------- перенаправление ----------
+class Redirected(Answer):
+    pass
+
+
+def redirected(kind, outcome=Outcome.OFF_TOPIC, ticket=None, summary="Общий текст."):
+    a = Answer(outcome, summary, [Statement("x", [ref("7.1")])], ticket=ticket)
+    a.redirect = kind
+    return a
+
+
+def test_legal_redirect_is_alone(cat):
+    from reglament_agent.answer import TicketInfo
+    a = redirected("legal", Outcome.NO_BASIS, TicketInfo("2026-1", "r", "sent", []),
+                   "Нет.\nп. 2.2 «Док» (ОЗ): Текст.")
+    md = R.answer_markdown(a)
+    assert md == "Это вопрос законодательства, а не регламентов компании — по нему лучше обратиться к юристам."
+    assert A.select_advice(cat, a, "в") == []
+    assert R.refusal_element(a, lambda n: None) is None
+
+
+def test_manager_redirect_keeps_off_topic_hint():
+    md = R.answer_markdown(redirected("manager"))
+    assert "обратитесь к своему руководителю" in md and "юристам" not in md
+
+
+def test_no_redirect_attribute_is_ignored(cat):
+    assert not hasattr(answer("7.1"), "redirect")
+    assert A.select_advice(cat, answer("7.1"), "в")
 
 
 # ---------- данные репозитория ----------

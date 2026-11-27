@@ -262,12 +262,7 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
     names = R.assign_chip_names(answer)
     faq_dates, near_refs = await asyncio.to_thread(_lookup_answer_extras, answer)
     advice = select_advice(cached_catalog(), answer, text)
-    specs = (
-        R.clarify_actions(answer)
-        + R.answer_actions(answer, text, message_id)
-        + R.near_actions(answer, lambda n: near_refs.get((n.doc_title, n.department, n.point)))
-        + R.law_actions(advice)
-    )
+    specs = R.clarify_actions(answer) + R.answer_actions(answer, text, message_id)
     if answer.outcome is Outcome.CLARIFY:
         specs = R.clarify_actions(answer)
     evidence = R.evidence_groups(answer, names)
@@ -276,9 +271,15 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
         if evidence
         else []
     )
+    note = R.refusal_element(answer, lambda n: near_refs.get((n.doc_title, n.department, n.point)))
+    if note:
+        elements.append(cl.CustomElement(name="RefusalNote", display="inline", props=note))
+    advice_props = R.advice_element(advice)
+    if advice_props:
+        elements.append(cl.CustomElement(name="AdviceBlock", display="inline", props=advice_props))
     msg = cl.Message(content="", elements=elements)
     # Only verified statements reach the stream; raw model tokens may still lose their basis.
-    for part in R.answer_markdown(answer, names, separate_evidence=bool(evidence), faq_dates=faq_dates, advice=advice).splitlines(keepends=True):
+    for part in R.answer_markdown(answer, names, separate_evidence=bool(evidence), faq_dates=faq_dates).splitlines(keepends=True):
         await msg.stream_token(part)
     msg.actions = _actions(specs)
     await msg.send()

@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Mapping
@@ -20,7 +20,7 @@ from reglament_agent.answer import Answer, Outcome
 
 log = logging.getLogger(__name__)
 
-ASPECT_LIMIT = 3
+ASPECT_LIMIT = 2
 ADVICE_OUTCOMES = {Outcome.ANSWER, Outcome.VARIANTS, Outcome.LOW_CONFIDENCE}
 _SECTION = re.compile(r"^[A-Za-z0-9_\-]+:[0-9]+$")
 
@@ -59,6 +59,7 @@ class Aspect:
     laws: tuple[str, ...]
     quote: str
     short: str = ""
+    approved: str = ""  # «юридическая служба, 2026-11-30»; пусто = сверено с текстом статьи, но не согласовано
 
     @property
     def chat_text(self) -> str:
@@ -78,6 +79,7 @@ class Rubric:
 class Catalog:
     rubrics: tuple[Rubric, ...]
     laws: Mapping[str, Law]
+    require_approved: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,7 +150,7 @@ def parse_catalog(aspects_toml: str, laws_toml: str) -> Catalog:
             if not isinstance(when, list) or not all(isinstance(w, str) and w for w in when):
                 raise CatalogError(f"{where}: when должен быть списком строк")
             aspects.append(Aspect(aid, rid, _need(a, "text", where), tuple(w.lower() for w in when), tuple(ids), quote,
-                                  str(a.get("short", "")).strip()))
+                                  str(a.get("short", "")).strip(), str(a.get("approved", "")).strip()))
         rubrics.append(Rubric(rid, str(r.get("title", rid)), frozenset(sections), tuple(aspects)))
     return Catalog(tuple(rubrics), laws)
 
@@ -167,7 +169,9 @@ def load_catalog(directory: Path | None = None, env: Mapping[str, str] | None = 
     if not (a.is_file() and l.is_file()):
         return None
     try:
-        return parse_catalog(a.read_text(encoding="utf-8"), l.read_text(encoding="utf-8"))
+        catalog = parse_catalog(a.read_text(encoding="utf-8"), l.read_text(encoding="utf-8"))
+        required = env.get("ASPECTS_REQUIRE_APPROVED", "0").strip().lower() in ("1", "true", "yes", "on")
+        return replace(catalog, require_approved=required)
     except (CatalogError, OSError, UnicodeDecodeError) as exc:
         log.error("каталог «На что обратить внимание» отключён: %s", exc)
         return None
@@ -194,7 +198,7 @@ def cited_sections(answer: Answer) -> set[str]:
 
 
 def select_advice(catalog: Catalog | None, answer: Answer, question: str, limit: int = ASPECT_LIMIT) -> list[Advice]:
-    if catalog is None or answer.outcome not in ADVICE_OUTCOMES:
+    if catalog is None or answer.outcome not in ADVICE_OUTCOMES or getattr(answer, "redirect", None):
         return []
     sections = cited_sections(answer)
     if not sections:
@@ -208,6 +212,8 @@ def select_advice(catalog: Catalog | None, answer: Answer, question: str, limit:
             if a.id in seen:
                 continue
             seen.add(a.id)
+            if catalog.require_approved and not a.approved:
+                continue
             if not a.when:
                 general.append(a)
             elif any(w in q for w in a.when):
