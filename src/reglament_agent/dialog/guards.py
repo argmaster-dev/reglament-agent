@@ -7,7 +7,7 @@ import math
 import re
 
 from .checks import _numbers
-from .lexicon import find_roles, fold, words
+from .lexicon import find_roles, fold, glossary, words
 
 MIN_LENGTH, MAX_LENGTH = 3, 2000
 
@@ -34,13 +34,112 @@ _TASK = re.compile(
     r"\b(?:follow[\s-]?up|фоллоу[\s-]?ап|письм\w*|напоминани\w*|сообщени\w*|рассылк\w*)\b"
 )
 
+# Classify the intent (choice for a private recipient or purpose), without a catalog of products.
+_CHOICE = re.compile(
+    r"\b(?:подобрать|подбери(?:те)?|выбрать|выбери(?:те)?|посоветуй(?:те)?|порекомендуй(?:те)?)\b"
+)
+_PRIVATE_PURPOSE = re.compile(
+    r"\b(?:для себя(?: лично)?|для личного пользования)\b"
+    r"|\b(?:для|на|в|к)\s+(?:(?:семейн|личн|домашн)\w*\s+\w+|(?:отдых|поход|пикник|рыбалк)\w*)\b"
+    r"|\b(?:для(?:\s+(?:сво\w*|домашн\w*|взросл\w*))?|мо(?:ему|ей)|сво(?:ему|ей))\s+"
+    r"(?:семь\w*|ребенк\w*|дет(?:ей|ям)|питомц\w*|кот(?:а|у|ят|енк[ау])|кошк\w*|собак\w*|щенк\w*)\b"
+)
+_WORK_RULE = re.compile(
+    r"\b(?:регламент|инструкци|положени|поряд|процедур|смет|закуп|договор|документ|заказчик|сделк"
+    r"|компани|подразделени|служебн|предприяти|финансир|согласовани|сотрудник|клиент)\w*\b"
+    r"|\bправил(?:о|а|у|ом|е|ам|ами|ах)?\b|\bпроект(?:а|у|е|ом|ы|ов|ам|ами|ах|н\w*)?\b"
+)
+# These are work subjects even when the reason for arranging them is personal.
+_EMPLOYMENT_SUBJECT = re.compile(r"\b(?:отпуск|отгул|больничн|командировк|дежурств|график)\w*\b")
+_ADVICE_FILLERS = {"мне", "помоги", "помогите", "пожалуйста", "пожалуй",
+                  "прошу", "как", "что", "это", "бы", "ты", "вы", "что-нибудь", "нибудь", "который", "нужно"}
+# Specific household actions convey a purpose themselves. Preparing things remotely
+# or welding something at home does not, so ambiguous verbs need separate evidence.
+_HOME_SETTING = re.compile(r"\b(?:дома|в домашних условиях|на (?:своей|домашней) кухне)\b")
+_KITCHEN_SETTING = re.compile(r"\b(?:завтрак|обед|ужин)\w*\b|\b(?:в духовке|на сковороде|на пару|в кастрюле)\b")
+_DOMESTIC_ACTION = re.compile(
+    r"\b(?:испечь|испеки(?:те)?|выпекать|выпекай(?:те)?|запечь|запеки(?:те)?|запекать|запекай(?:те)?"
+    r"|пожарить|пожарь(?:те)?|замесить|замеси(?:те)?|постирать|постирай(?:те)?|погладить|погладь(?:те)?"
+    r"|пропылесосить|пропылесось(?:те)?)\b"
+)
+_PREPARE = re.compile(r"\b(?:(?:при)?готовить|(?:при)?готовь(?:те)?)\b")
+_BOIL_OR_WELD = re.compile(r"\b(?:сварить|свари(?:те)?)\b")
+_REQUEST_FORM = re.compile(
+    r"\b(?:как|что|чем|како\w*|каки\w*|сколько|можно|ли|подскажи(?:те)?|расскажи(?:те)?|помоги(?:те)?|научи(?:те)?)\b"
+)
+_RECIPE_ADVICE = re.compile(
+    r"\b(?:посоветуй(?:те)?|порекомендуй(?:те)?|подскажи(?:те)?|дай(?:те)?|предложи(?:те)?|"
+    r"напиши(?:те)?|покажи(?:те)?|како[йе])\s+(?:(?:мне|нам|простой|подходящий|новый)\s+){0,2}рецепт(?:ы)?\b"
+)
+_WORK_PREPARATION = re.compile(
+    r"\b(?:отчет|заявк|презентаци|реестр|бланк|файл|кейтеринг|корпоративн|рабоч|офисн)\w*\b"
+    r"|\bакт(?:ов|ами|ах|ом|а|у|е|ы)?\b"
+    r"|\b(?:коммерческ\w*\s+предложени\w*|технологическ\w*\s+(?:карт|процесс)\w*|из дома по работ\w*|поставщик\w*)\b"
+)
+_REFERENCE_WORDS = {"его", "ее", "это", "этот", "эту", "этого", "эти", "их", "него", "нее", "такой", "такую",
+                    "этим", "этом", "все", "данный", "дома", "для", "нас", "нам", "себя", "потом", "еще", "сейчас"}
+_FX_APPLICATION = re.compile(
+    r"\b(?:закладывать|фиксировать|подставлять|указать|указывать|применить|применять|использовать|учитывать)\b"
+    r"|\b(?:для|при)\s+(?:(?:предварительн|проектн)\w*\s+)?(?:расчет|оформлени|составлени|заполнени)\w*"
+    r"\s+(?:смет|бюджет|стоимост|цен|предложени|договор|счет)\w*\b"
+)
+
+
+def _personal_choice(q):
+    choice = _CHOICE.search(q)
+    if not choice or _WORK_RULE.search(q):
+        return False
+    purpose = _PRIVATE_PURPOSE.search(q)
+    if not purpose or find_roles(words(q)):
+        return False
+    # «Помоги выбрать для себя» still needs clarification. Require a named subject of the choice.
+    subject = _CHOICE.sub(" ", q[:purpose.start()] + " " + q[purpose.end():])
+    return not _EMPLOYMENT_SUBJECT.search(subject) and any(
+        len(w) > 2 and w not in _ADVICE_FILLERS for w in words(subject)
+    )
+
+
+def _household_instruction(q):
+    # A UI label or a quoted utterance need not be the requested action.
+    request = re.sub(r'«[^»]*»|"[^"]*"', ' ', q)
+    advice = _RECIPE_ADVICE.search(request)
+    specific = _DOMESTIC_ACTION.search(request)
+    action = specific
+    if not action and _KITCHEN_SETTING.search(request):
+        action = _BOIL_OR_WELD.search(request) or _PREPARE.search(request)
+    if not action and _HOME_SETTING.search(request):
+        action = _PREPARE.search(request)
+    if not advice:
+        if not action:
+            return False
+        # Infinitives can merely name a task. Accept a question, a request for help, or an imperative.
+        if action[0].endswith(("ть", "чь")) and not (_REQUEST_FORM.search(request) or "?" in request):
+            return False
+    if _WORK_RULE.search(q) or _WORK_PREPARATION.search(q) or _EMPLOYMENT_SUBJECT.search(q):
+        return False
+    tokens = words(q)
+    # «по» can be an ordinary preposition. Other glossary abbreviations identify work subjects such as КП.
+    if find_roles(tokens) or any(token != "по" and token in tokens for token in map(fold, glossary())):
+        return False
+    # A pronoun alone can continue a real work question. Require an independently named subject.
+    subject = _HOME_SETTING.sub(" ", request[(advice or action).end():])
+    if any(len(w) > 2 and w not in _ADVICE_FILLERS and w not in _REFERENCE_WORDS for w in words(subject)):
+        return True
+    # An open request for ideas ("что ... испечь?") supplies its own subject. A pronoun may refer
+    # to the work item in the previous turn and does not independently establish a domestic request.
+    return bool(specific and "что" in words(request[:specific.start()]) and not set(tokens) & _REFERENCE_WORDS)
+
 
 def operational_request(text):
     """Requests for actual records, market data or external work have no regulatory answer."""
     q = fold(text)
+    if _personal_choice(q) or _household_instruction(q):
+        return True
     if _PROCEDURE.search(q):
         return False
-    return bool(_EXCHANGE.search(q) or _TASK.search(q) or (_METRIC.search(q) and _RECORD.search(q)))
+    if _EXCHANGE.search(q):
+        return not _FX_APPLICATION.search(q)
+    return bool(_TASK.search(q) or (_METRIC.search(q) and _RECORD.search(q)))
 
 
 # Verbs of invention and guessing, matched by stem so any inflection is covered.

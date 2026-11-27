@@ -90,6 +90,71 @@ def terms(text):
     return {concept(w) for w in words(text) if w not in _STOP and len(w) > 1}
 
 
+# A reimbursement is a transfer to a beneficiary. An expense posted to a project
+# or paid from a budget establishes neither the beneficiary nor the reimbursed purchase.
+_REIMBURSE = re.compile(r'\b(?:возмещ|возмест|компенсир|компенсац)\w*')
+_REIMBURSE_VERB = re.compile(r'\b(?:возмеща(?:ет|ют|ется|ются)|возмест(?:ит|ят)|компенсиру(?:ет|ют|ется|ются))\b')
+_REIMBURSE_RULE = re.compile(r'\b(?:производится|производятся|выплачивается|выплачиваются|положен[аоы]?|'
+                             r'предусмотрен[аоы]?|подлеж\w*\s+(?:возмещению|компенсации)|'
+                             r'(?:возмещению|компенсации)\s+(?:не\s+)?подлеж\w*|'
+                             r'для\s+(?:возмещения|компенсации)\b[^,;.]*?\b(?:необходимо|требуется|нужно))\b')
+_REIMBURSE_CLAUSES = re.compile(r'[;.!?]|,\s*(?:а|но|затем|после чего)\s+')
+_PARTY = r'сотрудник|работник|подрядчик|заказчик|поставщик|клиент'
+_PAYEE = re.compile(rf'\b({_PARTY})(?:у|ам)\b')
+_EXPENSE_OWNER = re.compile(rf'\b(?:расход\w*|затрат\w*)\s+({_PARTY})(?:а|ов)\b')
+_MONEY = re.compile(r'\b(?:расход|затрат|стоимост|покупк|затрачен|денежн|деньг)\w*')
+_PASSIVE = re.compile(r'\b(?:возмеща|компенсиру)(?:ется|ются)\b')
+_ASK_METHOD = re.compile(r'\b(?:как|поряд\w*|процедур\w*)\b')
+_METHOD = re.compile(r'\b(?:после|при|через|согласно|посредством|по|ежемесячно|необходимо|требуется|нужно|'
+                     r'в течение|в срок|на основании|на счет|путем|в размере|полностью|частично|не)\b')
+_COST_WORDS = re.compile(r'\b(?:как\w*|внутренн\w*|поряд\w*|правил\w*|регламент\w*|'
+                         r'стоимост\w*|расход\w*|затрат\w*|покупк\w*|закупк\w*|приобретени\w*)\b')
+
+
+def _payees(text):
+    roles = _PAYEE.findall(text)
+    if not roles and _PASSIVE.search(text):
+        # In the passive voice the owner of the reimbursed expenses can name the beneficiary.
+        roles = _EXPENSE_OWNER.findall(text)
+    return {'сотрудник' if role == 'работник' else role for role in roles}
+
+
+@dataclass(frozen=True)
+class Reimbursement:
+    objects: frozenset[str]
+    payees: frozenset[str]
+    asks_method: bool
+
+    def supported_by(self, sentence):
+        for clause in _REIMBURSE_CLAUSES.split(fold(sentence)):
+            if not _REIMBURSE.search(clause):
+                continue
+            verb = _REIMBURSE_VERB.search(clause)
+            if verb and re.match(r'\s+ли\b', clause[verb.end():]):
+                continue
+            if not (verb or _REIMBURSE_RULE.search(clause)):
+                continue
+            if self.asks_method and not _METHOD.search(clause):
+                continue
+            if self.objects and self.objects <= terms(clause) and self.payees <= _payees(clause):
+                return True
+        return False
+
+
+def reimbursement_request(question, departments):
+    q = fold(question)
+    operation = _REIMBURSE.search(q)
+    # Compensation can also describe an engineering or scheduling adjustment.
+    if not operation or (operation[0].startswith('компенс') and not (_payees(q) or _MONEY.search(q))):
+        return None
+    # Use distinguishing subject terms from the question, irrespective of word order.
+    # Department, question wording and generic cost/purchase terms cannot identify the expense.
+    subject = _EXPENSE_OWNER.sub(' ', q) if _PASSIVE.search(q) else q
+    subject = _COST_WORDS.sub(' ', _PAYEE.sub(' ', _REIMBURSE.sub(' ', subject)))
+    objects = terms(subject) - terms(' '.join(departments)) - _COURTESY_WORDS
+    return Reimbursement(frozenset(objects), frozenset(_payees(q)), bool(_ASK_METHOD.search(q)))
+
+
 def _signing_work(text, action):
     """An ancillary role can govern a noun for signing, never a finite signing verb."""
     if action.lastgroup != "nominal":
