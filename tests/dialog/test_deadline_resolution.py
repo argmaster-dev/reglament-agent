@@ -50,6 +50,7 @@ def test_deadline_uses_the_owner_of_the_timed_action_not_the_recipient_of_a_late
     second = anchor("4.2", "Заявку на аудит оформляют за пять дней до передачи отчёта заказчику.")
     assert relevance.applicable_refs(question, [first, second]) == {first.ref, second.ref}
     assert not relevance._roles("до передачи отчёта заказчику")
+    assert not relevance._roles("до передачи отчёта заказчику оформляют заявку")
     owner = relevance._roles("ПА должен оформить заявку")
     assert owner
     assert relevance._roles("До передачи отчёта заказчику ПА должен оформить заявку") == owner

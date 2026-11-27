@@ -319,6 +319,7 @@ def _point_key(anchor):
 _DUTY_BOUNDARY = re.compile(
     r"\b(?:у|чтобы|нужно|надо|следует|необходимо|требуется|должен|должна|должны|обязан\w*)\b"
 )
+_DATIVE_ENDING = re.compile(r"[а-я]{3,}(?:у|ю|ам|ям)")
 _PERSONAL_PREDICATE = re.compile(r"(?:должен|должна|должны|обязан\w*|\w+(?:ает|яет|ует|ают|яют|уют|ится|ит))")
 
 
@@ -333,7 +334,10 @@ def _roles(text):
             if event != prefix and not _DUTY_BOUNDARY.search(event):
                 # «до передачи отчёта заказчику» is a timing reference. An explicit
                 # predicate starts a main clause even without a separating comma.
-                if end == len(tokens) or not _PERSONAL_PREDICATE.fullmatch(tokens[end]):
+                # A dative recipient still belongs to the reference event in
+                # «до передачи отчёта клиенту оформляют заявку».
+                recipient = any(_DATIVE_ENDING.fullmatch(token) for token in tokens[start:end])
+                if recipient or end == len(tokens) or not _PERSONAL_PREDICATE.fullmatch(tokens[end]):
                     continue
             owners.add(role)
     return owners
