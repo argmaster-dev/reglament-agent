@@ -209,8 +209,8 @@ def refusal_element(answer: Answer, resolve: Callable[[NearPoint], SourceRef | N
     ticket = None
     if answer.ticket:
         t = answer.ticket
-        delivery = DELIVERY_TEXT.get(t.delivery, t.delivery)
-        ticket = {"number": t.number, "text": f"Обращение № {t.number} · {delivery}", "href": f"/tickets/{t.number}",
+        # No delivery state here: the line is drawn once and would go stale; the status page is live.
+        ticket = {"number": t.number, "text": f"Обращение № {t.number}", "href": f"/tickets/{t.number}",
                   "link": "статус"}
     near = near_chips(answer, resolve)
     return {"near": near, "ticket": ticket} if near or ticket else None
