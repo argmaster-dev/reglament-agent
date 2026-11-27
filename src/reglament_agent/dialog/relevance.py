@@ -56,9 +56,29 @@ _TIME_VALUE = re.compile(
 _DEADLINE_WORDS = {word_key(w) for w in (
     "срок срока сроки время времени день дня дней недели неделя час часов нужно надо следует необходимо "
     "должен должна можно течение позднее раньше долго быстро сколько какой какого когда числа момента".split())}
-_SIGN = re.compile(r"подпис|заключ")
-_SIGN_ROLE = re.compile(r"подпис(?:ание|ывает|ать|ыва)|заключ(?:ение|ает|ить)")
-_CONTRACTOR = re.compile(r"(?:суб)?подрядчик|внешн\w* исполнител")
+_SIGNING_ACTION = re.compile(
+    r"\b(?:(?P<nominal>подписани\w*|заключени\w*)"
+    r"|(?P<active>подпис(?:ать|ал[аи]?|ыва(?:ет|ют|ть|л[аи]?))|заключ(?:ить|ил[аи]?|а(?:ет|ют|ть|л[аи]?)))"
+    r"|(?P<passive>подпис(?:ан[аоы]?|ыва(?:ется|ются))|заключ(?:ен[аоы]?|а(?:ется|ются))))\b"
+)
+_SIGNING_ACTOR_QUERY = re.compile(r"\b(?:кто|кем|кому|на ком)\b|\bответственн\w* за")
+_SIGNING_WORK = re.compile(
+    r"\b(?:(?P<initiate>инициир\w*|инициатор\w*)|(?P<organize>организ\w*)"
+    r"|(?P<coordinate>координир\w*)|(?P<support>сопровожд\w*)|(?P<prepare>подготов\w*|готови\w*)"
+    r"|(?P<approve>согласовыва\w*|согласу\w*|согласовани\w*))\b"
+)
+_SIGNING_DUTY = re.compile(
+    r"\b(?:отвеча(?:ет|ют)|ответственн(?:ый|ая|ые|ым|ыми|ому|ой|ен|а|ы)|обязан\w*|возлагается на"
+    r"|выполня(?:ет|ют)|осуществля(?:ет|ют))\b"
+)
+_SIGNING_PASSIVE_DUTY = re.compile(r"\b(?:выполня|осуществля)(?:ется|ются)\b")
+_SIGNING_BACKGROUND = re.compile(r"\b(?:для|к|до|после|при|аналогично|подобно)\s+$")
+_SIGNING_DOCUMENT = re.compile(
+    r"\b(?:(?P<addendum>дополнительн\w*\s+соглашени\w*|допсоглашени\w*|дс)"
+    r"|(?P<contract>договор\w*|контракт\w*)|(?P<agreement>соглашени\w*)"
+    r"|(?P<upd>упд)|(?P<act>акт(?:ов|ами|ах|ом|а|у|е|ы)?))\b"
+)
+_CONTRACTOR = re.compile(r"(?:суб)?подряд(?:чик|н)\w*|внешн\w* исполнител")
 _PRIORITY = re.compile(r"приоритет")
 
 
@@ -73,17 +93,82 @@ def terms(text):
     return {concept(w) for w in words(text) if w not in _STOP and len(w) > 1}
 
 
-def asks_signer(q):
-    return bool(re.search(r"\bкто\b|ответственн\w* за", q) and _SIGN.search(q))
+def _signing_work(text, action):
+    """An ancillary role can govern a noun for signing, never a finite signing verb."""
+    if action.lastgroup != "nominal":
+        return None
+    for work in _SIGNING_WORK.finditer(text):
+        if work.end() <= action.start() and action.start() - work.end() <= 45:
+            between = text[work.end():action.start()]
+            if not re.search(r"[,.;!?]|\bи\b", between):
+                return work.lastgroup
+        if action.end() <= work.start() and work.start() - action.end() <= 75:
+            between = text[action.end():work.start()]
+            if not re.search(r"[,.;!?]|\bи\b", between):
+                return work.lastgroup
+    return None
+
+
+def signing_role(question):
+    """Classify requests for a signer or a supporting role in the same operation."""
+    q = fold(question)
+    if not _SIGNING_ACTOR_QUERY.search(q):
+        return None
+    for action in _SIGNING_ACTION.finditer(q):
+        work = _signing_work(q, action)
+        if work:
+            return work
+        if not _SIGNING_BACKGROUND.search(q[:action.start()]):
+            return "signer"
+    return "signer" if re.search(r"\bподписант\w*\b", q) else None
+
+
+def asks_signer(question):
+    return signing_role(question) == "signer"
+
+
+def _document_for_action(text, action=None):
+    if action is None:
+        document = _SIGNING_DOCUMENT.search(text)
+    else:
+        def distance(document):
+            return max(action.start() - document.end(), document.start() - action.end(), 0)
+
+        document = min(_SIGNING_DOCUMENT.finditer(text), key=distance, default=None)
+    return document.lastgroup if document else None
+
+
+def _answers_signing_role(question, sentence, role):
+    q = fold(question)
+    document = _document_for_action(q, _SIGNING_ACTION.search(q))
+    for clause in re.split(r"[.;!?]|,\s*(?=(?:а|но)\s)", sentence):
+        for action in _SIGNING_ACTION.finditer(clause):
+            if document and _document_for_action(clause, action) != document:
+                continue
+            work = _signing_work(clause, action)
+            if role != "signer":
+                if work == role:
+                    return True
+                continue
+            if work or _SIGNING_BACKGROUND.search(clause[:action.start()]):
+                continue
+            if action.lastgroup == "active" or action.lastgroup == "nominal" and _SIGNING_DUTY.search(clause):
+                return True
+            if (action.lastgroup == "passive" or _SIGNING_PASSIVE_DUTY.search(clause)) and find_roles(words(clause)):
+                return True
+    return False
 
 
 def signer_pointer(q, anchor):
-    """A sentence that sends the subject of a signer question to another document names no signer itself,
-    but it is the point the answer must cite (with the remark that the signer is not named there)."""
-    if not external_reference(anchor) or _SIGN_ROLE.search(fold(anchor.text)):
+    """Allow a relevant external citation to explain why nobody is named as signer."""
+    q, sentence = fold(q), fold(anchor.text)
+    document = _document_for_action(q, _SIGNING_ACTION.search(q))
+    if not external_reference(anchor) or document and _document_for_action(sentence) != document:
+        return False
+    if _answers_signing_role(q, sentence, "signer"):
         return False
     subject = terms(q) - terms("подписывает заключает подписание заключение кто")
-    return bool(subject & terms(anchor.text)) and bool(_CONTRACTOR.search(fold(anchor.text)) or not _CONTRACTOR.search(q))
+    return bool(subject & terms(anchor.text)) and bool(_CONTRACTOR.search(sentence) or not _CONTRACTOR.search(q))
 
 
 def asks_amount(q):
@@ -167,22 +252,15 @@ def _matches_part(question, anchor):
             re.search(r"(запрещ|согласован|разреш|услови|исключени|гарант|допуск|только при)", sentence)
             and re.search(r"нач[аи]|старт|приступ|работ", sentence + " " + context)
         )
-    if asks_signer(q):
-        if signer_pointer(q, anchor):
+    role = signing_role(q)
+    if role:
+        if role == "signer" and signer_pointer(q, anchor):
             return True
-        if not _SIGN_ROLE.search(sentence):
+        if _CONTRACTOR.search(q) and not _CONTRACTOR.search(sentence + " " + context):
             return False
-        if re.search(r"договор|контракт|соглашен", q):
-            # Bind the operation to the requested artifact: signing a delivery note is a different act.
-            contract = r"(?:договор|контракт|соглашени)"
-            direct = r"(?:подпис|заключ)\w*\s+(?:(?:рамочн|агентск|нов|проектн)\w*\s+)?" + contract
-            inverse = contract + r"\w*[^.;]{0,42}(?:подписывает|подписан|заключает)"
-            if not re.search(direct + "|" + inverse, sentence):
-                return False
         if anchor.ref.point.isdigit() and not find_roles(words(sentence)):
             return False
-        if _CONTRACTOR.search(q):
-            return bool(_CONTRACTOR.search(sentence + " " + context))
+        return _answers_signing_role(q, sentence, role)
     if re.search(r"кто .*созда", q):
         return "созда" in sentence and ("заявк" not in q or "заявк" in sentence)
     return True
@@ -247,7 +325,7 @@ def applicable_refs(question, rows, *, department=None):
             if states_deadline(q, a, department=department, point_terms=point_terms)
             or (_ADVANCE.search(q) and matches_request(q, a))
         ]
-    elif _ADVANCE.search(q) or re.search(r"кто .*подпис|кто .*заключ", q):
+    elif _ADVANCE.search(q) or signing_role(q):
         relevant = [a for a in rows if matches_request(q, a)]
     elif re.search(r"без\s+\w+", q):
         keys = terms(q) - scoped_terms

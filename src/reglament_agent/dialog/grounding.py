@@ -110,7 +110,9 @@ def prompt(question, items, variants, invention=False):
         "object": {"type": "string"},
         "text": {"type": "string"},
     }
-    who = bool(re.search(r"\bкто\b|ответственн\w* за", fold(question)))
+    who = bool(
+        re.search(r"\bкто\b|ответственн\w* за", fold(question)) or relevance.signing_role(question)
+    )
     # Enumerated values prevent paraphrased action and role names from losing their source binding.
     actor_names, actions, columns = {""}, {""}, {""}
     for a in items.values():
@@ -176,6 +178,8 @@ qualifier у ячейки таблицы совпадает с название�
 
 def assemble(question, data, items, departments, variants, trace, rows=(), invention=False):
     out = Outcome(data["outcome"])
+    if (not items or out == Outcome.OFF_TOPIC) and relevance.signing_role(question):
+        out = Outcome.NO_BASIS
     kept, dropped, statements = [], [], []
     by_ref = {a.ref: a for a in items.values()}
     claims_by_ref = {}
