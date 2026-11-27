@@ -49,6 +49,7 @@ def web(env, monkeypatch):
     monkeypatch.setenv("CHAINLIT_AUTH_SECRET", SECRET)
     monkeypatch.setenv("EMBEDDER", "fake")
     monkeypatch.setenv("ADMIN_BACKGROUND", "0")
+    monkeypatch.setenv("CHAT_EXPERT_PASSWORD", "expert-password")  # без него cookie эксперта не принимается
     app = FastAPI()
     routes.install(app)
     app.include_router(history_router)

@@ -2,6 +2,7 @@
 
 import base64
 import json
+import re
 import time
 
 import pytest
@@ -24,6 +25,7 @@ def world(env, monkeypatch):
     monkeypatch.setenv("CHAINLIT_AUTH_SECRET", SECRET)
     monkeypatch.setenv("EMBEDDER", "fake")
     monkeypatch.setenv("ADMIN_BACKGROUND", "0")
+    monkeypatch.setenv("CHAT_EXPERT_PASSWORD", "expert-password")  # без него cookie эксперта не принимается
     monkeypatch.delenv("CHAT_TRUSTED_HEADER", raising=False)
     app = FastAPI()
     routes.install(app)
@@ -73,10 +75,21 @@ def test_employee_is_forbidden_on_every_admin_route(world):
         assert QUESTION not in employee.get(path).text
 
 
+def faq_confirm_fields(world):
+    """Токены проверки, которые эксперт получает вместе с текстом записи FAQ (admin-b01)."""
+    page = world.client("quality@x.local", "expert").get("/admin/faq/1")
+    assert page.status_code == 200
+    fields = dict(re.findall(r'name="(expected_\w+)" value="([^"]*)"', page.text))
+    assert fields
+    return fields
+
+
 def test_employee_cannot_answer_ticket_or_publish_faq(world):
-    """Сотрудник не может ответить на обращение, подтвердить или удалить FAQ: данные в БД не меняются."""
+    """Сотрудник не может ответить на обращение, подтвердить или удалить FAQ, даже с настоящими токенами проверки."""
     employee = world.client(PETR, "employee")
+    fields = faq_confirm_fields(world)
     assert employee.post(f"/admin/tickets/{world.number}", data={"answer": "ok", "basis_kind": "outside"}).status_code == 403
+    assert employee.post("/admin/faq/1/confirm", data=fields).status_code == 403
     assert employee.post("/admin/faq/1/confirm").status_code == 403
     assert employee.post("/admin/faq/1/delete").status_code == 403
     conn = world.env.conn
@@ -84,8 +97,16 @@ def test_employee_cannot_answer_ticket_or_publish_faq(world):
     assert conn.execute("SELECT count(*) FROM ticket_answers").fetchone()[0] == 0
     assert conn.execute("SELECT status FROM faq_entries").fetchone()[0] == "review"
     expert = world.client("quality@x.local", "expert")
-    assert expert.post("/admin/faq/1/confirm").status_code == 303  # контроль: эксперт может
+    assert expert.post("/admin/faq/1/confirm", data=fields).status_code == 303  # контроль: эксперт с токенами может
     assert conn.execute("SELECT status FROM faq_entries").fetchone()[0] == "active"
+
+
+def test_expert_cookie_is_ignored_without_expert_password(world, monkeypatch):
+    """Если пароль эксперта не задан, даже верно подписанная cookie эксперта не даёт доступа."""
+    monkeypatch.delenv("CHAT_EXPERT_PASSWORD")
+    expert = world.client("quality@x.local", "expert")
+    r = expert.get("/admin/tickets")
+    assert r.status_code == 303 and r.headers["location"] == "/start"
 
 
 def test_other_employee_cannot_read_ticket_or_history(world):

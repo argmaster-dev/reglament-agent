@@ -50,6 +50,8 @@ def describe(points):
     ]
 
 
+MAX_MESSAGE_CHARS = 2000
+
 class RequestCalls:
     def record(self, call):
         records = _records.get()
@@ -74,6 +76,9 @@ class Dialog:
         return await self._turn(user, option.strip(), on_status, choice=True)
 
     async def _turn(self, user, message, status, choice):
+        if len(message) > MAX_MESSAGE_CHARS:
+            # Chat checks the same limit, but retry/choice paths reach the dialog directly.
+            return Answer(Outcome.OFF_TOPIC, f"Сообщение длиннее {MAX_MESSAGE_CHARS} символов. Сократите вопрос.")
         started = monotonic()
         trace = {"steps": [], "calls": [], "candidates": [], "dropped": []}
         token = _records.set(trace["calls"])

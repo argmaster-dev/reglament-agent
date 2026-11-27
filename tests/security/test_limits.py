@@ -49,9 +49,10 @@ def test_chat_handler_politely_rejects_long_and_empty_messages(monkeypatch, tmp_
     assert runs == [Q_SIGN]
 
 
-@pytest.mark.xfail(reason="нет лимита длины — передано в ops-b01", strict=False)
 def test_dialog_layer_refuses_oversized_question(env):
     """Retry/choose обходят проверку чата: Dialog должен сам вежливо отказать и не создавать обращение с 20 000 символов."""
     answer, model, _ = env.ask(LONG, lambda s: {"outcome": "no_basis", "claims": []})
-    assert not env.tickets() or all(len(q) <= 2000 for _, q, _ in env.tickets())
+    assert answer.outcome.value == "off_topic" and "2000" in answer.summary
+    assert env.tickets() == [] and model.prompts == []
+    assert env.conn.execute("SELECT count(*) FROM dialog_requests").fetchone()[0] == 0
     assert not model.prompts or all(len(m["content"]) < 20000 for m in model.prompts[0])

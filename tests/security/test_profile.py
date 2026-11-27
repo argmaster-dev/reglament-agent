@@ -59,7 +59,9 @@ def test_only_explicit_department_phrase_changes_department(env):
     ask("Я работаю в Архитектор")  # такого подразделения нет
     assert dept() is None
     answer, _, _ = ask("Я работаю в ТД")
-    assert dept() == ("ТД",) and "ТД" in answer.profile_note
+    # Контракт main (dialog/route.py, ветка remember_department): подтверждение идёт текстом ответа,
+    # а не profile_note, потому что ход состоит только из запоминания.
+    assert dept() == ("ТД",) and "ТД" in answer.summary and answer.profile_note is None
     ask("Я эксперт службы качества")
     assert dept() == ("ТД",)  # посторонняя фраза не сбрасывает и не меняет профиль
     env.conn.execute("DELETE FROM dialog_profiles")
