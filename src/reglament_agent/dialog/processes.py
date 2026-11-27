@@ -10,22 +10,32 @@ from .relevance import terms
 # still takes precedence over the invitation to choose a process.
 _OPEN = re.compile(
     r"\b(?:что\s+(?:мне\s+)?(?:делать|сделать)|как\s+(?:мне\s+)?(?:быть|поступить|разобраться)|"
-    r"с\s+чего\s+(?:мне\s+)?начать|как\s+(?:мне\s+)?(?P<start>запустить|начать|стартовать)|"
+    r"(?P<start>с\s+чего\s+(?:мне\s+)?начать|как\s+(?:мне\s+)?(?:запустить|начать|стартовать))|"
+    r"(?:помогите|помоги|нужна\s+помощь|хочу\s+разобраться)\s+(?:мне\s+)?(?:с|в)\b|"
+    r"(?:подскажите|подскажи|вопрос)\s+(?:по|насчет)\b|"
     r"кто\s+(?:за\s+(?:это|такое)\s+(?:отвечает|ответственен)|(?:отвечает|ответственен)\s+за\s+это))\b"
 )
 _START = re.compile(r"\b(?:старт|инициац|запуск|запуст|открыти|заведени|начал)\w*")
 _CONDITION = re.compile(r"\b(?:если|после|перед|когда|без|только|срок|сколько)\b")
 
 
-def options(question, points):
-    """Offer different named processes with direct subject overlap, keeping real point identities."""
+def broad_subject(question):
     text = fold(question)
     opening = _OPEN.search(text)
     if not opening or _CONDITION.search(text):
+        return None
+    subject = terms(text[:opening.start()] + " " + text[opening.end():])
+    if 1 <= len(subject) <= 2:
+        return subject, bool(opening['start'])
+    return None
+
+
+def options(question, points):
+    """Offer different named processes with direct subject overlap, keeping real point identities."""
+    request = broad_subject(question)
+    if not request:
         return []
-    subject = terms(text[opening.end():])
-    if not 1 <= len(subject) <= 2:
-        return []
+    subject, start = request
     ranked = []
     for rank, point in enumerate(points):
         title = point.section_title.strip()
@@ -35,9 +45,9 @@ def options(question, points):
         body = terms(point.text)
         if not subject <= heading | body:
             continue
-        if opening['start'] and not _START.search(fold(title + ' ' + point.sentences[0])):
+        if start and not _START.search(fold(title + ' ' + point.sentences[0])):
             continue
-        ranked.append((bool(opening['start']) and not _START.search(fold(title)),
+        ranked.append((start and not _START.search(fold(title)),
                        -len(subject & heading), -len(subject & body), rank, title, point))
     choices = {}
     for *_, title, point in sorted(ranked):
