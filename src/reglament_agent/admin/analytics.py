@@ -4,12 +4,17 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import logging
+import math
+import os
 import re
 import statistics
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from psycopg.rows import dict_row
+
+log = logging.getLogger(__name__)
 
 PERIODS = {"7": ("7 дней", 7), "30": ("30 дней", 30), "all": ("всё время", None)}
 DEFAULT_PERIOD = "7"
@@ -18,6 +23,7 @@ DEFAULT_PERIOD = "7"
 REC_MIN_SECTION_EVENTS = 5   # обращений + 👎 + уточнений по одному разделу за период
 REC_MIN_REPEATS = 5          # одинаковых по смыслу вопросов за период
 SERVICE_DOMAIN = "@service.local"  # служебные прогоны (проверочные вопросы) не попадают в аналитику
+GROUP_MIN_COSINE_DEFAULT = 0.90  # ANALYTICS_GROUP_MIN_COSINE: порог косинусной близости для группы перефразировок
 TOP_CANDIDATES = 3           # сколько первых кандидатов поиска считать «затронутыми» разделами
 
 OUTCOMES = {
@@ -213,6 +219,125 @@ def repeated(rows: list[dict]) -> list[dict]:
     return sorted(out, key=lambda g: (-g["count"], g["key"]))
 
 
+# --- semantic grouping of repeated questions ---------------------------------------------------
+
+_NEGATIONS = frozenset({"не", "нет", "без", "нельзя", "ни", "никогда"})
+_QWORDS = {"кто": "кто", "кого": "кто", "кому": "кто", "когда": "когда", "сколько": "сколько", "где": "где",
+           "как": "как", "куда": "куда", "почему": "почему", "зачем": "зачем", "какой": "какой", "какая": "какой",
+           "какое": "какой", "какие": "какой", "какого": "какой", "каких": "какой"}
+# основы слов-подразделений; дополняются названиями подразделений из таблицы documents
+_DEPT_STEMS = ("дирекц", "департамент", "отдел", "служб", "бухгалтер", "юридич", "юрист", "закуп", "кадр",
+               "безопасност", "казначейств", "логистик", "финанс", "управлени", "комплаенс", "охран")
+_NUM = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def group_min_cosine() -> float:
+    try:
+        v = float(os.environ.get("ANALYTICS_GROUP_MIN_COSINE", GROUP_MIN_COSINE_DEFAULT))
+    except ValueError:
+        return GROUP_MIN_COSINE_DEFAULT
+    return v if 0 < v <= 1 else GROUP_MIN_COSINE_DEFAULT
+
+
+def _words(text: str) -> list[str]:
+    return _WORD.findall((text or "").casefold().replace("ё", "е"))
+
+
+def guard_signature(text: str, dept_vocab: frozenset[str] = frozenset()) -> tuple:
+    """Mandatory conditions of a question: two questions may be grouped only if all of them coincide."""
+    words = _words(text)
+    nums = frozenset(n.replace(",", ".") for n in _NUM.findall(text or ""))
+    depts = frozenset(w for w in words if w in dept_vocab or any(w.startswith(st) for st in _DEPT_STEMS))
+    return (nums, frozenset(w for w in words if w in _NEGATIONS), depts,
+            frozenset(_QWORDS[w] for w in words if w in _QWORDS))
+
+
+def dept_vocabulary(conn) -> frozenset[str]:
+    try:
+        found = conn.execute("SELECT DISTINCT department FROM documents WHERE department IS NOT NULL").fetchall()
+    except Exception:  # noqa: BLE001 - the vocabulary is optional
+        return frozenset()
+    return frozenset(w for (d,) in found for w in _words(d) if len(w) >= 2)
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    na, nb = math.sqrt(sum(x * x for x in a)), math.sqrt(sum(x * x for x in b))
+    return sum(x * y for x, y in zip(a, b)) / (na * nb) if na and nb else 0.0
+
+
+def _clean(text: str) -> str:
+    return " ".join(_words(text))
+
+
+def _group_dict(key: str, members: list[dict]) -> dict:
+    out = Counter(outcome(r) for r in members)
+    ticket = sum(1 for r in members if n_tickets(r) > 0)
+    return {"key": key, "hash": group_hash(key), "count": len(members), "example": members[0]["question"],
+            "users": len({x["user_email"] for x in members}),
+            "variants": sorted({x["question"] for x in members})[:5],
+            "n_variants": len({x["question"] for x in members}),
+            "mix": {"answered": sum(out[o] for o in ("answer", "variants", "expert_answer")),
+                    "no_basis": out["no_basis"], "ticket": ticket},
+            "row_ids": [x["id"] for x in members]}
+
+
+def repeated_groups(rows: list[dict], embedder=None, *, min_cosine: float | None = None,
+                    dept_vocab: frozenset[str] = frozenset(), cache: dict | None = None) -> list[dict]:
+    """Groups of similar questions (>= 2 requests). Exact groups (`repeated`) are merged greedily by cosine
+    similarity of their embeddings, but only when the mandatory conditions (numbers, negations, departments,
+    question word) coincide. Any embedder failure -> plain exact grouping."""
+    exact: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        key = normalize(r["restated"] or r["question"]) or normalize(r["question"])
+        if key:
+            exact[key].append(r)
+    units = sorted(exact.items(), key=lambda kv: (-len(kv[1]), kv[0]))  # largest first: it becomes the representative
+    clusters: list[tuple[str, list[dict]]] = [(k, list(v)) for k, v in units]
+    if embedder is not None and len(units) > 1:
+        try:
+            threshold = group_min_cosine() if min_cosine is None else min_cosine
+            cache = {} if cache is None else cache
+            text_of = {k: _clean(v[0]["restated"] or v[0]["question"]) for k, v in units}
+            todo = sorted({t for t in text_of.values() if t not in cache})
+            if todo:
+                vectors = embedder.embed(todo)
+                if len(vectors) != len(todo):
+                    raise ValueError("embedder returned a wrong number of vectors")
+                cache.update(zip(todo, vectors))
+            sig = {k: guard_signature(v[0]["restated"] or v[0]["question"], dept_vocab) for k, v in units}
+            clusters = []
+            reps: list[str] = []
+            for k, v in units:
+                for i, rep in enumerate(reps):
+                    if sig[k] == sig[rep] and _cosine(cache[text_of[k]], cache[text_of[rep]]) >= threshold:
+                        clusters[i][1].extend(v)
+                        break
+                else:
+                    reps.append(k)
+                    clusters.append((k, list(v)))
+        except Exception:  # noqa: BLE001 - the page must never fail because of the embedder
+            log.warning("analytics: embedder unavailable, exact grouping used", exc_info=True)
+            clusters = [(k, list(v)) for k, v in units]
+    out = []
+    for key, members in clusters:
+        if len(members) >= 2:
+            members.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
+            out.append(_group_dict(key, members))
+    return sorted(out, key=lambda g: (-g["count"], g["key"]))
+
+
+def build_groups(conn, rows: list[dict]) -> list[dict]:
+    """Semantic groups with the embedder chosen by the environment (EMBEDDER); exact grouping on any failure."""
+    try:
+        from reglament_agent.ingest.embedding import open_embedder
+        vocab = dept_vocabulary(conn)
+        with open_embedder() as emb:
+            return repeated_groups(rows, emb, dept_vocab=vocab)
+    except Exception:  # noqa: BLE001
+        log.warning("analytics: embedder unavailable, exact grouping used", exc_info=True)
+        return repeated_groups(rows)
+
+
 def unanswered(rows: list[dict]) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
     for r in rows:
@@ -297,13 +422,13 @@ def economics(rows: list[dict]) -> list[dict]:
     return out
 
 
-def summary(conn, period: str) -> dict:
+def summary(conn, period: str, groups: list[dict] | None = None) -> dict:
     rows = fetch(conn, period)
     counts = Counter(outcome(r) for r in rows)
     ms = [e for e in map(elapsed, rows) if e is not None]
     extra = ticket_only_requests(conn, rows, period)
     problems, demand = sections_stats(conn, rows, extra)
-    rep = repeated(rows)
+    rep = build_groups(conn, rows) if groups is None else groups
     all_tk = [tokens(r) for r in rows]
     return {
         "period": period, "period_label": PERIODS[period][0], "total": len(rows), "counts": counts,
@@ -311,7 +436,7 @@ def summary(conn, period: str) -> dict:
         "ticket_outcomes": sum(map(n_tickets, [*rows, *extra])),
         "median_ms": median(ms), "up": sum(1 for r in rows if r["rating"] is True),
         "down": sum(1 for r in rows if r["rating"] is False),
-        "repeated": rep, "unanswered": unanswered(rows), "problems": problems, "demand": demand,
+        "repeated": rep, "repeated_exact": repeated(rows), "unanswered": unanswered(rows), "problems": problems, "demand": demand,
         "recommendations": recommendations(problems, rep, period),
         "economics": economics(rows), "cache_hits": sum(map(cache_hit, rows)),
         "tokens_total": (sum(t[0] for t in all_tk), sum(t[1] for t in all_tk)),
@@ -321,7 +446,7 @@ def summary(conn, period: str) -> dict:
 # --- CSV -------------------------------------------------------------------------------------
 
 def _cell(v):
-    if isinstance(v, str) and v[:1] in "=+-@\t\r":  # formula injection in spreadsheet apps
+    if isinstance(v, str) and v and v[0] in "=+-@\t\r":  # formula injection in spreadsheet apps
         return "'" + v
     return v
 
@@ -335,14 +460,17 @@ def _csv(header: list[str], rows) -> str:
     return "﻿" + buf.getvalue()
 
 
-def requests_csv(rows: list[dict]) -> str:
+def requests_csv(rows: list[dict], groups: list[dict] = ()) -> str:
+    gid = {i: g["hash"] for g in groups for i in g["row_ids"]}
+
     def line(r):
         p, c, n = tokens(r)
         return [r["id"], r["created_at"].isoformat(), r["user_email"], outcome(r), r["question"], r["restated"],
                 ";".join(r.get("tickets") or []), "" if r["rating"] is None else ("up" if r["rating"] else "down"),
-                r["feedback"] or "", int(cache_hit(r)), elapsed(r) if elapsed(r) is not None else "", p, c, n, chat_calls(r)]
+                r["feedback"] or "", int(cache_hit(r)), elapsed(r) if elapsed(r) is not None else "", p, c, n, chat_calls(r),
+                gid.get(r["id"], "")]
     return _csv(["id", "created_at", "user_email", "outcome", "question", "restated", "ticket", "rating", "feedback",
-                 "cache_hit", "elapsed_ms", "prompt_tokens", "completion_tokens", "model_calls", "chat_calls"], map(line, rows))
+                 "cache_hit", "elapsed_ms", "prompt_tokens", "completion_tokens", "model_calls", "chat_calls", "group_id"], map(line, rows))
 
 
 def economics_csv(rows: list[dict]) -> str:
