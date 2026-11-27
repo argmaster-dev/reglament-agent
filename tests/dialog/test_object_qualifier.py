@@ -60,6 +60,34 @@ def test_near_basis_lists_other_object_with_point_and_department():
     assert "п. 3.1" not in text
 
 
+def test_origin_nearby_filters_only_clear_workflow_stages_before_the_link_limit():
+    question = "Кто оформляет акт от поставщика?"
+    stages = [
+        _anchor("1.1", "Бухгалтер оформляет акт на пресейл."),
+        _anchor("1.2", "Координатор оформляет акт на пресейл в портале."),
+    ]
+    object_alternatives = [
+        _anchor("2.1", ON_SUPPLIER, "Отдел учёта"),
+        _anchor("2.2", ON_RECEIPT),
+        _anchor("2.3", "Бухгалтер оформляет акт на пресейл-специалиста."),
+    ]
+    text, refs = relevance.nearby_evidence(question, [*stages, *object_alternatives])
+    assert refs == [anchor.ref for anchor in object_alternatives]
+    assert "(Отдел учёта)" in text
+
+
+def test_origin_nearby_keeps_a_sentence_with_both_a_stage_and_an_object():
+    mixed = _anchor("1.1", "Бухгалтер оформляет акт на пресейл и акт на поставщика.")
+    _, refs = relevance.nearby_evidence(Q, [mixed])
+    assert refs == [mixed.ref]
+
+
+def test_stage_target_stays_available_when_the_request_does_not_name_an_origin():
+    stage = _anchor("1.1", "Бухгалтер оформляет акт на пресейл.")
+    _, refs = relevance.nearby_evidence("Кто оформляет акт на приёмку?", [stage])
+    assert refs == [stage.ref]
+
+
 def test_nearby_links_keep_versions_and_first_evidence_with_a_three_point_limit():
     rows = [_anchor(point, ON_RECEIPT) for point in ("1.1", "2.2", "3.3", "4.4")]
     rows[1] = Anchor(SourceRef("other", "Другой регламент", "Отдел учёта", 7, "2.2", 2, "Действие"),
