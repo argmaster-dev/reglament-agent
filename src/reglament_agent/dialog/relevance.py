@@ -247,9 +247,78 @@ def external_reference(a):
     )
 
 
+# A reference to signing in a deadline is not a condition for starting the work itself.
+_BEFORE_SIGNING = re.compile(r"\b(?:до|перед|не дожидаясь)\s+(?:момента\s+)?(?:подписани\w*|заключени\w*)\s+")
+_WORK_START = re.compile(
+    r"\b(?:начать|начинать|приступ\w*|приступа\w*)\s+(?:к\s+)?"
+    r"(?:(?:исполнени\w*|выполнени\w*|реализаци\w*)\s+)?(?:работ(?:ы|у|а|ам|е)?|проект(?:а|у|ом|е|ы|ов)?)\b"
+    r"|\b(?:работы|выполнение работ|исполнение проекта)\s+(?:по проекту\s+)?"
+    r"(?:можно\s+|разрешено\s+|запрещено\s+)?нач(?:ать|инать|ина\w*)\b"
+)
+_WORK_HEADING = re.compile(
+    r"^\s*(?:работы(?: по проекту)?|проект|(?:этап )?(?:исполнение|выполнение|реализация) "
+    r"(?:проекта|работ))\s+(?:начина\w*|старту\w*)\s+"
+    r"(?:при выполнении|при наличии|при соблюдении|при)\s+(?:(?:хотя бы )?одного из|следующих)\s+услови"
+)
+_PERMISSION = re.compile(r"\b(?:можно|нельзя|разрешено|разрешается|допускается|допустимо|запрещено|запрещается)\b")
+
+
+def _event_document(text, event):
+    document = _SIGNING_DOCUMENT.search(text, event.end())
+    if document and re.fullmatch(r"[\w-]+\s+|", text[event.end():document.start()]):
+        return document.lastgroup
+    return None
+
+
+def pre_signature_target(question):
+    before = _BEFORE_SIGNING.search(question)
+    if not before or not _PERMISSION.search(question):
+        return None
+    if not (_WORK_START.search(question) or re.search(r"\bстартовать\s+(?:до|перед|не дожидаясь)\b", question)):
+        return None
+    return _event_document(question, before)
+
+
+def _signed_document(text, kind):
+    for clause in re.split(r"[,.;:]", text):
+        documents = [m for m in _SIGNING_DOCUMENT.finditer(clause) if m.lastgroup == kind]
+        if any(min(abs(m.end() - s.start()), abs(s.end() - m.start())) < 32
+               for s in _SIGNING_ACTION.finditer(clause) for m in documents):
+            return True
+    return False
+
+
+def _direct_start_rule(text, kind):
+    if not (_WORK_START.search(text) and _PERMISSION.search(text)):
+        return False
+    exclusive = re.finditer(r"\bтолько после (?:подписани\w*|заключени\w*)\s+", text)
+    return any(_event_document(text, e) == kind for e in (*_BEFORE_SIGNING.finditer(text), *exclusive))
+
+
+
+def start_before_signature_rows(rows, kind):
+    """Use one provable work-start rule. Two independent applicable provisions need expert review."""
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(_point_key(row), []).append(row)
+    applicable = []
+    for group in grouped.values():
+        group.sort(key=lambda a: a.ref.sentence)
+        first = group[0]
+        complete_prose = all(a.ref.column is None and a.ref.sentence == i for i, a in enumerate(group))
+        if (complete_prose and _WORK_HEADING.search(fold(first.text)) and len(group) > 1
+                and any(_signed_document(fold(a.text), kind) for a in group[1:])):
+            applicable.append(group)
+        else:
+            direct = [a for a in group if a.ref.column is None and _direct_start_rule(fold(a.text), kind)]
+            if direct:
+                applicable.append(direct)
+    return applicable[0] if len(applicable) == 1 else []
+
+
 def start_permission(question):
     return bool(
-        re.search(r"можно ли|разреш|допустим", question)
+        (pre_signature_target(question) or re.search(r"можно ли|разреш|допустим", question))
         and re.search(r"начать|начинать|старт|приступ", question)
         and re.search(r"работ|исполн|проект", question)
     )
@@ -533,6 +602,9 @@ def _matches_part(question, anchor, *, point_terms=None):
     q, sentence, context = fold(question), fold(anchor.text), fold(anchor.context)
     if asks_deadline(q):
         return states_deadline(q, anchor, department=anchor.ref.department, point_terms=point_terms)
+    if (target := pre_signature_target(q)) is not None:
+        return bool(_WORK_HEADING.search(context) or _WORK_HEADING.search(sentence)
+                    or _direct_start_rule(sentence, target))
     if start_permission(q):
         if entry_condition(context) or entry_condition(sentence):
             return True

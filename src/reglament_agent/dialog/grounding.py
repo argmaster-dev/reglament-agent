@@ -329,7 +329,20 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         if refs and not any(re.search(r"\d", s.text) and "формул" in fold(s.text) for s in statements):
             statements = [Statement(a.text, [a.ref]) for a in refs[:1]]
             out = Outcome.EXTERNAL_DOC
-    if data["outcome"] == Outcome.ANSWER and relevance.start_permission(fold(question)):
+    target = relevance.pre_signature_target(fold(question)) if not parts and not variants else None
+    if target and data["outcome"] in (Outcome.ANSWER, Outcome.NO_BASIS):
+        # A true quote about a downstream step does not establish permission before signing.
+        # Use the original immutable provision, with one exact source per displayed sentence.
+        rule = relevance.start_before_signature_rows(rows or items.values(), target)
+        statements, kept = [], []
+        for a in rule:
+            ref = SentenceRef(a.ref.doc_id, a.ref.point, a.ref.sentence)
+            verified = verify_claims([Claim(a.text, ref)], {ref: Evidence(ref, a.text)})
+            if verified.kept:
+                kept.extend(verified.kept)
+                statements.append(Statement(a.text, [a.ref]))
+        out = Outcome.ANSWER if statements else Outcome.NO_BASIS
+    elif data["outcome"] == Outcome.ANSWER and relevance.start_permission(fold(question)):
         # An individual option can omit the subject of its heading. Restore its list only
         # when the verified quotes belong to that provision and its own heading introduces alternatives.
         selected_points = {(ref.doc_id, ref.version_no, ref.point) for ref in claims_by_ref}
