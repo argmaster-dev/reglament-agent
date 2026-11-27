@@ -44,12 +44,21 @@ _PACKAGED_GLOSSARY = Path(__file__).with_name("glossary.tsv")
 _DEFAULT_GLOSSARY = (_PACKAGED_GLOSSARY if _PACKAGED_GLOSSARY.is_file()
                      else Path(__file__).resolve().parents[3] / "docx" / "glossary.tsv")
 _glossary_path: Path | None = None
+_slang_path: Path | None = None
 
 
 def set_glossary_path(path: str | Path | None) -> None:
     """Override the glossary file (None restores env/default) and drop caches."""
     global _glossary_path
     _glossary_path = Path(path) if path else None
+    _load.cache_clear()
+    _patterns.cache_clear()
+
+
+def set_slang_path(path: str | Path | None) -> None:
+    """Override the optional jargon file (None restores env/default) and drop caches."""
+    global _slang_path
+    _slang_path = Path(path) if path else None
     _load.cache_clear()
     _patterns.cache_clear()
 
@@ -61,16 +70,37 @@ def glossary_path() -> Path:
     return Path(env) if env else _DEFAULT_GLOSSARY
 
 
-@lru_cache(maxsize=1)
-def _load() -> tuple[tuple[tuple[str, ...], str], ...]:
-    """Rows of (abbreviation variants, expansion)."""
+def slang_path() -> Path:
+    """Jargon file: override, env SLANG_PATH, else slang.tsv next to the glossary."""
+    if _slang_path:
+        return _slang_path
+    env = os.environ.get("SLANG_PATH")
+    return Path(env) if env else glossary_path().with_name("slang.tsv")
+
+
+def _read_rows(path: Path) -> list[tuple[tuple[str, ...], str]]:
     rows: list[tuple[tuple[str, ...], str]] = []
-    for i, line in enumerate(glossary_path().read_text(encoding="utf-8").splitlines()):
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
         if i == 0 or not line.strip() or "\t" not in line:
             continue
         abbr, exp = line.split("\t", 1)
         variants = tuple(v.strip() for v in abbr.split(",") if v.strip())
         rows.append((variants, exp.strip()))
+    return rows
+
+
+@lru_cache(maxsize=1)
+def _load() -> tuple[tuple[tuple[str, ...], str], ...]:
+    """Rows of (abbreviation variants, expansion): glossary first, then the optional
+    jargon file without any variant the glossary already defines."""
+    rows = _read_rows(glossary_path())
+    taken = {fold(v) for variants, _ in rows for v in variants}
+    slang = slang_path()
+    if slang.is_file():
+        for variants, exp in _read_rows(slang):
+            kept = tuple(v for v in variants if fold(v) not in taken)
+            if kept:
+                rows.append((kept, exp))
     return tuple(rows)
 
 
