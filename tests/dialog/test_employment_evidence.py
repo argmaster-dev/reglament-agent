@@ -68,3 +68,9 @@ def test_payroll_and_invoices_in_the_same_working_period_are_separate():
     result = evidence(question, [invoice, payroll])
     assert result.outcome is Outcome.ANSWER
     assert [statement.text for statement in result.statements] == [payroll]
+
+
+def test_sick_pay_during_a_business_trip_is_not_weekend_work_pay():
+    question = 'Как по закону на проекте оплачивают выходной день в командировке?'
+    sick_pay = 'В командировке в выходной день больничный оплачивается сотруднику по табелю.'
+    assert evidence(question, [sick_pay]).outcome is Outcome.NO_BASIS

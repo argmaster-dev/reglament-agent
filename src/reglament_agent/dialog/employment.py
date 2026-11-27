@@ -7,10 +7,11 @@ from .lexicon import fold
 
 # The words naming a benefit are distinct from the operation an employee asks about.
 _LEAVE = re.compile(r"\b(?:отпуск(?:а|е|у|ом|ов|ам|ах|ами|и)?|отпускн\w*)\b")
+_TRIP = re.compile(r'\bкомандировк\w*\b')
 _SUBJECTS = (
     _LEAVE,
     re.compile(r'\b(?:сверхуроч\w*|переработк\w*)\b'),
-    re.compile(r'\bкомандировк\w*\b'),
+    _TRIP,
     re.compile(r'\b(?:выходн\w*|праздничн\w*|нерабочи\w*)\b'),
     re.compile(r'\b(?:больничн\w*|нетрудоспособност\w*)\b'),
 )
@@ -73,8 +74,13 @@ class Entitlement:
             if not all(term.search(clause) for term in (*self.subjects, *self.operations)):
                 continue
             # Paying travel expenditure establishes no entitlement to pay for time worked.
-            if _PAYMENT_RULE in self.operations and not _WORK_PAY.search(clause):
-                continue
+            if _PAYMENT_RULE in self.operations:
+                # A trip can be the setting for work on a holiday. The entitlement
+                # specified by the employee must still be the one that is paid.
+                entitlements = tuple(term for term in self.subjects if term is not _TRIP)
+                if not any(all(term.search(m.group()) for term in entitlements)
+                           for m in _WORK_PAY.finditer(clause)):
+                    continue
             if _TRANSFER in self.operations and not _LEAVE_TRANSFER.search(clause):
                 continue
             if _DURATION_RULE in self.operations and not _LEAVE_DURATION.search(clause):
