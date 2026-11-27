@@ -268,10 +268,6 @@ def test_real_data_has_no_approval_yet():
 
 
 # ---------- перенаправление ----------
-class Redirected(Answer):
-    pass
-
-
 def redirected(kind, outcome=Outcome.OFF_TOPIC, ticket=None, summary="Общий текст."):
     a = Answer(outcome, summary, [Statement("x", [ref("7.1")])], ticket=ticket)
     a.redirect = kind
@@ -286,6 +282,11 @@ def test_legal_redirect_is_alone(cat):
     assert md == "Это вопрос законодательства, а не регламентов компании — по нему лучше обратиться к юристам."
     assert A.select_advice(cat, a, "в") == []
     assert R.refusal_element(a, lambda n: None) is None
+
+
+@pytest.mark.parametrize("kind", ["legal", "manager"])
+def test_redirect_suppresses_advice_even_with_cited_point(cat, kind):
+    assert A.select_advice(cat, redirected(kind, Outcome.ANSWER), "в") == []
 
 
 def test_manager_redirect_keeps_off_topic_hint():
