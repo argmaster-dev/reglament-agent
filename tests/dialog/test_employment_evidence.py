@@ -58,3 +58,13 @@ def test_employee_scope_opens_one_ticket_for_an_unregulated_benefit(isolated):
 ])
 def test_a_nearby_employment_term_does_not_change_the_object_of_the_rule(question, different_object):
     assert evidence(question, [different_object]).outcome is Outcome.NO_BASIS
+
+
+def test_payroll_and_invoices_in_the_same_working_period_are_separate():
+    question = 'Как в отделе по закону оплачивают сверхурочные часы на проекте?'
+    invoice = 'Во время сверхурочной работы счета поставщика оплачиваются по графику.'
+    payroll = 'Сверхурочная работа оплачивается сотруднику по табелю отдельно от расходов на проезд.'
+    assert evidence(question, [invoice]).outcome is Outcome.NO_BASIS
+    result = evidence(question, [invoice, payroll])
+    assert result.outcome is Outcome.ANSWER
+    assert [statement.text for statement in result.statements] == [payroll]

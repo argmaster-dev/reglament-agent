@@ -20,6 +20,28 @@ _PAYMENT_RULE = re.compile(
     r'начисля(?:ется|ются|ют|ет)|доплачива(?:ется|ют|ет)|(?:долж\w*|следует|необходимо)\s+оплатить)\b'
     r'|\b(?:оплата|доплата|выплата)\b[^.;!?]{0,65}\b(?:производится|положена|рассчитывается|составляет|по табелю)\b'
 )
+# Match the thing being paid for next to the predicate. A time modifier such as
+# "during overtime" can equally apply to paying an invoice or reimbursing a hotel.
+_WORK_TIME = (
+    r'(?:сверхурочн(?:ая работа|ые часы|ые|ой труд)|переработк(?:а|и)|'
+    r'работа|труд|отработанн(?:ое время|ые часы)|выходн(?:ой|ые)|праздничн(?:ый день|ые дни)|'
+    r'отпуск(?:ные)?|больничный|пособие)'
+)
+_WORK_QUALIFIERS = (
+    r'(?:сотрудник(?:а|у|ов|ам)?|работник(?:а|у|ов|ам)?|в|на|во|и|за|дни|день|'
+    r'выходн\w*|праздничн\w*|нерабоч\w*|командировк\w*|проекте|также|отдельно|не)'
+)
+_WORK_PAY = re.compile(
+    rf'\b{_WORK_TIME}\b(?:\s+{_WORK_QUALIFIERS}){{0,8}}\s+(?:{_PAYMENT_RULE.pattern})'
+    r'|\b(?:оплата|доплата|выплата)\s+(?:за\s+)?'
+    r'(?:сверхурочн\w*|переработк\w*|работ[ыу]\s+в\s+(?:выходн|праздничн)\w*|'
+    r'отпускн\w*|больничн\w*)\b'
+    r'|\b(?:работодатель|организация|компания)\s+оплачивает\s+'
+    r'(?:сверхурочн\w*|переработк\w*|работу\s+в\s+(?:выходн|праздничн)\w*)\b'
+    r'|\b(?:платят|доплачивают|выплачивают|положена\s+доплата)\s+'
+    r'(?:сотрудник(?:у|ам)|работник(?:у|ам))\s+за\s+'
+    r'(?:сверхурочн\w*|переработк\w*|работу\s+в\s+(?:выходн|праздничн)\w*)\b'
+)
 _TRANSFER = re.compile(r'\b(?:перенос\w*|перенес\w*|перенош\w*)\b')
 _DURATION = re.compile(r'\b(?:продолжительност\w*|длительност\w*|сколько\s+(?:календарных\s+|рабочих\s+)?дней)\b')
 _EXPENSE = re.compile(r'\b(?:расход|затрат|проживани|проезд|гостиниц|билет|питани|материал|оборудовани|услуг)\w*')
@@ -51,7 +73,7 @@ class Entitlement:
             if not all(term.search(clause) for term in (*self.subjects, *self.operations)):
                 continue
             # Paying travel expenditure establishes no entitlement to pay for time worked.
-            if _PAYMENT_RULE in self.operations and _EXPENSE.search(clause):
+            if _PAYMENT_RULE in self.operations and not _WORK_PAY.search(clause):
                 continue
             if _TRANSFER in self.operations and not _LEAVE_TRANSFER.search(clause):
                 continue
