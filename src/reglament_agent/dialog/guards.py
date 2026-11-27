@@ -11,6 +11,38 @@ from .lexicon import find_roles, fold, words
 
 MIN_LENGTH, MAX_LENGTH = 3, 2000
 
+OFF_TOPIC_MESSAGE = "Этот вопрос не касается регламентов компании — обратитесь к своему руководителю."
+
+# Ask for a policy even when the subject is money, a particular deal or correspondence.
+_PROCEDURE = re.compile(
+    r"\b(?:регламент|положени|инструкци|правил|порядок|порядк|методик|формул|услови|обязан|положен|предусмотрен|ограничени)\w*"
+    r"|\b(?:как|кто|где|когда|можно ли|нужно ли|имею ли право|каким образом)\b"
+    r"|\b(?:применять|применяется|использовать|учитывать)\b"
+)
+_METRIC = re.compile(r"\b(?:марж|преми|бонус|прибыл|выручк)\w*")
+_RECORD = re.compile(
+    r"\b(?:меня|мне|мо[йяею]|моих|наша?|нашу|текущ\w*|фактическ\w*|сегодня|сейчас|"
+    r"(?:по|этой|эта|той|конкретной) сделк\w*|сделк\w*\s+№|за квартал|за месяц)\b"
+)
+_EXCHANGE = re.compile(
+    r"\b(?:курс\w*\s+(?:\w+\s+)?(?:валют|доллар|евро|юан|рубл|фунт|usd|eur)\w*"
+    r"|стоит\s+(?:доллар|евро|юан|фунт)\w*)\b"
+)
+_TASK = re.compile(
+    r"\b(?:сделай(?:те)?|отправь(?:те)?|напиши(?:те)?|разошли(?:те)?|подготовь(?:те)?|"
+    r"составь(?:те)?|сформируй(?:те)?)\b.{0,65}"
+    r"\b(?:follow[\s-]?up|фоллоу[\s-]?ап|письм\w*|напоминани\w*|сообщени\w*|рассылк\w*)\b"
+)
+
+
+def operational_request(text):
+    """Requests for actual records, market data or external work have no regulatory answer."""
+    q = fold(text)
+    if _PROCEDURE.search(q):
+        return False
+    return bool(_EXCHANGE.search(q) or _TASK.search(q) or (_METRIC.search(q) and _RECORD.search(q)))
+
+
 # Verbs of invention and guessing, matched by stem so any inflection is covered.
 _INVENT_VERB = re.compile(
     r"\b(?:при|вы)ду?м(?:ай|ать|аешь|аете|ал\w*|ает|ают|ку|ка)\b|\b(?:при|вы)думан\w*|\bсочин\w*|\bизмысл\w*"

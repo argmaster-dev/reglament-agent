@@ -299,24 +299,47 @@ def near_basis(question, rows, limit=3):
     return "\n".join(lines)
 
 
+# A temporal subordinate clause or «верно, что…» supplies context to a single question.
+# Strong coordination separates independent questions. A comma can also introduce a new actor or object question.
+_COORDINATED = re.compile(
+    rf"\s+(?:и|а также)\s+(?={_ASK}\b)|[;?]\s*(?={_ASK}\b)|,\s*(?=(?:кто|како\w*|каки\w*|что)\b)"
+)
+
+
+def coordinated_parts(question):
+    parts = [part.strip(" ,?!;.") for part in _COORDINATED.split(fold(question))]
+    if len(parts) > 1 and re.search(rf"\b(?:{_ASK}|ли|ком)\b", parts[0]):
+        return parts
+    return []
+
+
 def matches_request(question, anchor, *, point_terms=None):
     parts = [part for part in question_parts(question) if terms(part) - _COURTESY_WORDS]
     return any(_matches_part(part, anchor, point_terms=point_terms) for part in (parts or [question]))
 
 
-def uncovered_parts(question, statements, rows):
-    """Parts of a compound question for which no selected sentence shares any subject term."""
-    parts = question_parts(question)
-    if len(parts) < 2:
-        return []
-    by_ref = {a.ref: a for a in rows}
-    texts = [fold(by_ref[r].text) if r in by_ref else fold(st.text) for st in statements for r in st.sources]
-    missing = []
-    for part in parts:
-        keys = terms(part)
-        if keys and not any(len(keys & terms(t)) >= min(2, len(keys)) for t in texts):
-            missing.append(part)
-    return missing
+_PART_FILLERS = {word_key(w) for w in ("его", "ее", "их", "это", "есть", "какова", "каков", "каковы",
+                                      "каково", "каким", "какому", "который")}
+_LOOKUP = re.compile(r"^где\b.*\b(?:найти|искать|посмотр\w*|увидеть|проверить)\b")
+_LOCATION = re.compile(r"найти|наход\w*|хран\w*|размещ\w*|опубликов\w*|указан\w*|доступ\w*|содерж\w*")
+_LOOKUP_VERBS = {word_key(w) for w in ("найти", "искать", "посмотреть", "увидеть", "проверить")}
+
+
+def supports_part(part, anchor, *, point_terms=None):
+    """Match a requested action with its subject in the actual sentence cited for this part."""
+    subject = terms(part) - _COURTESY_WORDS - _PART_FILLERS
+    direct = terms(anchor.text)
+    if _LOOKUP.search(part):
+        subject -= _LOOKUP_VERBS
+        if not _LOCATION.search(fold(anchor.text)):
+            return False
+    if not subject or len(subject & direct) < min(2, len(subject)):
+        return False
+    if re.search(r"\bкто\b", part):
+        operation = _operation(part, subject)
+        if operation and not _mentions_operation(operation, direct):
+            return False
+    return _matches_part(part, anchor, point_terms=point_terms)
 
 
 def _matches_part(question, anchor, *, point_terms=None):
@@ -380,8 +403,31 @@ def _point_key(anchor):
     return anchor.ref.doc_id, anchor.ref.version_no, anchor.ref.point
 
 
+_DUTY_BOUNDARY = re.compile(
+    r"\b(?:у|чтобы|нужно|надо|следует|необходимо|требуется|должен|должна|должны|обязан\w*)\b"
+)
+_DATIVE_ENDING = re.compile(r"[а-я]{3,}(?:у|ю|ам|ям)")
+_PERSONAL_PREDICATE = re.compile(r"(?:должен|должна|должны|обязан\w*|\w+(?:ает|яет|ует|ают|яют|уют|ится|ит))")
+
+
 def _roles(text):
-    return {role for _, _, role in find_roles(words(text))}
+    """A role in the reference event is not necessarily the owner of the timed action."""
+    owners = set()
+    for clause in re.split(r"[,;:.!?\n]", fold(text)):
+        tokens = words(clause)
+        for start, end, role in find_roles(tokens):
+            prefix = " ".join(tokens[:start])
+            event = _REFERENCE_EVENT.split(prefix)[-1]
+            if event != prefix and not _DUTY_BOUNDARY.search(event):
+                # «до передачи отчёта заказчику» is a timing reference. An explicit
+                # predicate starts a main clause even without a separating comma.
+                # A dative recipient still belongs to the reference event in
+                # «до передачи отчёта клиенту оформляют заявку».
+                recipient = any(_DATIVE_ENDING.fullmatch(token) for token in tokens[start:end])
+                if recipient or end == len(tokens) or not _PERSONAL_PREDICATE.fullmatch(tokens[end]):
+                    continue
+            owners.add(role)
+    return owners
 
 
 @dataclass

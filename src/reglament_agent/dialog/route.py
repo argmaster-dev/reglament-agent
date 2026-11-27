@@ -192,7 +192,8 @@ class Dialog:
         short = context.scope_only(message, dept)
         stage_reply = explicit_stage and len(words(message)) <= 4
         confirming_yes = pending and confirming and context.normalized_reply(message) == "да"
-        follow = bool(topic.get("subject")) and bool(
+        operational = guards.operational_request(message)
+        follow = not operational and bool(topic.get("subject")) and bool(
             short
             or stage_reply
             or (pending and (choice or unknown or confirming_yes or not context.new_question(message)))
@@ -220,7 +221,8 @@ class Dialog:
             question = guards.neutralize(question)
             if invention:
                 question = guards.strip_invention(question)
-            question = spelling.correct(question, self.vocabulary(conn))
+            if not operational:
+                question = spelling.correct(question, self.vocabulary(conn))
         if not follow:
             ignored = topic.get("ignored_department")
             offered = topic.get("profile_confirmation_offered")
@@ -233,6 +235,9 @@ class Dialog:
         if pending and follow:
             topic.setdefault("history", []).append({"question": topic["clarify"], "answer": message})
         trace["restated"] = question
+        if operational:
+            trace["steps"].append("off_topic")
+            return Answer(Outcome.OFF_TOPIC, guards.OFF_TOPIC_MESSAGE), question, None
         variants = (pending and follow and unknown) or multi
         note = None
         if follow and confirming_yes:

@@ -176,7 +176,10 @@ variants — правила нескольких подразделений, к�
 external_doc — источник отсылает за конкретным ответом в другой документ; укажи цитату с его названием.
 conflict — два разных правила для одного вопроса; выбери оба, включая особое условие.
 no_basis — рабочий вопрос, на который ни один источник не отвечает.
-off_topic — бытовые просьбы, рецепты, развлечения. low_confidence — требуется проверка.
+off_topic — бытовой вопрос, запрос текущих данных о конкретной сделке, выплате или рынке, либо просьба выполнить работу.
+Вопрос о правилах, порядке или ответственном — по регламентам. Если правило не найдено, верни no_basis.
+low_confidence — подтверждена только часть ответа; выбери только цитаты, отвечающие на неё.
+Правовые нормы указывай только тогда, когда сам источник их содержит.
 Короткая выдержка text должна дословно отражать правило из цитаты. Для вопросов «кто» выпиши роль actor
 и соответствующее действие action из этой же цитаты. Прочим вопросам оставь actor и action пустыми строками.
 qualifier у ячейки таблицы совпадает с названием колонки. negated относится к action.
@@ -246,16 +249,33 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         statement = Statement(text, [a.ref])
         if statement not in statements:
             statements.append(statement)
-    if out in (Outcome.ANSWER, Outcome.VARIANTS, Outcome.CONFLICT, Outcome.EXTERNAL_DOC):
+    parts = relevance.coordinated_parts(question)
+    compound = bool(parts) and not variants
+    # A model can decline an entire question even when one of its citations answers a specific part.
+    check_parts = compound and out in (Outcome.ANSWER, Outcome.LOW_CONFIDENCE, Outcome.NO_BASIS)
+    missing_parts = []
+    if out in (Outcome.ANSWER, Outcome.VARIANTS, Outcome.CONFLICT, Outcome.EXTERNAL_DOC, Outcome.LOW_CONFIDENCE) or check_parts:
         # A semantically neighbouring passage alone is insufficient evidence of the question's subject.
         # Department names scope the question; they are not part of the requested rule.
         query = relevance.terms(question) - relevance.terms(" ".join(departments))
         grounded = []
-        deadline = relevance.asks_deadline(question)
+        deadline = any(relevance.asks_deadline(part) for part in (parts or [question]))
         point_terms = relevance.deadline_context(rows or items.values()) if deadline else None
+        covered = set()
         for st in statements:
             a = by_ref[st.sources[0]]
-            if invention:
+            if check_parts:
+                matched = {
+                    part for part in parts
+                    if relevance.supports_part(part, a, point_terms=point_terms)
+                    and (not invention or len(relevance.terms(part) & relevance.terms(a.text))
+                         >= guards.required_overlap(len(relevance.terms(part))))
+                }
+                enough = bool(matched)
+                covered.update(matched)
+            elif out == Outcome.LOW_CONFIDENCE and not invention:
+                enough = relevance.supports_part(question, a, point_terms=point_terms)
+            elif invention:
                 # Only a sentence that itself covers the question may stand in for an invented value.
                 enough = len(query & relevance.terms(a.text)) >= guards.required_overlap(len(query))
             elif deadline:
@@ -272,7 +292,9 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         statements = grounded
         if not statements:
             out = Outcome.NO_BASIS
-    if relevance.asks_amount(fold(question)):
+        elif check_parts:
+            missing_parts = [part for part in parts if part not in covered]
+    if not missing_parts and relevance.asks_amount(fold(question)):
         refs = [a for a in items.values() if relevance.external_reference(a) and relevance.terms(question) & relevance.terms(a.text)]
         if refs and not any(re.search(r"\d", s.text) and "формул" in fold(s.text) for s in statements):
             statements = [Statement(a.text, [a.ref]) for a in refs[:1]]
@@ -300,6 +322,15 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         statements = relevance.companion_sentences(
             relevance.expand_selected(question, statements, items, rows or items.values()), rows
         )
+    if missing_parts and statements:
+        # Adjacent referenced sentences or a complete list may cover what the first selected quote omitted.
+        by_ref.update((a.ref, a) for a in rows)
+        missing_parts = [
+            part for part in missing_parts
+            if not any(relevance.supports_part(part, by_ref[s.sources[0]], point_terms=point_terms) for s in statements)
+        ]
+        if missing_parts:
+            out = Outcome.LOW_CONFIDENCE
     if variants and out in (Outcome.ANSWER, Outcome.NO_BASIS, Outcome.VARIANTS) and statements:
         out = Outcome.VARIANTS
     if out in (Outcome.EXTERNAL_DOC, Outcome.CONFLICT) and not statements:
@@ -321,7 +352,8 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         )
     summaries = {
         Outcome.NO_BASIS: "В доступных регламентах не нашёл ответа на этот вопрос.",
-        Outcome.OFF_TOPIC: "Я помогаю с вопросами по внутренним регламентам.",
+        Outcome.OFF_TOPIC: guards.OFF_TOPIC_MESSAGE,
+        Outcome.LOW_CONFIDENCE: "Нашёл основание только для части ответа. Требуется подтверждение службы качества.",
         Outcome.EXTERNAL_DOC: "Для ответа потребуется документ, на который ссылается регламент.",
         Outcome.CONFLICT: "Нашёл общее правило и условие, которое требует отдельной проверки.",
     }
@@ -345,7 +377,8 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         correction = guards.premise_caveat(question, [s.text for s in statements])
         if correction:
             notes.append(correction)
-        # A part of a compound question without its own source is reported, never silently dropped.
-        for part in relevance.uncovered_parts(question, statements, list(rows) or list(items.values())):
-            notes.append(f"По части вопроса «{part}» в найденных регламентах основания нет.")
+    for part in missing_parts:
+        notes.append(f"По части вопроса «{part}» в найденных регламентах основания нет.")
+    if out == Outcome.LOW_CONFIDENCE and not notes:
+        notes.append("Подтверждение службы качества требуется для полного ответа.")
     return Answer(out, summaries.get(out, ""), statements, caveat="\n".join(notes) or None)
