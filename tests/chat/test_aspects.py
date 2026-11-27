@@ -319,7 +319,8 @@ def test_manager_redirect_keeps_off_topic_hint():
 
 
 def test_no_redirect_attribute_is_ignored(cat):
-    assert not hasattr(answer("7.1"), "redirect")
+    """Без перенаправления (поле отсутствует у старых ответов или равно None) советы выбираются как обычно."""
+    assert getattr(answer("7.1"), "redirect", None) is None
     assert A.select_advice(cat, answer("7.1"), "в")
 
 
