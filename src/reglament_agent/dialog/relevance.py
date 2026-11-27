@@ -13,7 +13,7 @@ from reglament_agent.storage.search import QUESTION_WORDS
 
 from .context import stage_in
 from .deadlines import has_deadline, question_mode
-from .lexicon import canonical_role, find_roles, fold, word_key, words
+from .lexicon import canonical_role, contains_phrase, find_roles, fold, word_key, word_stem, words
 
 _STOP = QUESTION_WORDS | {
     "это",
@@ -797,6 +797,68 @@ def applicable_refs(question, rows, *, department=None):
     return {a.ref for a in relevant}
 
 
+_REQUIRED_HEADER = re.compile(r"^обязательн\w*\b")
+_OPTIONAL_HEADER = re.compile(r"^(?:при наличии|при необходимости|необязательн\w*)\b")
+_ITEM_REQUIREMENT = re.compile(
+    r"\b(?:примут ли|принима\w* ли|пройдет ли|не (?:примут|принима\w*|пройдет)|"
+    r"обязательн\w*|требуется ли|комплектн\w*)\b"
+)
+
+
+def _names_item(text, name):
+    """The cell either names the item directly or gives its head noun as a parenthetical alternative."""
+    name_stems = [word_stem(token) for token in name]
+
+    def stems(part):
+        return [word_stem(token) for token in words(part)]
+
+    if any(contains_phrase(stems(part), name_stems) for part in re.split(r"[,;().]", text)):
+        return True
+    for match in re.finditer(r"([^();]+)\(([^()]+)\)", text):
+        aliases = re.split(r"[,;]|\b(?:и|или)\b", match[2])
+        if (contains_phrase(stems(match[1]), name_stems[1:])
+                and any(stems(alias) == name_stems[:1] for alias in aliases)):
+            return True
+    return False
+
+
+def _named_requirement(question, statements, items, rows):
+    """Resolve a single named item of an already selected requirements table."""
+    absence = re.search(r"\bбез\s+([^.?!\n]+)", question)
+    if (not absence or not _ITEM_REQUIREMENT.search(question) or len(re.findall(r"\bбез\b", question)) != 1
+            or re.search(r"\b(?:кто|кому|кем|когда|сколько|где|куда|почему)\b", question)
+            or re.search(r"[,;]|\b(?:и|или)\b", absence[1])):
+        return None
+    refs = {ref for statement in statements for ref in statement.sources}
+    points = {(ref.doc_id, ref.version_no, ref.point) for ref in refs}
+    if len(points) != 1 or not any(ref.column for ref in refs):
+        return None
+    point_rows = [a for a in rows if _point_key(a) in points]
+    if any(not a.ref.column and a.ref.sentence != 0 for a in point_rows):
+        return None  # A separate prose rule in the point could qualify the table.
+    cells = [a for a in point_rows if a.ref.column]
+    labels = {fold(a.ref.column.strip()) for a in cells}
+    if not (any(_REQUIRED_HEADER.match(label) for label in labels)
+            and any(_OPTIONAL_HEADER.match(label) for label in labels)):
+        return None
+    # The named item may be followed directly by the subject of the table ("без … досье поставщика").
+    # Consume its whole name up to punctuation or a pair of terms from the table's own introduction.
+    context = terms(cells[0].context)
+    tokens = words(absence[1])
+    boundary = next((i for i in range(2, len(tokens) - 1)
+                     if {word_key(tokens[i]), word_key(tokens[i + 1])} <= context), len(tokens))
+    name = tokens[:boundary]
+    surrounding = " ".join([question[:absence.start()], *tokens[boundary:], question[absence.end():]])
+    if len(terms(" ".join(name))) < 2 or len(terms(surrounding) & context) < 2:
+        return None
+    matches = [a for a in cells if _names_item(a.text, name)]
+    if len(matches) == 1 and matches[0] in items.values():
+        a = matches[0]
+        if _REQUIRED_HEADER.match(fold(a.ref.column)) or _OPTIONAL_HEADER.match(fold(a.ref.column)):
+            return Statement(f"{a.ref.column}: {a.text}", [a.ref])
+    return None
+
+
 def expand_selected(question, statements, items, rows):
     q = fold(question)
     # Once the model identifies a relevant table, enumerate the requested column in source order.
@@ -821,6 +883,8 @@ def expand_selected(question, statements, items, rows):
             )
             if complete:
                 return [Statement(f"{a.ref.column}: {a.text}", [a.ref]) for a in complete]
+    elif named := _named_requirement(q, statements, items, rows):
+        return [named]
     return statements
 
 

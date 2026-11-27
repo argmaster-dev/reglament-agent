@@ -25,13 +25,17 @@ def words(text: str) -> list[str]:
     return _WORD.findall(fold(text))
 
 
-def word_key(word: str) -> str:
-    """Crude stem key of an already folded word."""
+def word_stem(word: str) -> str:
+    """Remove one common inflection from an already folded word."""
     for end in _ENDINGS:
         if word.endswith(end) and len(word) - len(end) >= 3:
-            word = word[: -len(end)]
-            break
-    return word[:KEY_LEN]
+            return word[: -len(end)]
+    return word
+
+
+def word_key(word: str) -> str:
+    """Short stem key for approximate vocabulary matching."""
+    return word_stem(word)[:KEY_LEN]
 
 
 # --- glossary ---------------------------------------------------------------
@@ -194,7 +198,7 @@ def canonical_role(text: str) -> tuple[str, Pattern]:
     return canon, pats
 
 
-def _seq_in(seq: list[str], sub: list[str]) -> bool:
+def contains_phrase(seq: list[str], sub: list[str]) -> bool:
     n = len(sub)
     return n > 0 and any(seq[i : i + n] == sub for i in range(len(seq) - n + 1))
 
@@ -221,7 +225,7 @@ def expand_query(text: str) -> str:
     def has_variant(variant: str) -> bool:
         if variant in _CASE_SENSITIVE_ALIASES:
             return variant in original_tokens
-        return _seq_in(toks, words(variant))
+        return contains_phrase(toks, words(variant))
 
     extra: list[str] = []
     slang = frozenset(_load_slang())
@@ -231,7 +235,7 @@ def expand_query(text: str) -> str:
         if any(has_variant(v) for v in variants):
             if fold(clean) not in fold(text):
                 extra.append(clean)
-        elif row not in slang and _seq_in(keys, [word_key(w) for w in words(clean)]):
+        elif row not in slang and contains_phrase(keys, [word_key(w) for w in words(clean)]):
             extra.extend(v for v in variants if v in _CASE_SENSITIVE_ALIASES or v.lower() not in low)
     return " ".join([text, *extra]) if extra else text
 
