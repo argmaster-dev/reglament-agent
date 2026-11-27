@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from reglament_agent.answer import SourceRef, Statement
 from reglament_agent.storage.search import QUESTION_WORDS
 
+from .context import stage_in
 from .deadlines import has_deadline, question_mode
 from .lexicon import canonical_role, find_roles, fold, word_key, words
 
@@ -287,8 +288,28 @@ def qualifier_conflict(question, anchor):
     return _conflicts(question, anchor.text) is not None or _conflicts(question, anchor.context) is not None
 
 
+def _only_stage_qualifiers(sentence, origin):
+    """Check whether the candidate names only workflow stages for this object."""
+    noun, _, requested_head = origin
+    text = fold(sentence)
+    qualifiers = [match for match in _NOUN_QUALIFIER.finditer(text) if word_key(match[1]) == noun]
+    for match in qualifiers:
+        preposition, target = match[2], match[3]
+        stage = stage_in(target)
+        if (
+            _head(target) == requested_head
+            or text[match.end():].startswith(("-", "–", "‑"))
+            or stage is None
+            or stage_in(f"{preposition} {target}") != stage
+        ):
+            return False
+    return bool(qualifiers)
+
+
 def nearby_evidence(question, rows, limit=3) -> tuple[str, list[SourceRef]]:
     """Describe neighbouring points and keep their exact references in the same order."""
+    qualifiers = request_qualifiers(question)
+    origin = qualifiers[0] if len(qualifiers) == 1 and qualifiers[0][1] == "от" else None
     lines, refs, seen = [], [], set()
     for anchor in rows:
         ref = anchor.ref
@@ -296,6 +317,8 @@ def nearby_evidence(question, rows, limit=3) -> tuple[str, list[SourceRef]]:
         if len(refs) >= limit:
             break
         if key in seen or not _conflicts(question, anchor.text):
+            continue
+        if origin and _only_stage_qualifiers(anchor.text, origin):
             continue
         seen.add(key)
         refs.append(ref)
