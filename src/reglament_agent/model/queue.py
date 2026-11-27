@@ -25,13 +25,20 @@ class _Waiter:
         self.last_position = 0
 
 
-class GenerationSlot:
-    """Single (or N) generation slot; FIFO. Position 1 = next in line."""
+class GenerationQueueFull(RuntimeError):
+    """No free generation slot and the waiting queue has reached its limit."""
 
-    def __init__(self, capacity: int = 1) -> None:
+
+class GenerationSlot:
+    """Single (or N) generation slot with a bounded FIFO. Position 1 is next in line."""
+
+    def __init__(self, capacity: int = 1, *, max_waiting: int = 3) -> None:
         if capacity < 1:
             raise ValueError("capacity must be >= 1")
+        if max_waiting < 0:
+            raise ValueError("max_waiting must be >= 0")
         self.capacity = capacity
+        self.max_waiting = max_waiting
         self.active = 0
         self._queue: deque[_Waiter] = deque()
 
@@ -63,6 +70,8 @@ class GenerationSlot:
         if self.active < self.capacity and not self._queue:
             self.active += 1
         else:
+            if self.waiting >= self.max_waiting:
+                raise GenerationQueueFull("Generation queue is full")
             w = _Waiter(on_position)
             self._queue.append(w)
             self._notify()
