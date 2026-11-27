@@ -27,6 +27,7 @@ _ACTION_WORDS = re.compile(
 # Finite or infinitive verb endings: every sentence contributes its own verbs, not a fixed list of stems.
 _VERB_FORM = re.compile(r"^\w{3,}(?:е[тм]|ит|ют|ут|ят|ат|ться|ть|ти)$")
 _NOUN_ENDING = re.compile(r"(?:ость|ости|сть|сти)$")
+_INSTRUMENTAL_PREPOSITIONS = {"с", "со", "над", "перед", "пред", "под", "за", "между"}
 # Frequent regulation nouns that end like verb forms.
 _NOUNS = {
     "бюджет", "ответ", "предмет", "объем", "лимит", "аудит", "результат", "формат", "комплект", "документ",
@@ -42,7 +43,14 @@ def sentence_actions(tokens):
     def verb(w):
         return bool(_VERB_FORM.match(w)) and not _NOUN_ENDING.search(w) and w not in _NOUNS
 
-    return {w for w in tokens if _ACTION_WORDS.match(w) or verb(w)}
+    actions = set()
+    for index, word in enumerate(tokens):
+        # The ending «-ем» is shared with verbs. A governing preposition marks a noun here.
+        if index and word.endswith("ем") and tokens[index - 1] in _INSTRUMENTAL_PREPOSITIONS:
+            continue
+        if _ACTION_WORDS.match(word) or verb(word):
+            actions.add(word)
+    return actions
 
 
 @dataclass(frozen=True)
