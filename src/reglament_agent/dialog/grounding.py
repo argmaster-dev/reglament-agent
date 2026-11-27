@@ -17,6 +17,7 @@ from .checks import (
     verify_claims,
 )
 from .lexicon import find_roles, fold, word_key, words
+from .request_deadline import RequestLeadTime
 
 MODEL_OUTCOMES = ["answer", "variants", "no_basis", "external_doc", "conflict", "low_confidence", "off_topic"]
 
@@ -455,6 +456,11 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             department = next(iter(sourced_departments))
             summaries[out] = f"Если речь {procedure.value}, этот порядок описан в регламенте подразделения «{department}»."
     notes = ["Часть утверждений не подтверждена источниками."] if caveat else []
+    if out == Outcome.ANSWER and statements and point_terms and (request := RequestLeadTime.from_question(question)):
+        if all(relevance.request_deadline_basis(request, known[ref], point_terms) == "generic"
+               for statement in statements for ref in statement.sources):
+            out = Outcome.LOW_CONFIDENCE
+            notes.append("В пункте указан общий срок для заявки. Применимость к названному виду заявки требует подтверждения.")
     if pointers and statements and len(pointers) == len(statements):
         notes.append("В этом пункте подписант не указан: он отсылает к другому документу.")
     if out == Outcome.ANSWER and statements:

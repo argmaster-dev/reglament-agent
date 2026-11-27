@@ -15,6 +15,7 @@ from . import project_procedures
 from .context import stage_in
 from .deadlines import has_deadline, question_mode
 from .lexicon import canonical_role, contains_phrase, find_roles, fold, word_key, word_stem, words
+from .request_deadline import RequestLeadTime, created_request, request_deliverables, request_purposes
 
 _STOP = QUESTION_WORDS | {
     "это",
@@ -741,14 +742,23 @@ def _roles(text):
 class _PointSubject:
     words: set[str] = field(default_factory=set)
     roles: set[str] = field(default_factory=set)
+    creates_request: bool = False
+    request_purposes: set[str] = field(default_factory=set)
+    deliverables: set[str] = field(default_factory=set)
 
 
 def deadline_context(rows):
     point_terms = {}
+    document_deliverables = {}
     for anchor in rows:
-        point = point_terms.setdefault(_point_key(anchor), _PointSubject())
+        key = _point_key(anchor)
+        deliverables = document_deliverables.setdefault(key[:2], set())
+        point = point_terms.setdefault(key, _PointSubject(deliverables=deliverables))
         point.words.update(terms(anchor.text + " " + anchor.context))
         point.roles.update(_roles(anchor.text + " " + anchor.context))
+        point.creates_request |= created_request(anchor.text)
+        point.request_purposes.update(request_purposes(anchor.text))
+        deliverables.update(request_deliverables(anchor.text))
     return point_terms
 
 
@@ -860,6 +870,14 @@ def frequency_request(part, departments):
     return Frequency(frozenset(subject), operation, actor, object_head)
 
 
+def request_deadline_basis(request, anchor, point_terms):
+    point = (point_terms or {}).get(_point_key(anchor))
+    return request.basis(
+        anchor.text, created=bool(point and point.creates_request),
+        purposes=point.request_purposes if point else set(), delivered=point.deliverables if point else set(),
+    )
+
+
 def states_deadline(question, anchor, *, department=None, point_terms=None):
     """Check the time and the operation independently. A section alone cannot supply the subject."""
     mode = question_mode(question)
@@ -878,6 +896,9 @@ def states_deadline(question, anchor, *, department=None, point_terms=None):
         )
         if not requested_roles & actual_roles:
             return False
+    request = RequestLeadTime.from_question(question) if mode == "before" else None
+    if request:
+        return bool(request_deadline_basis(request, anchor, point_terms))
     operation = _operation(question, subject)
     direct = terms(clause)
     if operation and subject & direct and any(_OPERATION_VERB.fullmatch(word) for word in words(clause)):
