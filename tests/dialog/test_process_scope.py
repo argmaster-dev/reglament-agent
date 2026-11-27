@@ -38,8 +38,12 @@ def test_specific_object_or_condition_does_not_become_open(question):
     assert not processes.broad_subject(question, Scope('Техническая дирекция', 'project'))
 
 
-def test_adjective_of_presale_is_not_a_stage_name():
-    assert context.stage_in('Что делать с заявкой на пресейловую экспертизу?') is None
+@pytest.mark.parametrize('question', [
+    'Что делать с заявкой на пресейловую экспертизу?',
+    'Кто устанавливает этапность пресейла?',
+])
+def test_words_derived_from_stage_names_are_not_stage_markers(question):
+    assert context.stage_in(question) is None
 
 
 def test_known_department_and_stage_still_clarify_process_in_active_scope(isolated):

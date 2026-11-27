@@ -50,7 +50,8 @@ def department_in(text, departments):
 
 STAGE_LABELS = {"presale": "Пресейл", "project": "Проект"}
 _STAGE_PHRASES = {
-    "presale": re.compile(r"\b(?:(?:на\s+)?(?:этап\w*|стади\w*)\s+|на\s+)"
+    "presale": re.compile(r"\b(?:(?:на\s+)?(?:этап(?:а|е|у|ом|ы|ов|ах|ам|ами)?|"
+                          r"стади(?:я|и|ю|ей|й|ях|ям|ями))\s+|на\s+)"
                           r"(?:пресейл(?:а|у|е|ом)?|предпродаж(?:а|и|у|е|ей)?)\b"),
     "project": re.compile(r"\b(?:на\s+этапе\s+проекта|на\s+проектной\s+стадии|на\s+проекте|проектная\s+деятельность)\b"),
 }
@@ -67,9 +68,10 @@ def stage_in(text):
 def without_scope(text, scope):
     """Remove explicit scope phrases while keeping subject words such as «проектная заявка»."""
     text = fold(text)
-    if scope.stage:
+    stage_phrase = _STAGE_PHRASES.get(scope.stage)
+    if stage_phrase:
         # A standalone button «Проект» resolves a stage, but «проект» can be the question's object.
-        text = _STAGE_PHRASES[scope.stage].sub(" ", text)
+        text = stage_phrase.sub(" ", text)
     if not scope.department:
         return text
     tokens = words(text)
