@@ -14,16 +14,16 @@ from tests.dialog.test_route import status
 
 
 @pytest.mark.parametrize(('question', 'has_evidence', 'name_expected'), [
-    ('Где найти регламент о хранении оригиналов?', True, True),
-    ('В каком внутреннем документе описано хранение оригиналов?', True, True),
-    ('Как хранить оригиналы? Дайте ссылку на инструкцию.', True, True),
-    ('Где по регламенту хранить оригиналы?', True, False),
-    ('Как хранить оригиналы?', True, False),
-    ('Где найти регламент о хранении оригиналов?', False, False),
+    ('Где найти регламент, где указано место хранения оригиналов?', True, True),
+    ('В каком внутреннем документе описано место хранения оригиналов?', True, True),
+    ('Где указано место хранения оригиналов? Дайте ссылку на инструкцию.', True, True),
+    ('Где по регламенту указано место хранения оригиналов?', True, False),
+    ('Какое предусмотрено место хранения оригиналов?', True, False),
+    ('Где найти регламент, где указано место хранения оригиналов?', False, False),
 ])
 def test_navigation_names_only_the_verified_document(isolated, question, has_evidence, name_expected):
-    _, dsn = isolated
-    main = replace(point('3.1', 'Хранение оригиналов', 'Оригиналы хранят в архиве.'),
+    conn, dsn = isolated
+    main = replace(point('3.1', 'Хранение оригиналов', 'Место хранения оригиналов — центральный архив.'),
                    doc_title='Передача и хранение оригиналов', version_no=4)
     other = replace(point('3.2', 'Другие вопросы', 'Отчёты печатают по средам.', doc='another'),
                     doc_title='Работа с отчётами')
@@ -31,7 +31,9 @@ def test_navigation_names_only_the_verified_document(isolated, question, has_evi
     route = Dialog(dsn, FirstSource(), search=lambda *a, **kw: Candidates(found, []),
                    shortlist=lambda *a, **kw: [])
     answer = asyncio.run(route.answer(UserContext('reader@example.org', 'employee', 'lookup', '1'), question, status))
-    assert answer.outcome is (Outcome.ANSWER if has_evidence else Outcome.NO_BASIS)
+    assert answer.outcome is (Outcome.ANSWER if has_evidence else Outcome.NO_BASIS), conn.execute(
+        "SELECT trace->'dropped' FROM dialog_requests WHERE id=%s", (answer.answer_id,)
+    ).fetchone()
     assert (main.doc_title in answer.summary) is name_expected
     assert other.doc_title not in answer.summary
     if has_evidence:
