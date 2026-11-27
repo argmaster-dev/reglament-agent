@@ -30,7 +30,7 @@ from reglament_agent.storage.retrieve import Candidates, retrieve
 from reglament_agent.storage.search import preview
 from reglament_agent.storage.sources import active_process
 
-from . import context, grounding, guards, processes, relevance, spelling, state
+from . import context, grounding, guards, processes, relevance, similar, spelling, state
 from .lexicon import fold, words
 
 _LOG = logging.getLogger(__name__)
@@ -62,7 +62,8 @@ class RequestCalls:
 
 
 class Dialog:
-    def __init__(self, dsn, model=None, *, search=retrieve, shortlist=preview, mail=None):
+    def __init__(self, dsn, model=None, *, search=retrieve, shortlist=preview, mail=None,
+                 similar_cache=None, similar_min_cosine=None):
         self.dsn = dsn
         self.model = model or OllamaClient(sink=RequestCalls())
         register_chat_slot(getattr(self.model, "slot", None))  # /health shows this queue only
@@ -72,6 +73,10 @@ class Dialog:
         self.profiles = state.Profiles(dsn)
         self.profile_max_age_days = int(os.getenv("DIALOG_PROFILE_MAX_AGE_DAYS", "30"))
         self._vocabulary = (None, None)
+        # Similar-phrasing cache: off unless CACHE_SIMILAR_ENABLED is set (or the argument says so).
+        enabled, threshold = similar.settings()
+        self.similar_cache = enabled if similar_cache is None else similar_cache
+        self.similar_min_cosine = threshold if similar_min_cosine is None else similar_min_cosine
 
     def vocabulary(self, conn):
         """Words of the active regulations; rebuilt only when the set of active versions changes."""
@@ -226,8 +231,10 @@ class Dialog:
 
         question = topic["subject"] if follow else message
         invention = bool(topic.get("invention")) if follow else guards.fabrication_intent(message)
+        guarded = False  # the guards rewrote the question: its answer is never shared through the cache
         if not follow:
             question = guards.neutralize(question)
+            guarded = question != message or invention
             if invention:
                 question = guards.strip_invention(question)
             if redirect is None:
@@ -344,16 +351,33 @@ class Dialog:
             )
             return reply, question, None
 
-        key = None
-        if not follow:
+        key, vector = None, None
+        # Only a standalone question uses the shared cache: not a context reply, not a clarification
+        # choice, not a question the guards rewrote.
+        if not follow and not choice and not guarded:
             model_name = getattr(
                 getattr(self.model, "settings", None), "chat_model", type(self.model).__name__
             )
-            key = state.cache_key(conn, user, question, scope, model_name)
-            hit = state.cached(conn, user, key)
-            if hit:
+            key = state.CacheSlot(
+                state.cache_key(conn, user, question, scope, model_name),
+                state.cache_context(conn, user, scope, model_name),
+            )
+            found = state.cached(conn, key.key)
+            if found:
+                hit, source = found
                 trace["steps"].append("cache_hit")
-                return replace(hit, from_cache=True, profile_note=note), question, None
+                trace["cache"] = {"kind": "exact", "source": source}
+                return replace(hit, profile_note=note), question, None
+            if self.similar_cache:
+                (vector,) = await self.model.embed([question], step="retrieve", request_id=request_id)
+                key.vector = vector
+                near = similar.find(conn, key.context, question, vector, departments,
+                                    self.similar_min_cosine)
+                if near:
+                    hit, source, score = near
+                    trace["steps"] += ["cache_hit", "cache_similar_hit"]
+                    trace["cache"] = {"kind": "similar", "source": source, "cosine": round(score, 4)}
+                    return replace(hit, profile_note=note), question, None
 
         await status("Ищу основания в действующих регламентах…")
 
@@ -413,7 +437,10 @@ class Dialog:
             trace["steps"].append("selected_process")
             found = Candidates(points, [])
         else:
-            (vector,) = await self.model.embed([question], step="retrieve", request_id=request_id)
+            if vector is None:
+                (vector,) = await self.model.embed([question], step="retrieve", request_id=request_id)
+            if key is not None:
+                key.vector = vector
         if multi:
             parts = [
                 await asyncio.to_thread(
