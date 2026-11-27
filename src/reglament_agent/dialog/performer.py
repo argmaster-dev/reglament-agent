@@ -16,6 +16,9 @@ _ROLE = re.compile(
     r"начальник|ответственный|исполнитель|секретарь|сотрудник|представитель|отдел|департамент)"
     r"(?:ы|и)?|руководители|исполнители|служба|группа|комиссия|управление|подразделение|бюро|команда)$"
 )
+# Productive nominative job-title endings apply in the explicit duty construction
+# («за работу отвечает …»). Oblique forms such as «мастеру» cannot pass this check.
+_TITLE_NOMINATIVE = re.compile(r"^[а-я-]{2,}(?:тель|ник|щик|чик|ист|тор|ант|ент|вед|олог|ург|арь|ер|ор)$")
 _ROLE_CODES = {fold(r) for r in ROLE_ABBREVIATIONS} | {"tps"}
 _SKIP_MODIFIER = re.compile(r"^\w+(?:ый|ий|ой|ая|ые|ие)$")
 _CUSTOMER = {word_key("клиент"), word_key("заказчик")}
@@ -25,11 +28,12 @@ def _scope_keys(text):
     return {"клиент" if k in _CUSTOMER else k for k in terms(text)}
 
 
-def _owner(text):
+def _owner(text, *, explicit_duty=False):
     toks = words(text)
     while len(toks) > 1 and _SKIP_MODIFIER.fullmatch(toks[0]) and not _ROLE.fullmatch(toks[0]):
         toks = toks[1:]
-    return bool(toks and (toks[0] in _ROLE_CODES or _ROLE.fullmatch(toks[0])))
+    return bool(toks and (toks[0] in _ROLE_CODES or _ROLE.fullmatch(toks[0])
+                          or (explicit_duty and _TITLE_NOMINATIVE.fullmatch(toks[0]))))
 
 
 @dataclass(frozen=True)
@@ -43,9 +47,9 @@ class Procedure:
                 left, right = clause[:match.start()].strip(), clause[match.end():].strip()
                 if left.endswith(" не"):
                     continue
-                if left.startswith("за ") and self.subject <= _scope_keys(left) and _owner(right):
+                if left.startswith("за ") and self.subject <= _scope_keys(left) and _owner(right, explicit_duty=True):
                     return True
-                if right.startswith("за ") and self.subject <= _scope_keys(right) and _owner(left):
+                if right.startswith("за ") and self.subject <= _scope_keys(right) and _owner(left, explicit_duty=True):
                     return True
             for match in _ACTION.finditer(clause):
                 if word_key(match[0]) != self.verb:

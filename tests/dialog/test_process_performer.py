@@ -49,3 +49,19 @@ def test_customer_wording_maps_to_the_party_in_the_accountability_clause():
     duty = "Координатор отвечает за анкетирование заказчиков."
     result, _ = evaluate("Кто проводит анкетирование клиентов?", [(duty, None)])
     assert result.outcome == Outcome.ANSWER and [s.text for s in result.statements] == [duty]
+
+
+def test_explicit_owner_does_not_need_a_registered_job_title():
+    sentence = "За аудит поставщиков отвечает мастер смены."
+    answer, _ = evaluate("Кто проводит аудит поставщиков?", [(sentence, None)])
+    assert answer.outcome == Outcome.ANSWER and [s.text for s in answer.statements] == [sentence]
+
+
+def test_addressee_and_unresolved_relative_question_do_not_identify_an_owner():
+    statements = [
+        "Кладовщику поручили узнать, кто проводит аудит поставщиков.",
+        "За аудит поставщиков отвечает перед диспетчером лично.",
+        "За аудит поставщиков РП отвечает мастеру смены лично.",
+    ]
+    answer, _ = evaluate("Кто проводит аудит поставщиков?", [(s, None) for s in statements])
+    assert answer.outcome == Outcome.NO_BASIS and not answer.statements
