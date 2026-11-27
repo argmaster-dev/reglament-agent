@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
+from reglament_agent.chat.aspects import Advice, Law
 from reglament_agent.answer import (
     Answer,
     Outcome,
@@ -41,6 +42,10 @@ PRACTICE_TITLE = "Практика применения"
 PRACTICE_LIMIT = 3
 # «п. 2.2 «Название» (Подразделение): текст»: так маршрут называет близкие пункты в тексте итога.
 _NEAR_LINE = re.compile(r"^п\. (\S+) «(.+?)» \((.+?)\): (.*)$")
+ADVICE_TITLE = "На что обратить внимание"
+ADVICE_LABEL = "Справочно, не юридическая консультация — применение к вашему случаю уточните у юристов."
+LAW_FOOTER = "Текст статьи приведён справочно, редакция от {revision}. Применение к вашему случаю — с юридической службой."
+LEGAL_REDIRECT = "Это вопрос законодательства, а не регламентов компании — по нему лучше обратиться к юристам."
 REFUSAL_LEAD = (
     "В регламентах ответа нет. Я отправил запрос в службу качества по почте, вы в копии. "
     "Ответ придёт на почту и в этот диалог."
@@ -201,7 +206,7 @@ def near_chips(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None])
 
 def refusal_element(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> dict | None:
     """Props of the small inline element under a refusal: near-point chips and the ticket line."""
-    if answer.outcome not in TICKET_OUTCOMES:
+    if answer.outcome not in TICKET_OUTCOMES or getattr(answer, "redirect", None):
         return None
     ticket = None
     if answer.ticket:
@@ -262,6 +267,11 @@ def answer_markdown(
     separate_evidence=False,
     faq_dates: dict[int, str] | None = None,
 ) -> str:
+    redirect = getattr(answer, "redirect", None)
+    if redirect == "legal":
+        return LEGAL_REDIRECT
+    if redirect == "manager":
+        return f"**{OUTCOME_LABELS[Outcome.OFF_TOPIC]}**\n\n{OFF_TOPIC_HINT}"
     names = names if names is not None else assign_chip_names(answer)
     summary, _near = split_near(answer.summary)
     if answer.outcome is Outcome.OFF_TOPIC and not summary.startswith(("Сообщение длиннее", "Вопрос должен содержать")):
@@ -309,6 +319,41 @@ def answer_markdown(
     if answer.profile_note:
         parts.append(f"_{answer.profile_note}_")
     return "\n\n".join(parts)
+
+
+def advice_element(advice: list[Advice]) -> dict | None:
+    """Props of the inline element AdviceBlock: heading, small disclaimer, bullets with clickable law references.
+
+    The texts are plain strings: the element renders them as text, never as markup."""
+    if not advice:
+        return None
+    return {
+        "title": ADVICE_TITLE,
+        "note": ADVICE_LABEL,
+        "items": [
+            {"text": item.aspect.chat_text,
+             "laws": [{"label": law.reference, "law_id": law.id} for law in item.laws]}
+            for item in advice
+        ],
+    }
+
+
+def law_panel(law: Law) -> dict:
+    """Что показывает боковая панель статьи: акт, статья, текст, редакция, источник и дата получения."""
+    revision = re.sub(r"^(ред\.?\s*)?(от\s*)?", "", law.revision.strip(), flags=re.I)
+    url = law.source_url if law.source_url.startswith(("http://", "https://")) else ""
+    return {
+        "act": law.act,
+        "article": law.reference,
+        "title": law.title,
+        "text": law.text,
+        "revision": f"редакция от {revision}",
+        "source_url": url,
+        "official_publication": law.official_publication,
+        "official_url": law.official_url if law.official_url.startswith(("http://", "https://")) else "",
+        "retrieved": f"получено {ru_date(law.retrieved)}",
+        "note": LAW_FOOTER.format(revision=revision),
+    }
 
 
 def point_panel(pv: PointView) -> dict:

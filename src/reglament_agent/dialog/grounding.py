@@ -264,9 +264,16 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             statements.append(statement)
     scopes = {part: rule for part in parts or [question]
               if (rule := relevance.reimbursement_request(part, departments)) is not None}
+    frequencies = {part: rule for part in parts or [question]
+                   if (rule := relevance.frequency_request(part, departments)) is not None}
     point_terms = None
 
     def supports(part, anchor):
+        if part in frequencies:
+            if not frequencies[part].supported_by(anchor.text):
+                return False
+            if part not in scopes:
+                return True
         if part in scopes:
             return scopes[part].supported_by(anchor.text)
         return relevance.supports_part(part, anchor, point_terms=point_terms, antecedent=antecedents.get(part))
@@ -294,7 +301,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
                 }
                 enough = bool(matched)
                 covered.update(matched)
-            elif question in scopes and not invention:
+            elif (question in scopes or question in frequencies) and not invention:
                 enough = supports(question, a)
             elif out == Outcome.LOW_CONFIDENCE and not invention:
                 enough = relevance.supports_part(question, a, point_terms=point_terms)
@@ -346,8 +353,8 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             relevance.expand_selected(question, statements, items, rows or items.values()), rows
         )
     # Check the final displayed sentences, including neighbours and inferred external references.
-    # A model-selected accounting rule cannot turn into a reimbursement policy through expansion.
-    if scopes:
+    # Recompute coverage from what remains visible after expansion.
+    if scopes or frequencies:
         by_ref.update((a.ref, a) for a in rows)
         applicable = []
         covered = set()
@@ -359,7 +366,8 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
                 covered.update(matched)
             else:
                 claim = claims_by_ref.get(ref) or Claim(st.text, SentenceRef(ref.doc_id, ref.point, ref.sentence))
-                dropped.append(Verdict(claim, False, ["reimbursement_scope_mismatch"]))
+                reason = "frequency_scope_mismatch" if frequencies else "reimbursement_scope_mismatch"
+                dropped.append(Verdict(claim, False, [reason]))
         statements = applicable
         if not statements:
             out = Outcome.NO_BASIS
