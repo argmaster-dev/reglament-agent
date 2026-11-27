@@ -24,6 +24,10 @@ _OTHER_INTENT = re.compile(
 _AFTER = r"\b(?:после|через|со? (?:момента|даты|дня)|начиная с)\b"
 _BEFORE = r"\b(?:за\b[^.!?;]{1,64}\bдо|не позднее чем за|до начал\w*|до завершен\w*|до закрыти\w*|до конца)\b"
 _UNIT = r"(?:дн\w*|день|недел\w*|час\w*|месяц\w*|минут\w*|сут\w*|квартал\w*|год\w*|лет)"
+_ELAPSED_QUESTION = re.compile(
+    rf"\bза сколько\s+(?:(?:рабоч|календарн)\w*\s+)?{_UNIT}\s+"
+    r"(?!(?:следует|требуется|полагается|надлежит)\b)[а-я]{2,}(?:ают|яют|уют|ют|ут|ат|ят|ет|ит)(?:ся)?\b"
+)
 _NUMBER = r"(?:\d+|один|одн\w*|два|две|двух|три|трех|четыре|пять|пяти|шесть|семь|восемь|девять|десять|десяти|двадцать|тридцать)"
 _DURATION = rf"\b{_NUMBER}\s+(?:(?:рабоч|календарн)\w*\s+)?{_UNIT}\b"
 _VALUE = (
@@ -39,6 +43,10 @@ def question_mode(question: str) -> DeadlineMode | None:
         return None
     if re.search(_AFTER + r"|\bчерез сколько\b", question):
         return "after"
+    if _ELAPSED_QUESTION.search(question) and not re.search(r"\b(?:до|перед|заранее)\b", question):
+        # “За сколько часов проверяют?” asks how long the action takes. The source
+        # provides its reference event, which can be earlier or later than the action.
+        return "any"
     if re.search(r"\b(?:заранее|за сколько|за какое время|за какой срок|до)\b", question):
         return "before"
     return "any"

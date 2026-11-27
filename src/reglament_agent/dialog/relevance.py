@@ -564,6 +564,33 @@ def appointed_roles(text):
     return _object_roles(text, _APPOINT.fullmatch)
 
 
+def _timed_appointment(text):
+    """Return the role being appointed and its stated stage in an active clause."""
+    def phase(tokens):
+        result = []
+        for term in tokens:
+            if term in {"в", "к", "с", "до", "за", "от", "по", "при", "после", "не", "и", "или"}:
+                break
+            if _OPERATION_VERB.fullmatch(term):
+                break
+            result.append(term)
+        return result
+
+    for clause in re.split(r"[,;:.!?]", fold(text)):
+        tokens = words(clause)
+        for i, token in enumerate(tokens):
+            if token not in {"назначает", "назначают"}:
+                continue
+            following = tokens[i + 1:]
+            for start, end, role in find_roles(following):
+                if start == 0:
+                    stage = phase(following[end + 1:]) if following[end:end + 1] == ["на"] else []
+                    return role, stage
+                if following[0] == "на" and 1 < start < 5 and phase(following[1:start]) == following[1:start]:
+                    return role, following[1:start]
+    return None
+
+
 def appointment_duty(question, text, actor):
     """Return the predicate only for an explicit duty of this actor toward this appointee."""
     targets = appointed_roles(question)
@@ -890,6 +917,14 @@ def states_deadline(question, anchor, *, department=None, point_terms=None):
         own |= point.words
     clause = _operation_clause(fold(anchor.text))
     requested_roles = _roles(question)
+    appointment = _timed_appointment(question)
+    if appointment:
+        target, stage = appointment
+        bound = _timed_appointment(clause)
+        if not bound or bound[0] != target or bound[1][:len(stage)] != stage:
+            return False
+        # This role receives the assignment. The other roles, if any, qualify the performer.
+        requested_roles.discard(target)
     if requested_roles:
         actual_roles = (
             _roles(clause) or _roles(anchor.text) or (_roles(anchor.context) | (point.roles if point else set()))
