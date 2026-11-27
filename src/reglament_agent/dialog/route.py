@@ -30,7 +30,7 @@ from reglament_agent.storage.retrieve import Candidates, retrieve
 from reglament_agent.storage.search import preview
 from reglament_agent.storage.sources import active_process
 
-from . import context, employment, grounding, guards, processes, project_procedures, relevance, similar, spelling, state
+from . import capability, context, employment, grounding, guards, processes, project_procedures, relevance, similar, spelling, state
 from .lexicon import fold, words
 
 _LOG = logging.getLogger(__name__)
@@ -231,6 +231,7 @@ class Dialog:
 
         question = topic["subject"] if follow else message
         invention = bool(topic.get("invention")) if follow else guards.fabrication_intent(message)
+        capability_check = topic.get("capability_check", False) if follow else False
         guarded = False  # the guards rewrote the question: its answer is never shared through the cache
         if not follow:
             question = guards.neutralize(question)
@@ -238,6 +239,8 @@ class Dialog:
             if invention:
                 question = guards.strip_invention(question)
             if redirect is None:
+                # Corpus-based spelling repair can change a common verb in the user's question.
+                capability_check = capability.requested(question)
                 question = spelling.correct(question, self.vocabulary(conn))
         if not follow:
             ignored = topic.get("ignored_department")
@@ -248,6 +251,8 @@ class Dialog:
             if offered:
                 topic["profile_confirmation_offered"] = True
             topic["invention"] = invention
+            if capability_check:
+                topic["capability_check"] = True
         if pending and follow:
             topic.setdefault("history", []).append({"question": topic["clarify"], "answer": message})
         trace["restated"] = question
@@ -351,6 +356,7 @@ class Dialog:
             )
             return reply, question, None
 
+        procedure = project_procedures.focused(question) if not (selected or multi or variants or invention) else None
         key, vector = None, None
         # Only a standalone question uses the shared cache: not a context reply, not a clarification
         # choice, not a question the guards rewrote.
@@ -368,7 +374,8 @@ class Dialog:
                 trace["steps"].append("cache_hit")
                 trace["cache"] = {"kind": "exact", "source": source}
                 return replace(hit, profile_note=note), question, None
-            if self.similar_cache:
+            # Similar wording alone does not establish the same object, debtor or project capability.
+            if self.similar_cache and not (procedure or capability_check):
                 (vector,) = await self.model.embed([question], step="retrieve", request_id=request_id)
                 key.vector = vector
                 near = similar.find(conn, key.context, question, vector, departments,
@@ -382,7 +389,6 @@ class Dialog:
         await status("Ищу основания в действующих регламентах…")
 
         intent_candidates = []
-        procedure = project_procedures.focused(question) if not (selected or multi or variants or invention) else None
         procedure_points = []
         broad = processes.broad_subject(question, scope)
         role_needs_direction = not dept and len(departments) > 1 and context.asks_role_overview(question)
@@ -547,6 +553,26 @@ class Dialog:
         if evidence_question != question:
             trace["evidence_question"] = evidence_question
         result = grounding.assemble(evidence_question, response.data, items, departments, variants, trace, rows, invention)
+        if capability_check and not (invention or selected or variants):
+            if result.outcome == Outcome.NO_BASIS:
+                points = await asyncio.to_thread(
+                    self.shortlist, conn, capability.SEARCH_QUERY, department=dept, stage=stage
+                )
+                partial = capability.partial([*rows, *grounding.anchors(points)])
+                if partial:
+                    result = partial
+                    ref = result.statements[0].sources[0]
+                    trace["supplemental_basis"] = asdict(ref)
+                    if not any(p.doc_id == ref.doc_id and p.number == ref.point for p in found.points):
+                        trace["candidates"].extend(describe(
+                            [p for p in points if p.doc_id == ref.doc_id and p.number == ref.point]
+                        ))
+                    trace["steps"].append("capability_method")
+            elif result.outcome == Outcome.ANSWER and result.statements:
+                cited = {ref for statement in result.statements for ref in statement.sources}
+                methods = {row.ref: row for row in rows if row.ref in cited and capability.is_assessment(row)}
+                if methods and methods.keys() == cited:
+                    result = capability.partial(methods.values(), require_unique=False)
         if variants and not multi and axis == "stage" and result.outcome == Outcome.VARIANTS:
             statements = [s for v in result.variants for s in v.statements]
             result.variants = [
