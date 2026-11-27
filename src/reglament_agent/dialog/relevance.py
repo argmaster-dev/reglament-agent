@@ -12,7 +12,7 @@ from reglament_agent.answer import Statement
 from reglament_agent.storage.search import QUESTION_WORDS
 
 from .deadlines import has_deadline, question_mode
-from .lexicon import find_roles, fold, word_key, words
+from .lexicon import canonical_role, find_roles, fold, word_key, words
 
 _STOP = QUESTION_WORDS | {
     "это",
@@ -240,8 +240,72 @@ _LOCATION = re.compile(r"найти|наход\w*|хран\w*|размещ\w*|о
 _LOOKUP_VERBS = {word_key(w) for w in ("найти", "искать", "посмотреть", "увидеть", "проверить")}
 
 
-def supports_part(part, anchor, *, point_terms=None):
+_APPOINT = re.compile(r"назнач(?:ени[еяию]|ени[ея]м|ать|ает|ают|ил[аи]?|ить)")
+_OBJECT_QUESTION = re.compile(r"\bкто\s+(?:его|ее|их)\s+(\w+)")
+_DUTY = re.compile(r"\bотвеча(?:ет|ют)\b")
+_DUTY_TARGET = re.compile(r"\bза\s+назначени\w+\s+")
+
+
+def _object_roles(text, predicate):
+    """Glossary roles immediately governed by a verb or verbal noun in the same clause."""
+    targets = set()
+    for clause in re.split(r"[,;:.!?]", fold(text)):
+        tokens = words(clause)
+        for start, end, role in find_roles(tokens):
+            before = tokens[start - 1] if start else ""
+            after = tokens[end] if end < len(tokens) else ""
+            oblique = tokens[end - 1].endswith(("а", "я", "ов", "ев", "ей", "у", "ю"))
+            if predicate(before) and (before.startswith("назначени") or oblique):
+                targets.add(role)
+            elif predicate(after) and oblique:
+                targets.add(role)
+    return targets
+
+
+def appointed_roles(text):
+    if "назнач" not in fold(text):
+        return set()
+    return _object_roles(text, _APPOINT.fullmatch)
+
+
+def appointment_duty(question, text, actor):
+    """Return the predicate only for an explicit duty of this actor toward this appointee."""
+    targets = appointed_roles(question)
+    if not actor or not targets:
+        return None
+    owner, patterns = canonical_role(actor)
+    for clause in re.split(r"[,;:.!?]", fold(text)):
+        for duty in _DUTY.finditer(clause):
+            left, right = clause[:duty.start()].strip(), clause[duty.end():].strip()
+            if obj := _DUTY_TARGET.match(right):
+                actions, actors, actor_first = right, words(left), False
+            elif obj := _DUTY_TARGET.search(left):
+                actions, actors, actor_first = left, words(right), True
+            else:
+                continue
+            bound_targets = {r for start, _, r in find_roles(words(actions[obj.end():])) if start == 0}
+            bound_owners = {r for start, end, r in find_roles(actors, patterns)
+                            if (start == 0 if actor_first else end == len(actors))}
+            if targets & bound_targets and owner in bound_owners:
+                return duty[0]
+    return None
+
+
+def supports_part(part, anchor, *, point_terms=None, antecedent=""):
     """Match a requested action with its subject in the actual sentence cited for this part."""
+    targets = appointed_roles(part)
+    if targets and not targets <= appointed_roles(anchor.text):
+        return False
+    anaphora = _OBJECT_QUESTION.search(part) if antecedent else None
+    if anaphora and (prior_targets := appointed_roles(antecedent)):
+        action = word_key(anaphora[1])
+        objects = _object_roles(anchor.text, lambda token: word_key(token) == action)
+        # A relative clause can refer back to the named appointment in the same sentence.
+        relative = re.search(r"\bкотор(?:ого|ую|ых)\s+(\w+)", fold(anchor.text))
+        bound_relative = (relative and word_key(relative[1]) == action
+                          and prior_targets <= appointed_roles(anchor.text))
+        if not prior_targets <= objects and not bound_relative:
+            return False
     subject = terms(part) - _COURTESY_WORDS - _PART_FILLERS
     direct = terms(anchor.text)
     if _LOOKUP.search(part):
