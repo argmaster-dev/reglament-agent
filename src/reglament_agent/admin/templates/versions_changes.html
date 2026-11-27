@@ -8,14 +8,20 @@
 <ul>{% for r in impact.restored %}<li>№{{ r.id }} — {{ r.question }}</li>{% endfor %}</ul>{% endif %}</div>
 {% endmacro %}
 {% macro changes(diff) %}
-<div class="card"><b>Изменения в пунктах</b>
+<div class="card" id="summary"><b>Сводка изменений</b>
 <p>Добавлено: {{ diff.added|length }} · удалено: {{ diff.removed|length }} · изменено: {{ diff.changed|length }}
- · перенумеровано: {{ diff.renumbered|length }} · без изменений: {{ diff.same }}</p></div>
-{% if diff.changed %}<h2>Изменены</h2>{% for c in diff.changed %}<div class="card"><b>п. {{ c.number }}</b>
+ · перенумеровано: {{ diff.renumbered|length }} · без изменений: {{ diff.same }}</p>
+<ul>
+{% if diff.added %}<li>Добавлены: {% for a in diff.added %}<a href="#add-{{ a.number }}">п. {{ a.number }}</a>{{ ", " if not loop.last }}{% endfor %}</li>{% endif %}
+{% if diff.removed %}<li>Удалены: {% for a in diff.removed %}<a href="#del-{{ a.number }}">п. {{ a.number }}</a>{{ ", " if not loop.last }}{% endfor %}</li>{% endif %}
+{% if diff.changed %}<li>Изменены: {% for c in diff.changed %}<a href="#chg-{{ c.number }}">п. {{ c.number }}</a>{{ ", " if not loop.last }}{% endfor %}</li>{% endif %}
+{% if diff.renumbered %}<li>Перенумерованы: {% for r in diff.renumbered %}<a href="#ren-{{ r.old }}">п. {{ r.old }} → п. {{ r.new }}</a>{{ ", " if not loop.last }}{% endfor %}</li>{% endif %}
+</ul></div>
+{% if diff.changed %}<h2>Изменены</h2>{% for c in diff.changed %}<div class="card" id="chg-{{ c.number }}"><b>п. {{ c.number }}</b>
 <div class="cols"><div><span class="muted">Было</span><pre class="pt2">{{ c.old_html }}</pre></div>
 <div><span class="muted">Стало</span><pre class="pt2">{{ c.new_html }}</pre></div></div></div>{% endfor %}{% endif %}
 {% if diff.renumbered %}<h2>Перенумерованы</h2><div class="card"><ul>{% for r in diff.renumbered %}
-<li>п. {{ r.old }} → п. {{ r.new }} <span class="badge">перенумерован</span> <span class="muted">{{ r.text[:90] }}</span></li>{% endfor %}</ul></div>{% endif %}
-{% if diff.added %}<h2>Добавлены</h2>{% for a in diff.added %}<div class="card"><b>п. {{ a.number }}</b><pre class="pt2"><ins>{{ a.text }}</ins></pre></div>{% endfor %}{% endif %}
-{% if diff.removed %}<h2>Удалены</h2>{% for a in diff.removed %}<div class="card"><b>п. {{ a.number }}</b><pre class="pt2"><del>{{ a.text }}</del></pre></div>{% endfor %}{% endif %}
+<li id="ren-{{ r.old }}">п. {{ r.old }} → п. {{ r.new }} <span class="badge">перенумерован</span> <span class="muted">{{ r.text[:90] }}</span></li>{% endfor %}</ul></div>{% endif %}
+{% if diff.added %}<h2>Добавлены</h2>{% for a in diff.added %}<div class="card" id="add-{{ a.number }}"><b>п. {{ a.number }}</b><pre class="pt2"><ins>{{ a.text }}</ins></pre></div>{% endfor %}{% endif %}
+{% if diff.removed %}<h2>Удалены</h2>{% for a in diff.removed %}<div class="card" id="del-{{ a.number }}"><b>п. {{ a.number }}</b><pre class="pt2"><del>{{ a.text }}</del></pre></div>{% endfor %}{% endif %}
 {% endmacro %}
