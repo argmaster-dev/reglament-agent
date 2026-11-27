@@ -9,7 +9,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 from pydantic import TypeAdapter
 
-from reglament_agent.answer import Answer, Profile
+from reglament_agent.answer import Answer, Outcome, Profile
 from .lexicon import query_cache_input
 
 answers = TypeAdapter(Answer)
@@ -94,24 +94,54 @@ def previous(conn, user):
     return answers.validate_python(row[0]) if row else None
 
 
-def cache_key(conn, user, question, scope, model):
+POLICY = "extract-v7-document-subject"
+
+
+def _versions(conn):
     versions = conn.execute(
         "SELECT doc_id,active_version_id FROM documents WHERE status='active' ORDER BY doc_id"
     ).fetchall()
     faq = conn.execute(
         "SELECT id,updated_at::text FROM faq_entries WHERE status='active' ORDER BY id"
     ).fetchall()
-    data = ["extract-v7-document-subject", model, user.role, asdict(scope), query_cache_input(question), versions, faq]
+    return versions, faq
+
+
+def cache_key(conn, user, question, scope, model):
+    """Shared exact key: policy, model, role, scope, question and the active documents and FAQ.
+
+    The user's address and name are deliberately not part of it. A new document version or a changed
+    FAQ entry changes the key, so the old answer is never found again.
+    """
+    versions, faq = _versions(conn)
+    data = [POLICY, model, user.role, asdict(scope), query_cache_input(question), versions, faq]
     return hashlib.sha256(json.dumps(data, ensure_ascii=False).encode()).hexdigest()
 
 
-def cached(conn, user, key):
+SHAREABLE = (Outcome.ANSWER, Outcome.EXPERT_ANSWER)
+
+
+def shareable(stored):
+    """Only the content of an answer crosses between users.
+
+    Ticket, profile note, answer id, clarification and everything else that belongs to the earlier
+    request or its author are dropped here, by construction: the copy is built from an allow-list.
+    """
+    if stored.outcome not in SHAREABLE or stored.caveat:
+        return None
+    return Answer(
+        stored.outcome, stored.summary, stored.statements, stored.variants, scope=stored.scope,
+        related=stored.related, from_cache=True,
+    )
+
+
+def cached(conn, key):
+    """The newest shareable answer saved under this key by anyone, as (answer, request id)."""
     row = conn.execute(
-        "SELECT answer FROM dialog_requests WHERE user_email=%s AND cache_key=%s "
-        "ORDER BY created_at DESC LIMIT 1",
-        (user.email, key),
+        "SELECT answer, id FROM dialog_requests WHERE cache_key=%s ORDER BY created_at DESC LIMIT 1", (key,)
     ).fetchone()
-    return answers.validate_python(row[0]) if row else None
+    copy = row and shareable(answers.validate_python(row[0]))
+    return (copy, str(row[1])) if copy else None
 
 
 def save(conn, user, state, message, question, result, trace, key):

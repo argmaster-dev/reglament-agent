@@ -226,8 +226,10 @@ class Dialog:
 
         question = topic["subject"] if follow else message
         invention = bool(topic.get("invention")) if follow else guards.fabrication_intent(message)
+        guarded = False  # the guards rewrote the question: its answer is never shared through the cache
         if not follow:
             question = guards.neutralize(question)
+            guarded = question != message or invention
             if invention:
                 question = guards.strip_invention(question)
             if redirect is None:
@@ -345,15 +347,19 @@ class Dialog:
             return reply, question, None
 
         key = None
-        if not follow:
+        # Only a standalone question uses the shared cache: not a context reply, not a clarification
+        # choice, not a question the guards rewrote.
+        if not follow and not choice and not guarded:
             model_name = getattr(
                 getattr(self.model, "settings", None), "chat_model", type(self.model).__name__
             )
             key = state.cache_key(conn, user, question, scope, model_name)
-            hit = state.cached(conn, user, key)
-            if hit:
+            found = state.cached(conn, key)
+            if found:
+                hit, source = found
                 trace["steps"].append("cache_hit")
-                return replace(hit, from_cache=True, profile_note=note), question, None
+                trace["cache"] = {"kind": "exact", "source": source}
+                return replace(hit, profile_note=note), question, None
 
         await status("Ищу основания в действующих регламентах…")
 
