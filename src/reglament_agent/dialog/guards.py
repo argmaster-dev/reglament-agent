@@ -5,18 +5,20 @@ The patterns describe request styles and word families, never the content of a r
 
 import math
 import re
+from typing import Literal
 
 from .checks import _numbers
 from .lexicon import find_roles, fold, words
 
 MIN_LENGTH, MAX_LENGTH = 3, 2000
 
+LEGAL_MESSAGE = "Это вопрос законодательства. По нему лучше обратиться к юристам."
 OFF_TOPIC_MESSAGE = "Этот вопрос не касается регламентов компании — обратитесь к своему руководителю."
 
 # Ask for a policy even when the subject is money, a particular deal or correspondence.
 _PROCEDURE = re.compile(
     r"\b(?:регламент|положени|инструкци|правил|порядок|порядк|методик|формул|услови|обязан|положен|предусмотрен|ограничени)\w*"
-    r"|\b(?:как|кто|где|когда|можно ли|нужно ли|имею ли право|каким образом)\b"
+    r"|\b(?:как|кто|где|можно ли|нужно ли|имею ли право|каким образом)\b"
     r"|\b(?:применять|применяется|использовать|учитывать)\b"
 )
 _METRIC = re.compile(r"\b(?:марж|преми|бонус|прибыл|выручк)\w*")
@@ -31,7 +33,7 @@ _EXCHANGE = re.compile(
 _TASK = re.compile(
     r"\b(?:сделай(?:те)?|отправь(?:те)?|напиши(?:те)?|разошли(?:те)?|подготовь(?:те)?|"
     r"составь(?:те)?|сформируй(?:те)?)\b.{0,65}"
-    r"\b(?:follow[\s-]?up|фоллоу[\s-]?ап|письм\w*|напоминани\w*|сообщени\w*|рассылк\w*)\b"
+    r"\b(?:follow[\s-]?up|фолл?оу[\s-]?ап|письм\w*|напоминани\w*|сообщени\w*|рассылк\w*)\b"
 )
 
 
@@ -40,7 +42,45 @@ def operational_request(text):
     q = fold(text)
     if _PROCEDURE.search(q):
         return False
+    if q.startswith("когда") and not re.search(r"\b(?:мне|нам|мо[яию]|наш[ау])\b", q):
+        return False
     return bool(_EXCHANGE.search(q) or _TASK.search(q) or (_METRIC.search(q) and _RECORD.search(q)))
+
+
+# A legal aspect of an internal task does not make the requested workflow a legal consultation.
+_INTERNAL_PROCESS = re.compile(
+    r"\b(?:регламент\w*|crm|ткп|у нас)\b"
+    r"|\b(?:внутренн\w*|корпоративн\w*)\s+(?:правил|поряд|полити|инструкц|положен|процесс)\w*"
+    r"|\bнаш\w*\s+(?:компани|организаци|поряд|правил|положен|инструкц|политик|процедур|отдел|проект)\w*"
+    r"|\b(?:кто|кому|куда|как)\b[^.!?]{0,60}\b(?:согласу|согласова|эскалир|переда|завод)\w*"
+    r"|\b(?:карточк\w*\s+проект\w*|заявк\w*\s+на\s+\w+|на согласование)\b"
+    r"|\b(?:оформ|заполн|пода|согласу|утвержд)\w*\b[^.!?]{0,32}\b(?:командиров|смет|табел|заявк)\w*"
+)
+_LAW_SOURCE = re.compile(
+    r"\b(?:закон(?:[ауеы]|ом|ов|ами|ах)?|законн[аоы]|правомерн[аоы]|законодательств\w*|(?:трудов|гражданск|налогов|семейн|уголовн)\w*\s+кодекс\w*)\b"
+    r"|\b(?:(?:по|согласно)\s+(?:тк|гк|нк|ск|ук|коап)|(?:тк|гк|нк|ск|ук|коап)\s+рф|\d+[‐‑–-]фз)\b"
+)
+_STATUTORY_ISSUE = re.compile(
+    r"\b(?:исков\w*\s+давност\w*|подсудност\w*|срок\w*\s+обжаловани\w*)\b"
+    r"|\b(?:налогов\w*\s+ставк\w*|ставк\w*\s+(?:налог\w*|ндс|ндфл))\b"
+    r"|\b(?:расторг\w*|расторж\w*|отказ\w*|прекра\w*)\b[^.!?]{0,65}\bодносторонн\w*\b"
+)
+_LEGAL_DEFINITION = re.compile(
+    r"\b(?:что (?:такое|считается|признается|относится)|определени\w*)\b"
+    r"[^.!?]{0,75}\b(?:персональн\w*\s+данн\w*|коммерческ\w*\s+тайн\w*|"
+    r"доверенност\w*|правонарушени\w*|авторск\w*\s+прав\w*)\b"
+)
+
+
+def redirect_for(text: str) -> Literal["legal", "manager"] | None:
+    """Identify an explicit request for outside expertise; ambiguous workflow questions continue to search."""
+    q = fold(text)
+    legal = _LAW_SOURCE.search(q) or _STATUTORY_ISSUE.search(q) or _LEGAL_DEFINITION.search(q)
+    if legal and not _INTERNAL_PROCESS.search(q):
+        return "legal"
+    if operational_request(q):
+        return "manager"
+    return None
 
 
 # Verbs of invention and guessing, matched by stem so any inflection is covered.

@@ -192,14 +192,14 @@ class Dialog:
         short = context.scope_only(message, dept)
         stage_reply = explicit_stage and len(words(message)) <= 4
         confirming_yes = pending and confirming and context.normalized_reply(message) == "да"
-        operational = guards.operational_request(message)
-        follow = not operational and bool(topic.get("subject")) and bool(
+        redirect = guards.redirect_for(message)
+        follow = redirect is None and bool(topic.get("subject")) and bool(
             short
             or stage_reply
             or (pending and (choice or unknown or confirming_yes or not context.new_question(message)))
         )
         profile = state.get_profile(conn, user.email)
-        if position and not dept:
+        if position and not dept and redirect is None:
             state.update_profile(conn, user.email, position=position)
             note = f"Запомнил должность: {position}."
             trace["steps"].append("remember_position")
@@ -208,7 +208,7 @@ class Dialog:
                 reply = Answer(Outcome.CLARIFY, clarification=prompt, profile_note=note)
                 return reply, topic["subject"], None
             return Answer(Outcome.ANSWER, note), message, None
-        if declared_dept and short and not pending:
+        if declared_dept and short and not pending and redirect is None:
             state.set_department(conn, user.email, declared_dept)
             topic.pop("ignored_department", None)
             note = f"Запомнил подразделение: {declared_dept}."
@@ -221,7 +221,7 @@ class Dialog:
             question = guards.neutralize(question)
             if invention:
                 question = guards.strip_invention(question)
-            if not operational:
+            if redirect is None:
                 question = spelling.correct(question, self.vocabulary(conn))
         if not follow:
             ignored = topic.get("ignored_department")
@@ -235,9 +235,10 @@ class Dialog:
         if pending and follow:
             topic.setdefault("history", []).append({"question": topic["clarify"], "answer": message})
         trace["restated"] = question
-        if operational:
+        if redirect:
             trace["steps"].append("off_topic")
-            return Answer(Outcome.OFF_TOPIC, guards.OFF_TOPIC_MESSAGE), question, None
+            summary = guards.LEGAL_MESSAGE if redirect == "legal" else guards.OFF_TOPIC_MESSAGE
+            return Answer(Outcome.OFF_TOPIC, summary, redirect=redirect), question, None
         variants = (pending and follow and unknown) or multi
         note = None
         if follow and confirming_yes:

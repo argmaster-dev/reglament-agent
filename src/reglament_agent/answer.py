@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Awaitable, Callable, Protocol
+from typing import Awaitable, Callable, Literal, Protocol
 
 from .ingest.model import Block
 
@@ -104,6 +104,7 @@ class Answer:
     from_cache: bool = False
     # Navigation only. These points do not support an assertion in this answer.
     nearby_sources: list[SourceRef] = field(default_factory=list)
+    redirect: Literal["legal", "manager"] | None = None
 
 
 @dataclass
