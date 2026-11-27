@@ -6,6 +6,17 @@
 Кнопка прогоняет их через агента; после замены версии документа прогон повторяется, и таблица показывает, что изменилось.</p>
 <form method="post" action="/admin/documents/{{ doc.doc_id }}/checks/run" style="margin-bottom:16px">
 <button type="submit" {% if latest and latest.status == 'running' %}disabled{% endif %}>Проверить</button></form>
+{% if message %}<p class="card err" id="proposal-message">{{ message }}</p>{% endif %}
+<h2>Предложить проверочные вопросы</h2>
+<p class="muted">Модель предлагает 3–5 вопросов по разным разделам активной версии. Каждый вопрос проверяется: пункт должен существовать. Принятые вопросы входят в проверку документа.{% if not cs %} Для этого документа проверочных вопросов пока нет.{% endif %}</p>
+<form method="post" action="/admin/documents/{{ doc.doc_id }}/checks/propose" style="margin-bottom:16px">
+<button type="submit">Предложить проверочные вопросы</button></form>
+{% if proposals %}<table id="proposals"><tr><th>Вопрос</th><th>Ожидаемый пункт</th><th></th></tr>
+{% for p in proposals %}<tr><td>{{ p.question }}</td>
+<td>{% if p.point_exists %}<a href="#pt-{{ p.id }}">п. {{ p.expected_point }}</a>, версия {{ p.version_no }}
+<details id="pt-{{ p.id }}"><summary class="muted">текст пункта</summary>{{ p.point_text }}</details>{% else %}п. {{ p.expected_point }} (нет в активной версии){% endif %}</td>
+<td><form method="post" action="/admin/documents/{{ doc.doc_id }}/checks/proposals/{{ p.id }}/accept" style="display:inline"><button type="submit">Принять</button></form>
+<form method="post" action="/admin/documents/{{ doc.doc_id }}/checks/proposals/{{ p.id }}/discard" style="display:inline"><button type="submit" class="sec">Отклонить</button></form></td></tr>{% endfor %}</table>{% endif %}
 {% if not latest %}<p class="card">Проверка ещё не запускалась. Нажмите «Проверить».</p>
 {% else %}
 <p class="card">

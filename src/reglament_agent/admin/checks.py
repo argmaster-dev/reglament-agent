@@ -89,6 +89,24 @@ def load_questions(doc_id: str, directory: Path | None = None) -> CheckSet | Non
     return CheckSet(doc_id, data["department"].strip(), questions)
 
 
+def load_all(doc_id: str) -> CheckSet | None:
+    """Questions of the gold file plus the proposals the expert accepted (admin-p03)."""
+    from reglament_agent.admin import check_proposals as P
+    from reglament_agent.admin import jobs
+
+    cs = load_questions(doc_id)
+    with jobs.connect() as conn:
+        extra = P.accepted_questions(conn, doc_id)
+        dept = conn.execute("SELECT department FROM documents WHERE doc_id=%s", (doc_id,)).fetchone()
+    if not extra:
+        return cs
+    known = {norm(q.question) for q in cs.questions} if cs else set()
+    extra = [q for q in extra if norm(q.question) not in known]
+    if cs is None:
+        return CheckSet(doc_id, (dept[0] if dept else "").strip(), extra)
+    return CheckSet(doc_id, cs.department, [*cs.questions, *extra])
+
+
 def norm(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().lower()
 
@@ -164,7 +182,7 @@ def evaluate(conn, doc_id: str, q: Question, answer: Answer, seconds: float, err
 def start_run(doc_id: str, actor: str) -> int:
     from reglament_agent.admin import jobs
 
-    cs = load_questions(doc_id)
+    cs = load_all(doc_id)
     with jobs.connect() as conn:
         active = conn.execute("SELECT v.version_number FROM documents d JOIN document_versions v "
                               "ON v.version_id=d.active_version_id WHERE d.doc_id=%s", (doc_id,)).fetchone()
@@ -220,7 +238,7 @@ async def execute_run(run_id: int, services=None) -> None:
     try:
         with jobs.connect() as conn:
             doc_id = conn.execute("SELECT doc_id FROM check_runs WHERE id=%s", (run_id,)).fetchone()[0]
-        cs = load_questions(doc_id)
+        cs = load_all(doc_id)
         services = services or services_factory()
         await services.profiles.set_department(SERVICE_EMAIL, cs.department)
         for i, q in enumerate(cs.questions):
