@@ -206,6 +206,8 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
     kept, dropped, statements = [], [], []
     by_ref = {a.ref: a for a in items.values()}
     claims_by_ref = {}
+    parts = relevance.coordinated_parts(question)
+    antecedents = dict(zip(parts[1:], parts))
     for raw in data.get("claims", []):
         ref_data = raw.get("ref")
         key = ref_data.get("id") if isinstance(ref_data, dict) else None
@@ -235,6 +237,14 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             # adds no binding, the verbatim sentence carries the fact.
             claim = replace(claim, action=None)
             check = verify_claims([claim], evidence)
+        elif (check.dropped and check.dropped[0].reasons == ["action_missing"] and parts
+              and not claim.negated and raw.get("text") == a.text):
+            # The quote and reference are intact. Reconstruct the *explicit* duty, then
+            # run the same actor, action, negation and citation checks on that predicate.
+            predicate = relevance.appointment_duty(question, a.text, claim.actor)
+            if predicate:
+                claim = replace(claim, action=predicate)
+                check = verify_claims([claim], evidence)
         if check.dropped:
             dropped.extend(check.dropped)
             continue
@@ -249,7 +259,6 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         statement = Statement(text, [a.ref])
         if statement not in statements:
             statements.append(statement)
-    parts = relevance.coordinated_parts(question)
     compound = bool(parts) and not variants
     # A model can decline an entire question even when one of its citations answers a specific part.
     check_parts = compound and out in (Outcome.ANSWER, Outcome.LOW_CONFIDENCE, Outcome.NO_BASIS)
@@ -267,7 +276,7 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
             if check_parts:
                 matched = {
                     part for part in parts
-                    if relevance.supports_part(part, a, point_terms=point_terms)
+                    if relevance.supports_part(part, a, point_terms=point_terms, antecedent=antecedents.get(part))
                     and (not invention or len(relevance.terms(part) & relevance.terms(a.text))
                          >= guards.required_overlap(len(relevance.terms(part))))
                 }
@@ -327,7 +336,9 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         by_ref.update((a.ref, a) for a in rows)
         missing_parts = [
             part for part in missing_parts
-            if not any(relevance.supports_part(part, by_ref[s.sources[0]], point_terms=point_terms) for s in statements)
+            if not any(relevance.supports_part(
+                part, by_ref[s.sources[0]], point_terms=point_terms, antecedent=antecedents.get(part)
+            ) for s in statements)
         ]
         if missing_parts:
             out = Outcome.LOW_CONFIDENCE
