@@ -266,17 +266,9 @@ async def _show(answer: Answer, text: str, message_id: str) -> None:
     if answer.outcome is Outcome.CLARIFY:
         specs = R.clarify_actions(answer)
     evidence = R.evidence_groups(answer, names)
-    elements = (
-        [cl.CustomElement(name="AnswerEvidence", display="inline", props={"groups": evidence})]
-        if evidence
-        else []
-    )
     note = R.refusal_element(answer, lambda n: near_refs.get((n.doc_title, n.department, n.point)))
-    if note:
-        elements.append(cl.CustomElement(name="RefusalNote", display="inline", props=note))
-    advice_props = R.advice_element(advice)
-    if advice_props:
-        elements.append(cl.CustomElement(name="AdviceBlock", display="inline", props=advice_props))
+    elements = [cl.CustomElement(name=name, display="inline", props=props)
+                for name, props in R.element_specs(answer, evidence, note, R.advice_element(advice))]
     msg = cl.Message(content="", elements=elements)
     # Only verified statements reach the stream; raw model tokens may still lose their basis.
     for part in R.answer_markdown(answer, names, separate_evidence=bool(evidence), faq_dates=faq_dates).splitlines(keepends=True):

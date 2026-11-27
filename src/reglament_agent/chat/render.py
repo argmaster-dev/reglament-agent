@@ -216,6 +216,60 @@ def refusal_element(answer: Answer, resolve: Callable[[NearPoint], SourceRef | N
     return {"near": near, "ticket": ticket} if near or ticket else None
 
 
+RELATED_TITLE = "Смотрите также:"
+RELATED_LIMIT = 3
+RELATED_OUTCOMES = {Outcome.ANSWER, Outcome.VARIANTS, Outcome.LOW_CONFIDENCE}
+
+
+def _point_chip(ref: SourceRef) -> dict:
+    label = f"{ref.department} · п. {ref.point}" if ref.point else ref.label
+    return {"label": label, "source": ref_payload(ref)}
+
+
+def _cited_points(answer: Answer) -> set[tuple]:
+    return {(r.doc_id, r.point) for st in _all_statements(answer) for r in st.sources}
+
+
+def related_element(answer: Answer) -> dict | None:
+    """«Смотрите также»: up to RELATED_LIMIT point chips after a grounded answer, minus already cited points."""
+    if answer.outcome not in RELATED_OUTCOMES or getattr(answer, "redirect", None):
+        return None
+    seen = _cited_points(answer)
+    chips = []
+    for ref in getattr(answer, "related", None) or []:
+        key = (ref.doc_id, ref.point)
+        if key not in seen:
+            seen.add(key)
+            chips.append(_point_chip(ref))
+    return {"title": RELATED_TITLE, "related": chips[:RELATED_LIMIT]} if chips else None
+
+
+def intent_element(answer: Answer) -> dict | None:
+    """References of an intent clarification: each option with a clickable point (options without one are left out).
+
+    The option buttons themselves stay ordinary actions (see clarify_actions)."""
+    c = answer.clarification
+    if answer.outcome is not Outcome.CLARIFY or not c or getattr(c, "dimension", "department") != "intent":
+        return None
+    refs = list(getattr(c, "option_refs", None) or [])
+    items = [{"option": o, **_point_chip(r)} for o, r in zip(c.options, refs) if r is not None]
+    return {"items": items} if items else None
+
+
+def element_specs(answer: Answer, evidence: list[dict], note: dict | None, advice: dict | None) -> list[tuple[str, dict]]:
+    """Inline elements under the answer text, in display order: evidence, refusal note, «Смотрите также», advice."""
+    specs: list[tuple[str, dict]] = []
+    if evidence:
+        specs.append(("AnswerEvidence", {"groups": evidence}))
+    if note:
+        specs.append(("RefusalNote", note))
+    for name, props in (("IntentRefs", intent_element(answer)), ("RelatedLinks", related_element(answer)),
+                        ("AdviceBlock", advice)):
+        if props:
+            specs.append((name, props))
+    return specs
+
+
 _ABSENCE = re.compile(r"не наш[её]л|не нашла|ответ\w*[^.]*\bнет\b|\bнет ответа|Точного пункта|Есть пункты о том же", re.I)
 
 
