@@ -32,6 +32,7 @@ packages = ["src/reglament_agent"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "migrations" = "reglament_agent/storage/migrations"
+"docx/documents.toml" = "reglament_agent/dialog/documents.toml"
 "docx/glossary.tsv" = "reglament_agent/dialog/glossary.tsv"
 "docx/slang.tsv" = "reglament_agent/dialog/slang.tsv"
 

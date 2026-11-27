@@ -179,11 +179,12 @@ class Dialog:
 
     async def _resolve(self, conn, user, message, choice, status, topic, trace, request_id):
         trace["steps"].append("resolve_scope")
-        cards = conn.execute(
-            "SELECT doc_id,department,stages FROM documents WHERE status='active'"
-        ).fetchall()
-        departments = sorted({dept for _, dept, _ in cards})
-        stages_by_doc = {doc: stages for doc, _, stages in cards}
+        cards = conn.execute("SELECT doc_id,department,stages,status FROM documents").fetchall()
+        stages_by_doc = {doc: stages for doc, _, stages, status in cards if status == "active"}
+        departments = sorted({dept for _, dept, _, status in cards if status == "active"})
+        known = context.configured_departments() | {dept for _, dept, _, _ in cards}
+        explicit_scopes = context.scopes_with_unpublished_names(message, departments, known)
+        missing = set(explicit_scopes).difference(departments)
         options = topic.get("options", [])
         axis = topic.get("axis", "department")
         option_refs = [SourceRef(**r) if r else None for r in topic.get("option_refs", [])]
@@ -193,8 +194,12 @@ class Dialog:
                              if context.normalized_reply(label) == context.normalized_reply(message)), None)
         confirming = topic.get("confirm_department")
         catalog = departments or (options if axis == "department" else [])
-        dept = context.department_in(message, catalog)
-        named = [] if topic.get("options") else context.departments_in(message, departments)
+        if explicit_scopes:
+            # Other units mentioned as recipients or subjects do not replace the requested scope.
+            dept, named = explicit_scopes[0], explicit_scopes
+        else:
+            dept = context.department_in(message, catalog)
+            named = [] if topic.get("options") else context.departments_in(message, departments)
         # A question about several departments is answered per department, never from one of them.
         multi = len(named) >= 2
         if multi:
@@ -207,7 +212,7 @@ class Dialog:
         short = context.scope_only(message, dept)
         stage_reply = explicit_stage and len(words(message)) <= 4
         confirming_yes = pending and confirming and context.normalized_reply(message) == "да"
-        redirect = guards.redirect_for(message, departments=departments)
+        redirect = guards.redirect_for(message, departments=[*departments, *missing])
         follow = redirect is None and bool(topic.get("subject")) and bool(
             short
             or stage_reply
@@ -301,6 +306,15 @@ class Dialog:
         stage = (None if selected else explicit_stage) or (topic.get("stage") if follow else None) or context.stage_in(question)
         scope = Scope(dept, stage, origin)
         topic.update(subject=question, department=dept, stage=stage)
+
+        if dept in missing and not multi:
+            for key in ("options", "option_refs", "confirm_department"):
+                topic.pop(key, None)
+            reply = Answer(Outcome.NO_BASIS, f"В базе нет действующего регламента для подразделения «{dept}».",
+                           scope=scope)
+            trace["steps"].extend(["unpublished_department", "ticket"])
+            reply.ticket = self._ticket(conn, user, message, question, reply.outcome.value, topic, trace)
+            return reply, question, None
 
         def clarify(available, dimension="department", *, ask=None, confirm=None, refs=()):
             attempt = len(topic.get("history", [])) + 1

@@ -2,6 +2,10 @@
 
 import re
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
+from pathlib import Path
+
+from reglament_agent.ingest.parser import load_cards
 
 from .lexicon import find_roles, fold, glossary, word_key, words
 
@@ -46,6 +50,56 @@ def department_in(text, departments):
     keys = [word_key(w) for w in words(text)]
     return next((dept for dept in sorted(departments, key=len, reverse=True)
                  if next(_department_spans(keys, dept), None) is not None), None)
+
+
+@lru_cache(maxsize=1)
+def configured_departments():
+    """Names declared in the corpus manifest, including documents not yet published."""
+    directory = Path(__file__).parent
+    if not (directory / "documents.toml").is_file():
+        directory = Path(__file__).resolve().parents[3] / "docx"
+    return frozenset(card.department for card in load_cards(directory))
+
+
+def scoped_departments_in(text, catalog):
+    """Identify a named unit used as a scope, including coordinated scopes like «в А и Б»."""
+    tokens = words(text)
+    markers = {"в", "во", "для", "у"}
+    if not (markers | {"по", "согласно"}).intersection(tokens):
+        return []
+    keys = [word_key(token) for token in tokens]
+    spans = [(start, end, name) for name in catalog for start, end in _department_spans(keys, name)]
+    scoped = []
+    last_end = 0
+    for start, end, name in sorted(spans, key=lambda span: (span[0], -span[1])):
+        if start < last_end or name in scoped:
+            continue
+        locative = start > 0 and tokens[start - 1] in markers
+        rule_of = (start >= 2 and tokens[start - 2] in markers | {"по", "согласно"}
+                   and keys[start - 1] in {"реглам", "правил", "подраз"})
+        coordinated = scoped and tokens[last_end:start] in (["и"], ["или"])
+        if locative or rule_of or coordinated:
+            scoped.append(name)
+            last_end = end
+    return scoped
+
+
+def scopes_with_unpublished_names(text, active, known):
+    """Keep explicit scopes that would be missed when considering only active documents."""
+    unpublished = known.difference(active)
+    if not unpublished:
+        return []
+    names = scoped_departments_in(text, [*active, *sorted(unpublished)])
+    if not unpublished.intersection(names):
+        return []
+    result = []
+    for name in names:
+        if name in unpublished:
+            # The expert may have published this unit under its abbreviation.
+            name = next((department for department in active if named_department(department, name)), name)
+        if name not in result:
+            result.append(name)
+    return result
 
 
 STAGE_LABELS = {"presale": "Пресейл", "project": "Проект"}
