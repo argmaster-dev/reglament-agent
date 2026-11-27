@@ -67,19 +67,21 @@ class VerificationResult:
 _TOKEN = re.compile(r"[A-Za-zА-Яа-яЁё0-9]+|[.;!?]")
 
 
-def _tokenize(text: str) -> tuple[list[str], list[int]]:
-    """Folded word tokens and the clause index of each (clauses split on . ; ! ?)."""
-    toks: list[str] = []
-    clauses: list[int] = []
-    clause = 0
-    for m in _TOKEN.findall(fold(text)):
-        if m in ".;!?":
+def _tokenize(text: str) -> tuple[list[str], list[int], list[str]]:
+    """Folded words, sentence boundaries and the punctuation immediately before each word."""
+    text = fold(text)
+    toks, clauses, gaps = [], [], []
+    clause = previous_end = 0
+    for match in _TOKEN.finditer(text):
+        token = match[0]
+        if token in ".;!?":
             clause += 1
         else:
-            # hyphen already splits words via the regex
-            toks.append(m)
+            toks.append(token)
             clauses.append(clause)
-    return toks, clauses
+            gaps.append("".join(text[previous_end:match.start()].split()))
+            previous_end = match.end()
+    return toks, clauses, gaps
 
 
 def _is_neg(tok: str) -> bool:
@@ -146,11 +148,49 @@ def _object_span(toks, spans, p):
     return None
 
 
+def _relative_subjects(toks, gaps, spans, predicate):
+    """Resolve an immediately governing «который проводит» to a role or explicit role alternatives."""
+    relative = predicate - 1
+    if relative >= 0 and toks[relative] == "не":
+        relative -= 1
+    if (relative < 0 or toks[relative] not in {"который", "которая", "которые"}
+            or not re.search(r"(?:ет|ит|ут|ют|ат|ят)(?:ся)?$", toks[predicate])):
+        return None
+    # An interrupted relative clause gives no licence to borrow an earlier subject.
+    if gaps[relative] not in {",", "),"} or any(gaps[relative + 1:predicate + 1]):
+        return set()
+    by_end = {end: (start, role) for start, end, role in spans}
+
+    def preceding_role(index):
+        previous = by_end.get(index)
+        if previous and gaps[index].startswith(")"):
+            # A parenthetical abbreviation is only an alias for the immediately preceding same role.
+            alias_start, alias = previous
+            full = by_end.get(alias_start)
+            if gaps[alias_start] != "(" or not full or full[1] != alias:
+                return None
+            return full
+        return previous
+
+    previous = preceding_role(relative)
+    if not previous:
+        # «Отчёт, который проверяет РП»: the pronoun can be an object with an explicit subject.
+        return None
+    roles = set()
+    while previous:
+        start, role = previous
+        roles.add(role)
+        if gaps[start] not in {"/", ")/"}:
+            break
+        previous = preceding_role(start)
+    return roles
+
+
 def _check(claim: Claim, ev: Evidence | None) -> list[str]:
     if ev is None:
         return ["unknown_ref"]
     reasons: list[str] = []
-    toks, clauses = _tokenize(ev.text)
+    toks, clauses, gaps = _tokenize(ev.text)
     actor_spans: list[tuple[int, int, str]] = []
     all_spans: list[tuple[int, int, str]] = []
     actor_ok = action_ok = True
@@ -173,6 +213,9 @@ def _check(claim: Claim, ev: Evidence | None) -> list[str]:
         others = [s for s in all_spans if s[2] != actor_spans[0][2]]
 
         def bound_at(p):
+            subjects = _relative_subjects(toks, gaps, all_spans, p)
+            if subjects is not None:
+                return actor_spans[0][2] in subjects
             # «назначение Архитектора»: a role in the genitive right after a verbal noun is the object of the act,
             # neither a competing nor a valid performer.
             # Only for the very noun the claim names, not for a synonym stem that happens to sit there.

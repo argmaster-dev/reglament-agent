@@ -116,3 +116,33 @@ def test_glossary_roles():
     assert "ЗНП" in expand_query("сроки по заявке на пресейл")
     assert run("Администратор проекта согласует план.", actor="АП", action="согласует") == []
     assert "actor_missing" in run("Архитектор проекта согласует план.", actor="АП", action="согласует")
+
+
+def test_relative_predicate_binds_both_explicit_role_alternatives():
+    text = "РП передаёт материалы Ресурс-менеджеру (РМ) / Архитектору, который проверяет комплект по описи."
+    for actor in ("РМ", "Архитектор"):
+        assert run(text, actor=actor, action="проверяет") == []
+    assert run(text, actor="РП", action="проверяет") == ["actor_not_bound"]
+    assert run(text, actor="РМ", action="передаёт") == ["actor_not_bound"]
+    assert run(text, actor="РМ", action="подписывает") == ["action_missing"]
+
+
+def test_relative_binding_preserves_negation_and_a_postposed_subject():
+    text = "Запрос направляют Логисту/Архитектору, которые не проверяют баланс."
+    assert run(text, actor="Логист", action="проверяют", negated=True) == []
+    assert run(text, actor="Логист", action="проверяют") == ["negation_mismatch"]
+    ordinary = "Логист готовит отчёт, который проверяет РП."
+    assert run(ordinary, actor="РП", action="проверяет") == []
+    assert run(ordinary, actor="Логист", action="проверяет") == ["actor_not_bound"]
+
+
+def test_relative_binding_does_not_cross_another_role_predicate_or_sentence():
+    separate = "Материалы передают Логисту, затем Архитектору, который проверяет комплект."
+    assert run(separate, actor="Логист", action="проверяет") == ["actor_not_bound"]
+    assert run(separate, actor="Архитектор", action="проверяет") == []
+    later = "Материалы передают Логисту/Архитектору, который проверяет комплект, а РП подписывает акт."
+    assert run(later, actor="Логист", action="подписывает") == ["actor_not_bound"]
+    assert run("Материалы получает Логист. Который проверяет комплект.",
+               actor="Логист", action="проверяет") == ["actor_not_bound"]
+    different_alias = "Материалы передают Логисту (РМ)/Архитектору, который проверяет комплект."
+    assert run(different_alias, actor="РМ", action="проверяет") == ["actor_not_bound"]
