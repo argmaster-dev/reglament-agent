@@ -34,6 +34,7 @@ class Hit:
     blocks: list[Block]
     similarity: float
     lexical_match: bool
+    section_title: str = ""
 
     def source_ref(self, *, sentence: int | None = None, column: str | None = None) -> SourceRef:
         validate_anchor(self.sentences, self.blocks, sentence, column)

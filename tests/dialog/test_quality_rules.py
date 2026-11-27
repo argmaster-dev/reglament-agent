@@ -164,14 +164,17 @@ def test_typos_are_repaired_before_retrieval(isolated):
     assert "командировку" in route.seen[0][0].lower() and "согласует" in route.seen[0][0].lower()
 
 
-def _two_sentence_point():
+def _two_sentence_point(*, with_deadline=False):
     from reglament_agent.answer import SourceRef
     from reglament_agent.dialog.grounding import Anchor
 
     def anchor(i, text):
         return Anchor(SourceRef("d", "Т", "Отдел", 1, "7.1", sentence=i), text, "", i)
 
-    return {"S1": anchor(0, "Архитектор создаёт заявку на допуск."),
+    first = "Архитектор создаёт заявку на допуск"
+    if with_deadline:
+        first += " в течение пяти рабочих дней после назначения"
+    return {"S1": anchor(0, first + "."),
             "S2": anchor(1, "За подписание допуска отвечает Логист.")}
 
 
@@ -337,7 +340,7 @@ def test_faq_variant_keeps_the_expert_attribution(isolated):
 
 
 def test_action_missing_without_actor_is_tolerated_only_when_no_executor_is_asked():
-    items = _two_sentence_point()
+    items = _two_sentence_point(with_deadline=True)
     ok = _assemble(items, [_claim(items, "S1", "", "утверждает")], "Сколько дней на заявку на допуск?")
     assert ok.outcome == Outcome.ANSWER and ok.statements[0].text == items["S1"].text
     asked = _assemble(items, [_claim(items, "S1", "", "подписывает")])
@@ -347,7 +350,7 @@ def test_action_missing_without_actor_is_tolerated_only_when_no_executor_is_aske
 
 
 def test_wrong_verb_with_a_present_actor_is_tolerated_only_for_a_non_executor_question():
-    items = _two_sentence_point()
+    items = _two_sentence_point(with_deadline=True)
     q = "Сколько дней отводится на заявку на допуск?"
     present = _assemble(items, [_claim(items, "S1", "Архитектор", "утверждает")], q)
     assert present.outcome == Outcome.ANSWER and present.statements[0].text == items["S1"].text
