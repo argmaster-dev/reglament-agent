@@ -1,17 +1,21 @@
 """Expert pages: tickets and FAQ."""
 from __future__ import annotations
 
+import asyncio
 import re
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from psycopg.rows import dict_row
+from starlette.routing import NoMatchFound
 
 from reglament_agent.admin import jobs
+from reglament_agent.admin import versions as V
 from reglament_agent.admin.routes import render
 from reglament_agent.answer import SourceRef
 from reglament_agent.chat import session as S
 from reglament_agent.ingest.embedding import make_embedder
+from reglament_agent.model.ollama import ModelError
 from reglament_agent.quality import faq as F
 from reglament_agent.quality.mail import REASONS
 from reglament_agent.quality.tickets import get_ticket, get_ticket_for_user
@@ -106,11 +110,15 @@ def ticket_page(request: Request, number: str):
 
 @expert_router.post("/tickets/{number}", response_class=HTMLResponse)
 async def ticket_submit(request: Request, number: str):
-    f = await request.form()
+    form = await request.form()
+    return await asyncio.to_thread(_submit_ticket, request, number, form)
+
+
+def _submit_ticket(request: Request, number: str, f):
     ident = S.identity_from_headers(request.headers, _import_secret())
     action = f.get("action", "answer")
     form = {"answer": f.get("answer", ""), "basis_kind": f.get("basis_kind", "points"),
-            "extra_points": f.get("extra_points", ""), "visibility": f.get("visibility", "faq"),
+            "extra_points": f.get("extra_points", ""), "visibility": f.get("visibility", "private"),
             "faq_question": f.get("faq_question", ""), "alt_questions": f.get("alt_questions", ""),
             "dup_ref": f.get("dup_ref", ""), "cand": f.getlist("cand")}
     with jobs.connect() as conn:
@@ -128,7 +136,12 @@ async def ticket_submit(request: Request, number: str):
                 conn, number=number, expert_email=ident.email, answer=form["answer"],
                 basis_kind=form["basis_kind"], basis_points=points, visibility=form["visibility"],
                 faq_question=form["faq_question"],
-                alt_questions=form["alt_questions"].splitlines(), embedder=make_embedder())
+                alt_questions=form["alt_questions"].splitlines(),
+                embedder=make_embedder() if form["visibility"] == "faq" else None,
+            )
+        except ModelError:
+            return _ticket_page(request, conn, number, status_code=503,
+                                error="Индекс FAQ недоступен. Повторите отправку.", form=form)
         except F.TicketError as exc:
             return _ticket_page(request, conn, number, status_code=400, error=str(exc), form=form)
     return RedirectResponse(f"/admin/tickets/{number}", status_code=303)
@@ -147,31 +160,39 @@ def faq_list(request: Request, status: str = ""):
 
 
 @expert_router.get("/faq/{faq_id}", response_class=HTMLResponse)
-def faq_page(request: Request, faq_id: int, error: str = ""):
-    with jobs.connect() as conn:
+def faq_page(request: Request, faq_id: int, error: str = "", status_code: int = 200):
+    with jobs.connect() as conn, V.snapshot(conn):  # text and token come from one snapshot
         e = F.get_faq(conn, faq_id)
         if e is None:
             return render("forbidden.html", request, 404, message="Запись FAQ не найдена")
-        items = []
+        items, shown = [], []
         for b in e["basis"]:
             st = F.point_state(conn, b) if b.get("number") else None
+            shown.append(st["text"] if st else None)
             if st and st["state"] != "removed":
                 st["text"] = (view_text(conn, b["doc_id"], st["number"]) or {}).get("text", st["text"])
             items.append({**b, "now": st})
-    return render("faq_entry.html", request, nav="faq", e=e, items=items, error=error,
+        token = V.shown_token(conn, e, shown)
+    return render("faq_entry.html", request, status_code, nav="faq", e=e, items=items, error=error, token=token,
                   status_text=FAQ_STATUS.get(e["status"], e["status"]),
                   label=F.basis_label(e["basis_kind"], e["basis"]))
 
 
 @expert_router.post("/faq/{faq_id}/{action}")
-def faq_action(faq_id: int, action: str):
-    status = {"confirm": "active", "delete": "deleted"}.get(action)
-    if status is None:
+async def faq_action(request: Request, faq_id: int, action: str):
+    """Plain-card buttons share the single decision path (and history) of the review page."""
+    decide = {"confirm": V.confirm_entry, "delete": V.delete_entry}.get(action)
+    if decide is None:
         return RedirectResponse(f"/admin/faq/{faq_id}", status_code=303)
+    actor = S.identity_from_headers(request.headers, _import_secret()).email
+    form = await request.form()
+    shown = V.make_shown(form.get("expected_version_id", ""), form.get("expected_hashes", ""))
     with jobs.connect() as conn:
         try:
-            F.set_faq_status(conn, faq_id, status)
-        except F.TicketError as exc:
+            decide(conn, faq_id, actor, shown)
+        except V.StaleBasis as exc:
+            return faq_page(request, faq_id, error=str(exc), status_code=409)
+        except V.VersionError as exc:
             return RedirectResponse(f"/admin/faq/{faq_id}?error={exc}", status_code=303)
     return RedirectResponse(f"/admin/faq/{faq_id}", status_code=303)
 
@@ -187,11 +208,19 @@ def ticket_status(request: Request, number: str):
             response = _ticket_page(request, conn, number)
         else:
             ticket = get_ticket_for_user(conn, number, identity.email)
+            answer = None
+            if ticket:
+                answer = conn.cursor(row_factory=dict_row).execute(
+                    "SELECT expert_email,answer,created_at,visibility,basis_kind,basis "
+                    "FROM ticket_answers WHERE ticket_id=%s", (ticket["id"],),
+                ).fetchone()
             response = render(
                 "employee_ticket.html",
                 request,
                 200 if ticket else 404,
                 ticket=ticket,
+                answer=answer,
+                answer_basis=F.basis_label(answer["basis_kind"], answer["basis"]) if answer else None,
                 status=STATUS.get(ticket["status"], ticket["status"]) if ticket else None,
                 delivery=MAIL.get(ticket["delivery"], ticket["delivery"]) if ticket else None,
             )

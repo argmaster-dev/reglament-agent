@@ -1,0 +1,73 @@
+# Public demo. Publish only Caddy's loopback port. Tailscale terminates TLS.
+services:
+  sender:
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.3
+  migrate:
+    mem_limit: 192m
+    memswap_limit: 192m
+    cpus: 0.5
+  app:
+    mem_limit: 640m
+    memswap_limit: 640m
+    cpus: 1.25
+    ports: !reset []
+    environment:
+      CHAT_TRUSTED_HEADER: ""
+      CHAT_SECURE_COOKIES: "true"
+      CHAINLIT_COOKIE_SAMESITE: none
+      MAIL_UI_URL: /mail/
+    networks: [backend, local_access]
+  postgres:
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: 0.75
+    shm_size: 128m
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=48MB
+      - -c
+      - effective_cache_size=192MB
+      - -c
+      - max_connections=24
+    ports: !reset []
+    networks: [backend]
+  mailpit:
+    mem_limit: 96m
+    memswap_limit: 96m
+    cpus: 0.25
+    ports: !reset []
+    networks: [backend]
+    environment:
+      MP_WEBROOT: /mail/
+  gateway:
+    mem_limit: 96m
+    memswap_limit: 96m
+    cpus: 0.25
+    environment:
+      STAND_BASIC_USER: ${STAND_BASIC_USER:?Set STAND_BASIC_USER in .env}
+      STAND_BASIC_PASSWORD_HASH: ${STAND_BASIC_PASSWORD_HASH:?Run deploy/setup-basic.py}
+    labels:
+      dev.reglament.caddyfile.sha256: ${REGULATIONS_CADDYFILE_SHA256:-unrecorded}
+    image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${STAND_PORT:-18800}:8080"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks: [backend, local_access]
+networks:
+  local_access:
+    ipam:
+      config:
+        - subnet: ${STAND_SUBNET:-172.28.71.0/24}
+          gateway: ${STAND_GATEWAY:-172.28.71.1}

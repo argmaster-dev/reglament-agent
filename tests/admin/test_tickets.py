@@ -1,3 +1,4 @@
+import re
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -129,7 +130,8 @@ def test_point_basis_review_flow(env):
     assert "на проверке" in entry and "пункт изменён" in entry
     assert search_rows(env, "Кто размещает заказы на HW?", vec("Кто размещает заказы на HW?")) == []
     assert "Кто размещает" in c.get("/admin/faq?status=review").text
-    assert c.post("/admin/faq/1/confirm").status_code == 303
+    fields = dict(re.findall(r'name="(expected_\w+)" value="([^"]*)"', entry))
+    assert c.post("/admin/faq/1/confirm", data=fields).status_code == 303
     assert env.execute("SELECT status FROM faq_entries").fetchone()[0] == "active"
     c.post("/admin/faq/1/delete")
     assert env.execute("SELECT status FROM faq_entries").fetchone()[0] == "deleted"

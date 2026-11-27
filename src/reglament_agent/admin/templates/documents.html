@@ -3,9 +3,10 @@
 <a class="btn" style="margin-left:auto" href="/admin/documents/upload">Загрузить регламент</a></div>
 {% for id, doc in running %}<p class="card">Идёт публикация: <a href="/admin/jobs/{{ id }}">задача №{{ id }}</a></p>{% endfor %}
 {% if rows %}<table><tr><th>Название</th><th>Подразделение</th><th>Этапы</th><th>Активная версия</th>
-<th>Дата загрузки</th><th>Пунктов</th><th>Статус</th></tr>
+<th>Дата загрузки</th><th>Пунктов</th><th>Статус</th><th></th></tr>
 {% for doc_id, title, dep, st, status, ver, created, points in rows %}
 <tr><td>{{ title }}</td><td>{{ dep }}</td><td>{% for s in st %}{{ stages.get(s, s) }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
 <td>{{ ver or "—" }}</td><td>{{ created.strftime("%d.%m.%Y %H:%M") if created else "—" }}</td><td>{{ points or "—" }}</td>
-<td>{{ "активен" if status == "active" else "отключён" }}</td></tr>{% endfor %}</table>
+<td>{{ "активен" if status == "active" else "отключён" }}</td>
+<td><a href="/admin/documents/{{ doc_id }}/versions">Версии</a> · <a href="/admin/documents/{{ doc_id }}/checks">Проверка вопросов</a>{% if status == "active" %} · <a href="/admin/documents/{{ doc_id }}/withdraw">Снять с публикации</a>{% endif %}</td></tr>{% endfor %}</table>
 {% else %}<p class="muted">Пока нет ни одного регламента. Загрузите первый.</p>{% endif %}{% endblock %}

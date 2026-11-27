@@ -2,6 +2,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 {% if refresh %}<meta http-equiv="refresh" content="1">{% endif %}
 <title>{% block title %}Служба качества{% endblock %} · Агент по регламентам</title>
+<link rel="stylesheet" href="/public/release-footer.css">
 <style>
 :root{--fg:#1b1b1b;--muted:#666;--line:#d8d8d8;--accent:#1f5fbf;--ok:#1b7a3d;--bad:#b00020;--bg:#fafafa}
 *{box-sizing:border-box}body{font-family:system-ui,sans-serif;color:var(--fg);background:var(--bg);margin:0}
@@ -33,7 +34,8 @@ form.f textarea{width:100%;font:inherit;padding:8px}
 <a href="/admin/documents" class="{{ 'on' if nav == 'documents' }}">Документы</a>
 <a href="/admin/tickets" class="{{ 'on' if nav == 'tickets' }}">Обращения{% if open_tickets is not none %} ({{ open_tickets }} открытых){% endif %}</a>
 <a href="/admin/faq" class="{{ 'on' if nav == 'faq' }}">FAQ</a>
+<a href="/admin/faq?status=review">FAQ на проверке</a>
 {% if mail_ui_url %}<a href="{{ mail_ui_url }}" target="_blank" rel="noopener">Почта службы</a>{% endif %}
 <a href="/admin/analytics" class="{{ 'on' if nav == 'analytics' }}">Аналитика</a>
 <span class="sp">{% if identity %}{{ identity.email }} · <a href="/start">сменить роль</a>{% endif %}</span></header>
-<main>{% block content %}{% endblock %}</main></body></html>
+<main>{% block content %}{% endblock %}</main>{{ release_footer }}</body></html>

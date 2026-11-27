@@ -20,7 +20,8 @@
 
 ```bash
 export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
-docker compose up -d --wait
+export CHAINLIT_AUTH_SECRET="$(openssl rand -hex 32)"
+docker compose up -d --wait postgres mailpit
 export DATABASE_URL="postgresql://regulations:${POSTGRES_PASSWORD}@127.0.0.1:${REGULATIONS_DB_PORT:-5432}/regulations"
 uv sync --locked
 uv run python -m reglament_agent.ingest load docx/
@@ -38,7 +39,9 @@ uv run python -m reglament_agent.ingest load docx/
 
 Для маршрута диалога `reglament_agent.storage.retrieve.retrieve` возвращает пункты и отдельный список опубликованных FAQ от подключённого поставщика. Ссылка на пункт хранит номер редакции, номер пункта и, при необходимости, предложение или колонку таблицы. По этой ссылке `reglament_agent.storage.sources.point_view` открывает текст соответствующей редакции.
 
-## Запуск стенда
+## Локальный запуск
+
+Для публикации и восстановления стенда после перезагрузки см. [инструкцию финального стенда](deploy/README.md).
 
 Нужны Docker, Ollama с моделями `qwen3.5:9b-q4_K_M` и `bge-m3`, файл `.env` (образец — `.env.example`).
 
@@ -49,26 +52,26 @@ docker compose up -d --build --wait
 
 Приложение слушает `127.0.0.1:${APP_PORT:-8000}`, Postgres и Mailpit опубликованы только на loopback. Сеть `backend` внутренняя.
 
-**Ollama на хосте.** Контейнер обращается к ней через `host.docker.internal` (`extra_hosts: host-gateway`). Ollama должна слушать адрес, доступный с docker-моста, например `OLLAMA_HOST=0.0.0.0:11434` (при этом закройте порт 11434 файрволом от внешней сети). Альтернатива — запустить приложение на хосте: `make run` (Chainlit, `src/reglament_agent/chat/app.py`, файл появляется вместе с чатом; читает `.env`, `MODEL_OLLAMA_URL=http://127.0.0.1:11434`).
+**Ollama на хосте.** Контейнер обращается к ней через `host.docker.internal` (`extra_hosts: host-gateway`). Для контейнера задайте `CONTAINER_OLLAMA_URL` с адресом локального Docker-моста, на котором доступна Ollama. Для финального стенда используйте входящий сокет из инструкции выше. Альтернатива — запустить приложение на хосте: `make run` (Chainlit, `src/reglament_agent/chat/app.py`, файл появляется вместе с чатом; читает `.env`, `MODEL_OLLAMA_URL=http://127.0.0.1:11434`).
 
 **Сброс демо.** `make demo-reset` стирает всю схему БД, применяет миграции и загружает все регламенты; `make demo-reset-without-td` — без `td-project` (чтобы показать добавление регламента). Команда требует `--yes` или `DEMO_RESET_ALLOWED=1`. Переменные: `EMBEDDER=ollama|fake`, `DEMO_RESET_SCHEMA` (по умолчанию `public`). Выводит JSON: документы, пункты, секунды.
 
-**Проверка состояния.** `GET /health` (роутер `reglament_agent.ops.health.router`, подключается в приложение) возвращает JSON по БД, Ollama и SMTP; 503 только если недоступна БД.
+**Проверка состояния.** `GET /health` (роутер `reglament_agent.ops.health.router`, подключается в приложение) возвращает JSON по БД, Ollama и SMTP; 503 при недоступности любой из этих зависимостей.
 
 ## Конфигурация под GPU заказчика
 
-Параллельные генерации задаются `MODEL_CHAT_SLOTS` (целое ≥ 1, по умолчанию 1). Лишние запросы встают в FIFO-очередь с показом позиции. `MODEL_CHAT_QUEUE_MAX` (по умолчанию 0 = без ограничения) ограничивает длину очереди: при переполнении выбрасывается `QueueFull` (подкласс `ModelError`), диалог отвечает ошибкой, чат может показать «стенд занят, повторите». Эмбеддинги идут мимо слотов генерации; `MODEL_EMBED_NUM_GPU` (по умолчанию 0 = CPU) переводит их на GPU. На стороне сервера Ollama `OLLAMA_NUM_PARALLEL` должен быть не меньше `MODEL_CHAT_SLOTS`, иначе запросы выстроятся внутри Ollama.
+Параллельные генерации задаются `MODEL_CHAT_SLOTS` (целое ≥ 1, по умолчанию 1; в `compose.yaml` пробрасывается в `app`). Лишние запросы встают в FIFO-очередь с показом позиции. Длину очереди ограничивает `MODEL_GENERATION_MAX_WAITERS` (по умолчанию 3) на каждый слот: при N слотах в очереди помещается N × это значение (при N=1 ровно столько же, сколько раньше). При переполнении выбрасывается `GenerationQueueFull`, чат отвечает «стенд занят». Эмбеддинги идут мимо слотов генерации; `MODEL_EMBED_NUM_GPU` (по умолчанию 0 = CPU) переводит их на GPU. На стороне сервера Ollama `OLLAMA_NUM_PARALLEL` должен быть не меньше `MODEL_CHAT_SLOTS`, иначе запросы выстроятся внутри Ollama.
 
-Пример для GPU с большой памятью (значения примерные, не измерены):
+Пример для GPU с большой памятью, 128 ГБ (значения примерные, не измерены):
 
 ```bash
 MODEL_CHAT_SLOTS=4
-MODEL_CHAT_QUEUE_MAX=16
+MODEL_GENERATION_MAX_WAITERS=4   # очередь до 16 ожидающих
 MODEL_EMBED_NUM_GPU=99
 OLLAMA_NUM_PARALLEL=4   # переменная сервера Ollama, не приложения
 ```
 
-Состояние слотов: `OllamaClient.slot_status()` возвращает `{slots, busy, waiting}`.
+Состояние слотов: `OllamaClient.slot_status()` возвращает `{slots, busy, waiting, max_waiting}`; тот же блок отдаёт `GET /health` в поле `generation`. В журнале вызовов (`CallRecord`) у каждого chat-вызова есть `slots`, `busy` (занято слотов на момент старта, включая этот вызов), `waiting` (сколько уже ждало к его приходу) и `queue_ms`.
 
 ## Структура
 
@@ -89,7 +92,7 @@ uv run chainlit run src/reglament_agent/chat/app.py --headless --port 8000
 
 | Переменная | Назначение |
 |---|---|
-| `CHAT_EXPERT_PASSWORD` | пароль роли «Служба качества»; для разработки по умолчанию `demo-expert` |
+| `CHAT_EXPERT_PASSWORD` | пароль роли «Служба качества». Если он пуст или не задан, вход эксперта отключён |
 | `CHAINLIT_AUTH_SECRET` | секрет подписи сессий; если не задан, создаётся случайный на время процесса |
 | `CHAT_TRUSTED_HEADER` | например `X-User-Email`: личность берётся только из этого заголовка. Прокси обязан сам выставлять его и удалять из запросов клиента |
 | `CHAT_EXPERT_EMAILS` | список адресов экспертов через запятую (только в режиме доверенного заголовка) |

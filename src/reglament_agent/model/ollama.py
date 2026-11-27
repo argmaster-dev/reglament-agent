@@ -10,11 +10,14 @@ from typing import Callable
 import httpx
 
 from .calls import CallRecord, CallSink, MemorySink
-from .errors import ModelError, QueueFull  # noqa: F401  (re-exported)
 from .queue import GenerationSlot
 from .settings import ModelSettings
 
 EMBED_DIM = 1024
+
+
+class ModelError(Exception):
+    pass
 
 
 class ModelUnavailable(ModelError):
@@ -56,8 +59,10 @@ class OllamaClient:
     ) -> None:
         self.settings = settings or ModelSettings()
         self.sink: CallSink = sink if sink is not None else MemorySink()
+        # Waiting-room limit scales with the number of slots: N slots -> N * generation_max_waiters.
         self.slot = slot or GenerationSlot(
-            self.settings.chat_slots, max_queue=self.settings.chat_queue_max
+            self.settings.chat_slots,
+            max_waiting=self.settings.generation_max_waiters * self.settings.chat_slots,
         )
         self._http = httpx.AsyncClient(
             base_url=self.settings.ollama_url,
@@ -179,6 +184,7 @@ class OllamaClient:
         try:
             async with self.slot.acquire(on_position) as ticket:
                 rec.queue_ms = ticket.queue_ms
+                rec.slots, rec.busy, rec.waiting = ticket.slots, ticket.busy, ticket.waiting
                 if on_start:
                     on_start()
                 body = await self._post("/api/chat", payload)

@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% block content %}
+<p><a href="/admin/documents">← Документы</a></p>
+<h1>Версии: {{ doc.title }} <span class="badge {{ '' if doc.status == 'active' else 'bad' }}">{{ 'опубликован' if doc.status == 'active' else 'снят с публикации' }}</span></h1>
+{% if error %}<p class="card err">{{ error }}</p>{% endif %}
+<table><tr><th>Версия</th><th>Дата загрузки</th><th>Загрузил</th><th>Пунктов</th><th>Статус</th><th>Действия</th></tr>
+{% for v in versions %}<tr><td>{{ v.number }}</td><td>{{ v.created_at.strftime("%d.%m.%Y %H:%M") }}</td><td>{{ v.uploaded_by }}</td><td>{{ v.points }}</td>
+<td>{% if v.active %}<span class="badge">{{ 'действующая' if doc.status == 'active' else 'последняя действующая (документ снят)' }}</span>{% else %}архивная{% endif %}</td>
+<td>{% if not v.active %}<a href="/admin/documents/{{ doc.doc_id }}/versions/{{ v.number }}/activate">Откатить к этой версии</a>
+{% elif doc.status != 'active' %}<a href="/admin/documents/{{ doc.doc_id }}/versions/{{ v.number }}/activate">Вернуть в публикацию</a>{% endif %}
+{% for new, old in pairs if new == v.number %} · <a href="/admin/documents/{{ doc.doc_id }}/versions/diff?old={{ old }}&amp;new={{ new }}">Отличия от версии {{ old }}</a>{% endfor %}</td></tr>{% endfor %}</table>
+<p style="margin-top:16px">{% if doc.status == 'active' %}<a class="btn sec" href="/admin/documents/{{ doc.doc_id }}/withdraw">Снять с публикации</a>{% endif %}
+<a class="btn sec" href="/admin/documents/{{ doc.doc_id }}/checks">Проверка вопросов</a>
+<a class="btn" href="/admin/documents/upload">Заменить новой версией</a></p>
+{% endblock %}

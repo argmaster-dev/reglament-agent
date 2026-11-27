@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import weakref
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator, Callable
-
-from .errors import QueueFull
 
 PositionCallback = Callable[[int], None]
 
@@ -18,6 +17,9 @@ log = logging.getLogger(__name__)
 @dataclass
 class Ticket:
     queue_ms: float = 0.0
+    slots: int = 1
+    busy: int = 1  # busy slots right after this call got its slot (including itself)
+    waiting: int = 0  # callers waiting when this call arrived
 
 
 class _Waiter:
@@ -27,25 +29,47 @@ class _Waiter:
         self.last_position = 0
 
 
-class GenerationSlot:
-    """Single (or N) generation slot; FIFO. Position 1 = next in line."""
+_REGISTRY: "weakref.WeakSet[GenerationSlot]" = weakref.WeakSet()
 
-    def __init__(self, capacity: int = 1, max_queue: int = 0) -> None:
+
+def generation_status(default_slots: int = 1) -> dict:
+    """Process-wide generation state for /health: {slots, busy, waiting, max_waiting}."""
+    live = list(_REGISTRY)
+    if not live:
+        return {"slots": default_slots, "busy": 0, "waiting": 0, "max_waiting": None}
+    st = [s.slot_status() for s in live]
+    return {k: sum(x[k] for x in st) for k in ("slots", "busy", "waiting", "max_waiting")}
+
+
+class GenerationQueueFull(RuntimeError):
+    """No free generation slot and the waiting queue has reached its limit."""
+
+
+class GenerationSlot:
+    """Single (or N) generation slot with a bounded FIFO. Position 1 is next in line."""
+
+    def __init__(self, capacity: int = 1, *, max_waiting: int = 3) -> None:
         if capacity < 1:
             raise ValueError("capacity must be >= 1")
-        if max_queue < 0:
-            raise ValueError("max_queue must be >= 0")
+        if max_waiting < 0:
+            raise ValueError("max_waiting must be >= 0")
         self.capacity = capacity
-        self.max_queue = max_queue  # 0 = unlimited
+        self.max_waiting = max_waiting
         self.active = 0
         self._queue: deque[_Waiter] = deque()
+        _REGISTRY.add(self)
 
     @property
     def waiting(self) -> int:
         return len(self._queue)
 
     def slot_status(self) -> dict:
-        return {"slots": self.capacity, "busy": self.active, "waiting": len(self._queue)}
+        return {
+            "slots": self.capacity,
+            "busy": self.active,
+            "waiting": len(self._queue),
+            "max_waiting": self.max_waiting,
+        }
 
     def _notify(self) -> None:
         for i, w in enumerate(self._queue, start=1):
@@ -68,11 +92,12 @@ class GenerationSlot:
     @asynccontextmanager
     async def acquire(self, on_position: PositionCallback | None = None) -> AsyncIterator[Ticket]:
         start = time.perf_counter()
+        waiting_on_entry = len(self._queue)
         if self.active < self.capacity and not self._queue:
             self.active += 1
         else:
-            if self.max_queue and len(self._queue) >= self.max_queue:
-                raise QueueFull(f"generation queue is full ({self.max_queue})")
+            if self.waiting >= self.max_waiting:
+                raise GenerationQueueFull("Generation queue is full")
             w = _Waiter(on_position)
             self._queue.append(w)
             self._notify()
@@ -87,7 +112,12 @@ class GenerationSlot:
                     self.active -= 1
                     self._grant()
                 raise
-        ticket = Ticket(queue_ms=(time.perf_counter() - start) * 1000)
+        ticket = Ticket(
+            queue_ms=(time.perf_counter() - start) * 1000,
+            slots=self.capacity,
+            busy=self.active,
+            waiting=waiting_on_entry,
+        )
         try:
             yield ticket
         finally:

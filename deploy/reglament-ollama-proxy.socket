@@ -1,0 +1,9 @@
+[Unit]
+Description=Ollama access from the regulatory stand Docker bridge
+
+[Socket]
+ListenStream=172.28.71.1:11434
+FreeBind=true
+
+[Install]
+WantedBy=default.target
