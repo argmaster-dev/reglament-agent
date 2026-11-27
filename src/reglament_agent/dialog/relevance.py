@@ -678,11 +678,18 @@ _COORDINATED_ACTION = re.compile(
 )
 
 
+_OTHER_FINITE = re.compile(r"^([а-я]{3,}?)(?:ут|ат|ится|атся|ятся|утся)$")
+
+
+def _frequency_verb(token):
+    return _OPERATION_VERB.fullmatch(token) or _OTHER_FINITE.fullmatch(token)
+
+
 @dataclass(frozen=True)
 class Frequency:
     subject: frozenset[str]
     operation: str | None
-    actor: frozenset[str]
+    actor: tuple[str, ...]
     object_head: str | None
 
     def supported_by(self, text):
@@ -692,18 +699,20 @@ class Frequency:
             # A monthly report about an inspection is not a monthly inspection.
             tokens = words(clause)
             for i, word in enumerate(tokens):
-                if not (self.operation and _OPERATION_VERB.fullmatch(word)
+                if not (self.operation and _frequency_verb(word)
                         and _mentions_operation(self.operation, {word_key(word)})):
                     continue
-                if not self.actor <= set(map(word_key, tokens[:i])):
-                    continue
-                if self.object_head:
-                    # A reference to the object in a prepositional phrase is insufficient.
-                    following = tokens[i + 1:]
-                    stop = next((j for j, w in enumerate(following) if w in _RELATION_PREPS), len(following))
-                    if self.object_head not in set(map(word_key, following[:stop])):
-                        continue
-                return True
+                before, after = tokens[:i], tokens[i + 1:]
+                stop = next((j for j, w in enumerate(after) if w in _RELATION_PREPS), len(after))
+                if (set(map(word_key, self.actor)) <= set(map(word_key, before))
+                        and (not self.object_head or self.object_head in map(word_key, after[:stop]))):
+                    return True
+                # Inverted subject after the verb must retain its nominative form.
+                if self.actor and tuple(after[:len(self.actor)]) == self.actor and any(
+                    word_key(w) == self.object_head and not (j and before[j-1] in _RELATION_PREPS)
+                    for j, w in enumerate(before)
+                ):
+                    return True
             # A nominalized action needs an explicit scheduling or performance predicate.
             if (self.operation and _mentions_operation(self.operation, terms(clause))
                     and re.search(r"\b(?:периодичность|частота|проводится|проводятся|осуществляется|выполняется)\b", clause)):
@@ -717,13 +726,13 @@ def frequency_request(part, departments):
         return None
     rest = _FREQUENCY_FILLERS.sub(" ", _FREQUENCY_QUERY.sub(" ", part))
     subject = terms(rest) - terms(" ".join(departments)) - _PART_FILLERS - _COURTESY_WORDS
-    operation = _operation(rest, subject)
     tokens = words(rest)
-    predicate = next((i for i, w in enumerate(tokens) if operation and _OPERATION_VERB.fullmatch(w)
-                      and _mentions_operation(operation, {word_key(w)})), None)
-    actor, object_head = frozenset(), None
+    predicate = next((i for i, w in enumerate(tokens) if word_key(w) in subject and _frequency_verb(w)), None)
+    operation = _operation(rest, subject)
+    actor, object_head = (), None
     if predicate is not None:
-        actor = frozenset(terms(" ".join(tokens[:predicate])) & subject)
+        operation = _frequency_verb(tokens[predicate])[1][:5]
+        actor = tuple(w for w in tokens[:predicate] if word_key(w) in subject)
         following = tokens[predicate + 1:]
         if following and following[0] not in _RELATION_PREPS:
             object_head = next((word_key(w) for w in following if word_key(w) in subject), None)
