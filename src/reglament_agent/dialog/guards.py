@@ -7,7 +7,7 @@ import math
 import re
 
 from .checks import _numbers
-from .lexicon import find_roles, fold, words
+from .lexicon import find_roles, fold, glossary, words
 
 MIN_LENGTH, MAX_LENGTH = 3, 2000
 
@@ -45,14 +45,32 @@ _PRIVATE_PURPOSE = re.compile(
     r"(?:семь\w*|ребенк\w*|дет(?:ей|ям)|питомц\w*|кот(?:а|у|ят|енк[ау])|кошк\w*|собак\w*|щенк\w*)\b"
 )
 _WORK_RULE = re.compile(
-    r"\b(?:регламент|инструкци|правил|положени|поряд|процедур|смет|закуп|договор|документ|заказчик|сделк"
+    r"\b(?:регламент|инструкци|положени|поряд|процедур|смет|закуп|договор|документ|заказчик|сделк"
     r"|компани|подразделени|служебн|предприяти|финансир|согласовани|сотрудник|клиент)\w*\b"
-    r"|\bпроект(?:а|у|е|ом|ы|ов|ам|ами|ах|н\w*)?\b"
+    r"|\bправил(?:о|а|у|ом|е|ам|ами|ах)?\b|\bпроект(?:а|у|е|ом|ы|ов|ам|ами|ах|н\w*)?\b"
 )
 # These are work subjects even when the reason for arranging them is personal.
 _EMPLOYMENT_SUBJECT = re.compile(r"\b(?:отпуск|отгул|больничн|командировк|дежурств|график)\w*\b")
 _ADVICE_FILLERS = {"мне", "помоги", "помогите", "пожалуйста", "пожалуй",
                   "прошу", "как", "что", "это", "бы", "ты", "вы", "что-нибудь", "нибудь", "который", "нужно"}
+# A cooking or household action needs a personal setting. Preparing a work deliverable
+# remotely is legitimate, as is asking how the employer purchases or serves food.
+_HOME_SETTING = re.compile(r"\b(?:дома|в домашних условиях|на (?:своей|домашней) кухне)\b")
+_KITCHEN_SETTING = re.compile(r"\b(?:завтрак|обед|ужин)\w*\b|\b(?:в духовке|на сковороде|на пару)\b")
+_HOUSEHOLD_HOW = re.compile(
+    r"\bкак\s+(?:(?:дома|можно|лучше|правильно|самому|самой|быстро)\s+){0,3}"
+    r"(?:приготовить|готовить|сварить|испечь|запечь|пожарить|замесить|постирать|погладить|пропылесосить)\b"
+)
+_RECIPE_ADVICE = re.compile(
+    r"\b(?:посоветуй(?:те)?|порекомендуй(?:те)?|подскажи(?:те)?|дай(?:те)?|предложи(?:те)?|"
+    r"напиши(?:те)?|покажи(?:те)?|како[йе])\s+(?:(?:мне|нам|простой|подходящий|новый)\s+){0,2}рецепт(?:ы)?\b"
+)
+_WORK_PREPARATION = re.compile(
+    r"\b(?:отчет|заявк|презентаци|реестр|бланк|файл|кейтеринг|корпоративн|рабоч|офисн)\w*\b"
+    r"|\b(?:коммерческ\w*\s+предложени\w*|из дома по работ\w*|поставщик\w*)\b"
+)
+_REFERENCE_WORDS = {"его", "ее", "это", "этот", "эту", "этого", "эти", "их", "него", "нее", "такой", "такую",
+                    "этим", "этом", "все", "данный", "дома", "для", "нас", "нам", "себя", "потом", "еще", "сейчас"}
 _FX_APPLICATION = re.compile(
     r"\b(?:закладывать|фиксировать|подставлять|указать|указывать|применить|применять|использовать|учитывать)\b"
     r"|\b(?:для|при)\s+(?:(?:предварительн|проектн)\w*\s+)?(?:расчет|оформлени|составлени|заполнени)\w*"
@@ -74,10 +92,26 @@ def _personal_choice(q):
     )
 
 
+def _household_instruction(q):
+    advice = _RECIPE_ADVICE.search(q)
+    how = _HOUSEHOLD_HOW.search(q)
+    if not advice and not (how and (_HOME_SETTING.search(q) or _KITCHEN_SETTING.search(q))):
+        return False
+    if _WORK_RULE.search(q) or _WORK_PREPARATION.search(q) or _EMPLOYMENT_SUBJECT.search(q):
+        return False
+    tokens = words(q)
+    # «по» can be an ordinary preposition. Other glossary abbreviations identify work subjects such as КП.
+    if find_roles(tokens) or any(token != "по" and token in tokens for token in map(fold, glossary())):
+        return False
+    # A pronoun alone can continue a real work question. Require an independently named subject.
+    subject = _HOME_SETTING.sub(" ", q[(advice or how).end():])
+    return any(len(w) > 2 and w not in _ADVICE_FILLERS and w not in _REFERENCE_WORDS for w in words(subject))
+
+
 def operational_request(text):
     """Requests for actual records, market data or external work have no regulatory answer."""
     q = fold(text)
-    if _personal_choice(q):
+    if _personal_choice(q) or _household_instruction(q):
         return True
     if _PROCEDURE.search(q):
         return False
