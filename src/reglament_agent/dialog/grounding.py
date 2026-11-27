@@ -21,6 +21,16 @@ from .lexicon import find_roles, fold, word_key, words
 MODEL_OUTCOMES = ["answer", "variants", "no_basis", "external_doc", "conflict", "low_confidence", "off_topic"]
 
 _SKIP = {"примечания:", "важно:", "примечание:"}
+_ACTION_WORDS = re.compile(
+    r"подпис|заключ|созда|созд[аёе]|оформ|соглас|утвержд|готов|привлек|отвеча|назнач|переда|пода"
+)
+# Finite or infinitive verb endings: every sentence contributes its own verbs, not a fixed list of stems.
+_VERB_FORM = re.compile(r"^\w{3,}(?:е[тм]|ит|ют|ут|ят|ат|ться|ть|ти)$")
+
+
+def sentence_actions(tokens):
+    """Verbs of one source sentence; the claimed action must come from the cited sentence itself."""
+    return {w for w in tokens if _ACTION_WORDS.match(w) or _VERB_FORM.match(w)}
 
 
 @dataclass(frozen=True)
@@ -91,14 +101,11 @@ def prompt(question, items, variants, invention=False):
     who = bool(re.search(r"\bкто\b|ответственн\w* за", fold(question)))
     # Enumerated values prevent paraphrased action and role names from losing their source binding.
     actor_names, actions, columns = {""}, {""}, {""}
-    action_words = re.compile(
-        r"подпис|заключ|созда|созд[аёе]|оформ|соглас|утвержд|готов|привлек|отвеча|назнач|переда|пода"
-    )
     for a in items.values():
         tokens = words(a.text)
         if who:
             actor_names.update(" ".join(tokens[i:j]) for i, j, _ in find_roles(tokens))
-            actions.update(w for w in tokens if action_words.match(w))
+            actions.update(sentence_actions(tokens))
         if a.ref.column:
             columns.add(a.ref.column)
     for name, values in [("actor", actor_names), ("action", actions), ("qualifier", columns)]:
@@ -274,11 +281,21 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
     }
     if out in (Outcome.OFF_TOPIC, Outcome.NO_BASIS):
         statements = []
+    known = {**{a.ref: a for a in rows}, **by_ref}
+    pointers = [s for s in statements if s.sources[0] in known and relevance.signer_pointer(fold(question), known[s.sources[0]])]
+    if out in (Outcome.ANSWER, Outcome.EXTERNAL_DOC) and pointers and relevance.asks_signer(fold(question)):
+        if len(pointers) == len(statements):
+            out = Outcome.EXTERNAL_DOC
     if out == Outcome.ANSWER and statements:
         summaries[out] = statements[0].text
     notes = ["Часть утверждений не подтверждена источниками."] if caveat else []
+    if pointers and statements and len(pointers) == len(statements):
+        notes.append("В этом пункте подписант не указан: он отсылает к другому документу.")
     if out == Outcome.ANSWER and statements:
         correction = guards.premise_caveat(question, [s.text for s in statements])
         if correction:
             notes.append(correction)
+        # A part of a compound question without its own source is reported, never silently dropped.
+        for part in relevance.uncovered_parts(question, statements, list(rows) or list(items.values())):
+            notes.append(f"По части вопроса «{part}» в найденных регламентах основания нет.")
     return Answer(out, summaries.get(out, ""), statements, caveat="\n".join(notes) or None)

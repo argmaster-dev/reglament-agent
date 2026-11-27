@@ -64,6 +64,15 @@ def asks_signer(q):
     return bool(re.search(r"\bкто\b|ответственн\w* за", q) and _SIGN.search(q))
 
 
+def signer_pointer(q, anchor):
+    """A sentence that sends the subject of a signer question to another document names no signer itself,
+    but it is the point the answer must cite (with the remark that the signer is not named there)."""
+    if not external_reference(anchor) or _SIGN_ROLE.search(fold(anchor.text)):
+        return False
+    subject = terms(q) - terms("подписывает заключает подписание заключение кто")
+    return bool(subject & terms(anchor.text)) and bool(_CONTRACTOR.search(fold(anchor.text)) or not _CONTRACTOR.search(q))
+
+
 def asks_amount(q):
     return bool(re.search(r"како[йяев] .*будет|какая .*будет|сколько .*получ|чему рав", q))
 
@@ -90,8 +99,49 @@ def entry_condition(text):
     return bool(re.search(r"(?:проект|исполн|работ).{0,35}начина.{0,45}услови", text))
 
 
+_ASK = r"(?:кто|что|как\w*|когда|где|сколько|зачем|почему|куда|откуда|чей|чья|чьё|чьи|кому|кого|чего|чем)"
+_PART_SPLIT = re.compile(
+    rf"\s+и\s+(?={_ASK}\b)|,?\s+а\s+также\s+|,\s*(?={_ASK}\b)|\s*;\s*"
+)
+
+
+def question_parts(question):
+    """Interrogative parts of a compound question; a simple question is one part."""
+    q = fold(question)
+    parts = [p.strip(" ?!.") for p in _PART_SPLIT.split(q)]
+    parts = [p for p in parts if p]
+    # «а также» and «;» may join a part that carries no question word of its own: keep it with its neighbour.
+    merged = []
+    for p in parts:
+        if merged and not re.search(rf"\b{_ASK}\b", p):
+            merged[-1] += " " + p
+        else:
+            merged.append(p)
+    return merged or [q]
+
+
 def matches_request(question, anchor):
-    q, sentence, context = map(fold, (question, anchor.text, anchor.context))
+    parts = question_parts(question)
+    return any(_matches_part(p, anchor) for p in parts)
+
+
+def uncovered_parts(question, statements, rows):
+    """Parts of a compound question for which no selected sentence shares any subject term."""
+    parts = question_parts(question)
+    if len(parts) < 2:
+        return []
+    by_ref = {a.ref: a for a in rows}
+    texts = [fold(by_ref[r].text) if r in by_ref else fold(st.text) for st in statements for r in st.sources]
+    missing = []
+    for part in parts:
+        keys = terms(part)
+        if keys and not any(len(keys & terms(t)) >= min(2, len(keys)) for t in texts):
+            missing.append(part)
+    return missing
+
+
+def _matches_part(question, anchor):
+    q, sentence, context = fold(question), fold(anchor.text), fold(anchor.context)
     if _ADVANCE.search(q):
         return bool(_INTERVAL.search(sentence))
     if start_permission(q):
@@ -105,6 +155,8 @@ def matches_request(question, anchor):
             and re.search(r"нач[аи]|старт|приступ|работ", sentence + " " + context)
         )
     if asks_signer(q):
+        if signer_pointer(q, anchor):
+            return True
         if not _SIGN_ROLE.search(sentence):
             return False
         if re.search(r"договор|контракт|соглашен", q):
