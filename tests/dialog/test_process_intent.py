@@ -133,6 +133,20 @@ def test_process_choice_survives_retry_and_only_reads_selected_active_section(is
     assert len(model.prompts) == 1
 
 
+def test_published_faq_settles_vague_question_before_process_clarification(isolated):
+    conn, dsn = isolated
+    question = 'Что делать с заявкой?'
+    conn.execute("INSERT INTO faq_entries(question,answer,basis_kind,author_email,embedding) VALUES (%s,%s,'outside',%s,%s::vector)",
+                 (question, 'Заявку принимает служба качества.', 'reviewer@example.org', str(FakeEmbedder().embed([question])[0])))
+    points = [point('1.1', 'Регистрация заявки', 'Логист регистрирует заявку.'),
+              point('2.1', 'Проверка заявки', 'Архитектор проверяет заявку.')]
+    model = SelectFirst()
+    user = UserContext('employee@example.org', 'employee', 'faq', '1')
+    result = asyncio.run(Dialog(dsn, model, shortlist=lambda *args, **kwargs: points).answer(user, question, status))
+    assert result.outcome == Outcome.EXPERT_ANSWER and result.statements[0].sources[0].faq_id
+    assert not result.related and not result.clarification and not model.prompts
+
+
 def test_ordinary_answer_caches_only_additional_points_in_its_own_section(isolated):
     _, dsn = isolated
     main = point('9.1', 'Хранение документов', 'Оригинал хранится в архиве.')

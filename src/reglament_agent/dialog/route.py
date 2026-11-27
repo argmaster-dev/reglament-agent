@@ -353,14 +353,17 @@ class Dialog:
 
         await status("Ищу основания в действующих регламентах…")
 
-        def ambiguity(points, *, preview_only=False):
-            options = processes.options(question, points)
-            if options:
-                return clarify([name for name, _ in options], "intent", ask="Какой процесс вас интересует?",
-                               refs=[ref for _, ref in options])
-            if preview_only and processes.broad_subject(question):
-                # Hybrid retrieval may find additional processes before the scope needs narrowing.
-                return None
+        intent_candidates = []
+        broad = processes.broad_subject(question)
+
+        def ambiguity(points):
+            if broad:
+                options = processes.options(question, [*points, *intent_candidates])
+                if options:
+                    refs = [ref for _, ref in options]
+                    trace["intent_options"] = [asdict(ref) for ref in refs]
+                    return clarify([name for name, _ in options], "intent", ask="Какой процесс вас интересует?",
+                                   refs=refs)
             rows = grounding.anchors(points)
             related = relevance.applicable_refs(question, rows, department=dept)
             by_department, by_stage = {}, {}
@@ -381,10 +384,14 @@ class Dialog:
 
         if not selected and not variants and (not dept or not stage):
             candidates = await asyncio.to_thread(self.shortlist, conn, question, department=dept, stage=stage)
-            clarification = ambiguity(candidates, preview_only=True)
-            if clarification:
-                trace["candidates"] = describe(candidates)
-                return clarification, question, None
+            if broad:
+                # Let a published expert answer settle the question before offering a process menu.
+                intent_candidates = candidates
+            else:
+                clarification = ambiguity(candidates)
+                if clarification:
+                    trace["candidates"] = describe(candidates)
+                    return clarification, question, None
         trace["steps"].append("retrieve")
         if selected:
             points = await asyncio.to_thread(active_process, conn, selected)
