@@ -60,6 +60,23 @@ def test_near_basis_lists_other_object_with_point_and_department():
     assert "п. 3.1" not in text
 
 
+def test_nearby_links_keep_versions_and_first_evidence_with_a_three_point_limit():
+    rows = [_anchor(point, ON_RECEIPT) for point in ("1.1", "2.2", "3.3", "4.4")]
+    rows[1] = Anchor(SourceRef("other", "Другой регламент", "Отдел учёта", 7, "2.2", 2, "Действие"),
+                     ON_SUPPLIER, "", 1)
+    text, refs = relevance.nearby_evidence(Q, [rows[0], *rows])
+    assert refs == [row.ref for row in rows[:3]]
+    assert len(text.splitlines()) == 3 and "п. 4.4" not in text
+    assert relevance.nearby_evidence(Q, [_anchor("1.1", FROM_SUPPLIER)]) == ("", [])
+
+
+def test_saved_answer_without_nearby_sources_can_still_be_read():
+    from reglament_agent.dialog.state import answers
+
+    old = {"outcome": "no_basis", "summary": "В регламентах ответа нет."}
+    assert answers.validate_python(old).nearby_sources == []
+
+
 def _hit(department, number, text):
     return Hit(1, department, 1, number, text, 0.04, "Приёмка", department, 1, [text], [], 0.8, True)
 
@@ -92,6 +109,12 @@ def test_profile_department_without_basis_points_to_other_department(isolated):
     reply = asyncio.run(route.answer(user, "Кто создаёт акт от поставщика в ТД?", _status))
     assert reply.outcome == Outcome.NO_BASIS
     assert "п. 2.2" in reply.summary and "ДБРЦТ" in reply.summary
+    assert not reply.statements and reply.ticket
+    assert [(ref.doc_id, ref.version_no, ref.point, ref.sentence) for ref in reply.nearby_sources] == [
+        ("ТД", 1, "1.1", 0), ("ДБРЦТ", 1, "2.2", 0),
+    ]
+    restored = asyncio.run(route.answer(user, "Кто создаёт акт от поставщика в ТД?", _status))
+    assert restored.nearby_sources == reply.nearby_sources and restored.ticket == reply.ticket
 
 
 VERBS = ["создаёт", "оформляет", "формирует", "подаёт", "готовит", "заводит"]

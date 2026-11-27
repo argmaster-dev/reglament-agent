@@ -102,6 +102,8 @@ class Answer:
     profile_note: str | None = None  # «Запомнил: Техническая дирекция»
     answer_id: str | None = None  # id in the request log (ratings, journal link)
     from_cache: bool = False
+    # Navigation only. These points do not support an assertion in this answer.
+    nearby_sources: list[SourceRef] = field(default_factory=list)
 
 
 @dataclass

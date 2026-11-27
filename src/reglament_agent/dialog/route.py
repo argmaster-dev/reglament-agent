@@ -479,7 +479,7 @@ class Dialog:
                     faq=PublishedFaqStore(),
                 )
                 wider = grounding.anchors(found_all.points)
-            near = relevance.near_basis(question, wider)
+            near, result.nearby_sources = relevance.nearby_evidence(question, wider)
             if near:
                 result.summary = (
                     f"{result.summary}\nТочного пункта для этого объекта и направления нет. "
