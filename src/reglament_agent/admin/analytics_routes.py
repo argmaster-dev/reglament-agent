@@ -36,7 +36,8 @@ def analytics(request: Request, period: str = A.DEFAULT_PERIOD):
 @router.get("/requests.csv")
 def requests_csv(period: str = A.DEFAULT_PERIOD):
     with jobs.connect() as conn:
-        return _csv(A.requests_csv(A.fetch(conn, _period(period))), f"requests-{_period(period)}.csv")
+        rows = A.fetch(conn, _period(period))
+        return _csv(A.requests_csv(rows, A.build_groups(conn, rows)), f"requests-{_period(period)}.csv")
 
 
 @router.get("/economics.csv")
@@ -75,7 +76,8 @@ def create_faq(request: Request, group: str = Form(""), period: str = Form(A.DEF
     """Repeated-question group -> ticket (idempotent); the expert publishes the FAQ from its card as usual."""
     ident = S.identity_from_headers(request.headers, jobs_secret())
     with jobs.connect() as conn:
-        found = next((g for g in A.repeated(A.fetch(conn, _period(period))) if g["hash"] == group), None)
+        rows = A.fetch(conn, _period(period))
+        found = next((g for g in A.build_groups(conn, rows) if g["hash"] == group), None)
         if found is None:
             return render("forbidden.html", request, 404, message="Группа вопросов не найдена")
         mail = MailSettings()
