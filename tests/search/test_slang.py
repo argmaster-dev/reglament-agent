@@ -99,7 +99,6 @@ def test_slang_path_override_by_env_and_setter(tmp_path, monkeypatch):
     ("кто проводит кикофф?", "установочное совещание"),
     ("назначили кик-офф на пятницу", "установочное совещание"),
     ("кто собирает закрывашки?", "закрывающие документы"),
-    ("когда проводят ретро?", "ретроспектива"),
     ("кто работает с эсбэшниками", "Департамент экономической безопасности"),
 ])
 def test_expansion_of_slang_in_word_forms(query, added):
@@ -114,6 +113,21 @@ def test_expansion_of_slang_in_word_forms(query, added):
     "что входит в закрывающие документы?",
     "кто работает с Департаментом экономической безопасности",
 ])
+@pytest.mark.parametrize("phrase", [
+    "Он покраснел от смущения, когда его похвалили.",
+    "Красная зона на карте метро что значит?",
+    "Фильм в стиле ретро идёт в кинотеатре.",
+    "Детская площадка во дворе закрыта, выезд на площадку закрыт",
+    "Сколько сдачи дали в магазине, сдачка мелочью?",
+    "ПНР и другие страны Восточной Европы",
+])
+def test_everyday_homonyms_do_not_expand(phrase):
+    lexicon.set_slang_path(DOCX / "missing.tsv")
+    plain = expand_query(phrase)
+    lexicon.set_slang_path(None)
+    assert expand_query(phrase) == plain
+
+
 def test_official_terms_are_never_expanded_into_slang(query):
     with_slang = expand_query(query)
     lexicon.set_slang_path(DOCX / "missing.tsv")
