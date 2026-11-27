@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from reglament_agent.answer import Outcome, UserContext
 from reglament_agent.dialog.grounding import model_ref
 from reglament_agent.dialog.route import Dialog
@@ -75,6 +77,28 @@ def test_dialog_clarifies_before_generation_and_uses_only_real_references(isolat
     assert refused.outcome == Outcome.NO_BASIS and refused.ticket
     assert conn.execute("SELECT count(*) FROM tickets").fetchone()[0] == 1
     assert asyncio.run(route.profiles.get(user.email)).department == "ТД"
+
+
+@pytest.mark.parametrize("model_outcome", ["off_topic", "low_confidence", "variants"])
+def test_indirect_signer_without_a_basis_gets_a_ticket(isolated, model_outcome):
+    conn, dsn = isolated
+    model = Model()
+    wrong = hit(
+        "Снабжение",
+        "РП инициирует подписание дополнительного соглашения аналогично заключению договора с арендодателем.",
+    )
+    model.result = {"outcome": model_outcome, "claims": []}
+    route = Dialog(dsn, model, search=lambda *args, **kw: Candidates([wrong], []), shortlist=lambda *args, **kw: [])
+    user = UserContext("reader@example.org", "employee", "chat", "1")
+
+    answer = asyncio.run(route.answer(user, "Где узнать, на ком подписание договора с арендодателем?", status))
+
+    assert answer.outcome == Outcome.NO_BASIS
+    assert answer.statements == []
+    assert answer.ticket and answer.ticket.delivery == "pending"
+    assert conn.execute(
+        "SELECT t.user_email, t.status, m.status FROM tickets t JOIN mail_outbox m ON m.ticket_id=t.id"
+    ).fetchone() == (user.email, "open", "pending")
 
 
 def test_concurrent_retry_and_feedback_are_private_and_idempotent(isolated):
