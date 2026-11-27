@@ -131,6 +131,16 @@ class Answerer(Protocol):
 
 
 @dataclass(frozen=True)
+class Practice:
+    """A published expert answer attached to a regulation point («практика применения»)."""
+
+    faq_id: int
+    question: str
+    answer: str
+    confirmed_at: str  # ISO date of the confirmation or publication
+
+
+@dataclass(frozen=True)
 class PointView:
     """What the source side panel shows."""
 
@@ -146,6 +156,7 @@ class PointView:
     column: str | None
     neighbours: list[tuple[str, str]]  # (number, first line) of adjacent subpoints/notes
     blocks: list[Block] = field(default_factory=list)  # original paragraph and table cells
+    practice: list[Practice] = field(default_factory=list)  # published FAQ about this point, newest first
 
 
 class Sources(Protocol):

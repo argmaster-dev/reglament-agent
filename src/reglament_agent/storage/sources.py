@@ -3,7 +3,9 @@ from dataclasses import dataclass
 
 from psycopg import Connection
 
-from reglament_agent.answer import PointView, SourceRef
+from psycopg.types.json import Jsonb
+
+from reglament_agent.answer import PointView, Practice, SourceRef
 from reglament_agent.ingest.model import Block, BlockKind, Table
 
 
@@ -62,4 +64,38 @@ def point_view(conn: Connection, ref: SourceRef) -> PointView:
     pieces = number.split(".")
     path = [f"Раздел {section}. {heading}", *(".".join(pieces[:i]) for i in range(2, len(pieces)+1))]
     return PointView(title, department, stages, version, uploaded.isoformat(), path, number, sentences,
-                     ref.sentence, ref.column, neighbours, blocks)
+                     ref.sentence, ref.column, neighbours, blocks,
+                     practice_for_point(conn, ref.doc_id, vid, number))
+
+
+def practice_for_point(conn: Connection, doc_id: str, version_id: int, number: str) -> list[Practice]:
+    """Published FAQ whose basis names this point of the ACTIVE version, newest confirmation first.
+
+    Read-only. `review`, `deleted`, «вне регламентов» and whole-document entries are never returned.
+    """
+    rows = conn.execute("""
+        SELECT f.id, f.question, f.answer, coalesce(f.reviewed_at, f.created_at)
+        FROM faq_entries f JOIN documents d ON d.doc_id=%s AND d.status='active' AND d.active_version_id=%s
+        WHERE f.status='active' AND f.basis_kind='points' AND f.basis @> %s::jsonb
+        ORDER BY coalesce(f.reviewed_at, f.created_at) DESC, f.id DESC
+    """, (doc_id, version_id, Jsonb([{"doc_id": doc_id, "number": number}]))).fetchall()
+    return [Practice(r[0], r[1], r[2], r[3].date().isoformat()) for r in rows]
+
+
+def faq_confirmations(conn: Connection, faq_ids) -> dict[int, str]:
+    """ISO confirmation date for each of the given FAQ ids that is still published."""
+    rows = conn.execute("SELECT id, coalesce(reviewed_at, created_at) FROM faq_entries "
+                        "WHERE id=ANY(%s) AND status='active'", (list(faq_ids),)).fetchall()
+    return {r[0]: r[1].date().isoformat() for r in rows}
+
+
+def resolve_point(conn: Connection, doc_title: str, department: str, number: str) -> SourceRef | None:
+    """Reference to a point of the active version of the named document, or None if it is not there."""
+    row = conn.execute("""
+        SELECT d.doc_id, d.title, d.department, v.version_number, p.number
+        FROM documents d JOIN document_versions v ON v.version_id=d.active_version_id
+        JOIN points p ON p.version_id=v.version_id
+        WHERE d.status='active' AND d.title=%s AND d.department=%s AND p.number=%s
+        ORDER BY d.doc_id LIMIT 1
+    """, (doc_title, department, number)).fetchone()
+    return SourceRef(row[0], row[1], row[2], row[3], row[4]) if row else None

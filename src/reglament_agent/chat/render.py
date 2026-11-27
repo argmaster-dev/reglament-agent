@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import html
+import re
 from dataclasses import dataclass
+from typing import Callable
 
 from reglament_agent.answer import (
     Answer,
@@ -33,6 +36,17 @@ ORIGIN_TEXT = {
     ScopeOrigin.CLARIFICATION: "из уточнения",
 }
 DELIVERY_TEXT = {"sent": "письмо отправлено", "pending": "письмо ожидает отправки", "error": "ошибка отправки письма"}
+CONFIRMED = "подтверждено службой качества"
+PRACTICE_TITLE = "Практика применения"
+PRACTICE_LIMIT = 3
+# «п. 2.2 «Название» (Подразделение): текст»: так маршрут называет близкие пункты в тексте итога.
+_NEAR_LINE = re.compile(r"^п\. (\S+) «(.+?)» \((.+?)\): (.*)$")
+REFUSAL_LEAD = (
+    "В регламентах ответа нет. Я отправил запрос в службу качества по почте, вы в копии. "
+    "Ответ придёт на почту и в этот диалог."
+)
+OFF_TOPIC_HINT = "Этот вопрос не касается регламентов компании — обратитесь к своему руководителю."
+NEAR_LIMIT = 3
 DONT_KNOW = "Не знаю"
 EMPTY_VARIANT = "в регламенте не указано"
 DOWN_REASONS = ["Неверно", "Неполно", "Не то подразделение", "Другое"]
@@ -59,8 +73,7 @@ class ActionSpec:
 
 def outcome_label(answer: Answer) -> str:
     if answer.outcome in TICKET_OUTCOMES:
-        number = f" №{answer.ticket.number}" if answer.ticket else ""
-        return f"✉️ Обращение{number}"
+        return "✉️ Передано в службу качества"
     label = OUTCOME_LABELS[answer.outcome]
     if answer.outcome is Outcome.LOW_CONFIDENCE and answer.ticket:
         label += f" · обращение №{answer.ticket.number}"
@@ -136,8 +149,96 @@ def ticket_card(t: TicketInfo) -> str:
     if t.transferred:
         lines.append(f"> Передано: {', '.join(t.transferred)}")
     lines.append(f"> [Проверить статус обращения](/tickets/{t.number})")
-    lines.append("> Ответ придёт в этот диалог и на ваш адрес.")
+    lines.append("> Ответ придёт в этот диалог и на ваш адрес электронной почты.")
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class NearPoint:
+    point: str
+    doc_title: str
+    department: str
+    text: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.department} · п. {self.point}"
+
+
+def split_near(summary: str) -> tuple[str, list[NearPoint]]:
+    """Separate «близкие пункты» (lines the route appends to the summary) from the rest of the text."""
+    head, near = [], []
+    for line in summary.splitlines():
+        m = _NEAR_LINE.match(line.strip())
+        if m:
+            near.append(NearPoint(m[1], m[2], m[3], m[4]))
+        else:
+            head.append(line)
+    return "\n".join(head).strip(), near
+
+
+def near_points(answer: Answer) -> list[NearPoint]:
+    return split_near(answer.summary)[1]
+
+
+def near_chips(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> list[dict]:
+    """Near points as clickable chips (label + source payload), at most NEAR_LIMIT, each point once.
+
+    The structured `nearby_sources` of the Answer wins when the route supplies it; otherwise the lines
+    the route appends to the summary are parsed and resolved against the active documents.
+    """
+    refs = list(getattr(answer, "nearby_sources", None) or [])
+    if not refs:
+        refs = [r for r in (resolve(n) for n in near_points(answer)) if r is not None]
+    chips, seen = [], set()
+    for ref in refs:
+        key = (ref.doc_id, ref.point)
+        if key not in seen:
+            seen.add(key)
+            chips.append({"label": f"{ref.department} · п. {ref.point}", "source": ref_payload(ref)})
+    return chips[:NEAR_LIMIT]
+
+
+def refusal_element(answer: Answer, resolve: Callable[[NearPoint], SourceRef | None]) -> dict | None:
+    """Props of the small inline element under a refusal: near-point chips and the ticket line."""
+    if answer.outcome not in TICKET_OUTCOMES:
+        return None
+    ticket = None
+    if answer.ticket:
+        t = answer.ticket
+        # No delivery state here: the line is drawn once and would go stale; the status page is live.
+        ticket = {"number": t.number, "text": f"Обращение № {t.number}", "href": f"/tickets/{t.number}",
+                  "link": "статус"}
+    near = near_chips(answer, resolve)
+    return {"near": near, "ticket": ticket} if near or ticket else None
+
+
+_ABSENCE = re.compile(r"не наш[её]л|не нашла|ответ\w*[^.]*\bнет\b|\bнет ответа|Точного пункта|Есть пункты о том же", re.I)
+
+
+def drop_absence(summary: str) -> str:
+    """Remove sentences that only restate that there is no answer: the lead sentence says it once."""
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", summary)
+    return " ".join(x for x in sentences if x.strip() and not _ABSENCE.search(x)).strip()
+
+
+def faq_ids(answer: Answer) -> list[int]:
+    out: list[int] = []
+    for st in _all_statements(answer):
+        for r in st.sources:
+            if r.faq_id is not None and r.faq_id not in out:
+                out.append(r.faq_id)
+    return out
+
+
+def ru_date(iso: str) -> str:
+    y, m, d = iso[:10].split("-")
+    return f"{d}.{m}.{y}"
+
+
+def confirmed_line(dates: dict[int, str] | None, ids: list[int]) -> str:
+    known = sorted({ru_date(dates[i]) for i in ids if dates and i in dates})
+    return "🎓 " + CONFIRMED.capitalize() + (f" · {', '.join(known)}" if known else "")
 
 
 def evidence_groups(answer: Answer, names: dict[SourceRef, str]) -> list[dict]:
@@ -155,37 +256,55 @@ def evidence_groups(answer: Answer, names: dict[SourceRef, str]) -> list[dict]:
 
 
 def answer_markdown(
-    answer: Answer, names: dict[SourceRef, str] | None = None, *, separate_evidence=False
+    answer: Answer,
+    names: dict[SourceRef, str] | None = None,
+    *,
+    separate_evidence=False,
+    faq_dates: dict[int, str] | None = None,
 ) -> str:
     names = names if names is not None else assign_chip_names(answer)
+    summary, _near = split_near(answer.summary)
+    if answer.outcome is Outcome.OFF_TOPIC and not summary.startswith(("Сообщение длиннее", "Вопрос должен содержать от ")):
+        summary = OFF_TOPIC_HINT  # заменяет общий текст маршрута, без повтора
     parts: list[str] = []
-    if answer.outcome is Outcome.LOW_CONFIDENCE:
-        parts.append(f"> ⚠️ {answer.caveat or 'Требует подтверждения службой качества'}")
-    parts.append(f"**{outcome_label(answer)}**")
     scope = scope_line(answer.scope)
-    if scope:
-        parts.append(f"_{scope}_")
+    refusal = answer.outcome in TICKET_OUTCOMES
+    if refusal:
+        # The first visible text is the lead sentence: no heading, no scope before it, said once.
+        parts.append(REFUSAL_LEAD)
+        summary = drop_absence(summary)
+    else:
+        if answer.outcome is Outcome.LOW_CONFIDENCE:
+            parts.append(f"> ⚠️ {answer.caveat or 'Требует подтверждения службой качества'}")
+        parts.append(f"**{outcome_label(answer)}**")
+        if scope:
+            parts.append(f"_{scope}_")
     if answer.outcome is Outcome.ERROR:
         parts.append("Не удалось получить ответ, вопрос сохранён. Нажмите «Повторить».")
     elif answer.outcome is Outcome.CLARIFY and answer.clarification:
         parts.append(answer.clarification.question)
     elif separate_evidence:
-        if answer.summary and not any(answer.summary == s.text for s in _all_statements(answer)):
-            parts.append(answer.summary)
+        if summary and not any(summary == s.text for s in _all_statements(answer)):
+            parts.append(summary)
     else:
         remaining = answer.statements
-        if remaining and answer.summary == remaining[0].text:
+        if remaining and summary == remaining[0].text:
             parts.append(statement_line(remaining[0], names))
             remaining = remaining[1:]
-        elif answer.summary:
-            parts.append(answer.summary)
+        elif summary:
+            parts.append(summary)
         if remaining:
             parts.append(statements_md(remaining, names))
         if answer.variants:
             parts.extend(variant_md(v, names) for v in answer.variants)
+    ids = faq_ids(answer)
+    if ids and answer.outcome not in (Outcome.ERROR, Outcome.CLARIFY):
+        parts.append(confirmed_line(faq_dates, ids))
     if answer.caveat and answer.outcome != Outcome.LOW_CONFIDENCE:
         parts.append(f"> {answer.caveat}")
-    if answer.ticket:
+    if refusal and scope:
+        parts.append(f"_{scope}_")
+    if answer.ticket and not refusal:
         parts.append(ticket_card(answer.ticket))
     if answer.profile_note:
         parts.append(f"_{answer.profile_note}_")
@@ -228,7 +347,7 @@ def point_panel(pv: PointView) -> dict:
                 ]
                 break
         entries.append({"text": sentence, "selected": selected and not pv.column, "cells": cells})
-    return {
+    panel = {
         "title": pv.doc_title,
         "path": pv.path,
         "department": pv.department,
@@ -238,7 +357,38 @@ def point_panel(pv: PointView) -> dict:
         "column": pv.column,
         "entries": entries,
         "neighbours": pv.neighbours,
+        "practice": practice_block(pv),
     }
+    panel["practice_html"] = practice_html(panel)
+    return panel
+
+
+def practice_block(pv: PointView) -> dict:
+    """«Практика применения»: up to PRACTICE_LIMIT published expert answers and the count of the rest."""
+    shown = pv.practice[:PRACTICE_LIMIT]
+    return {
+        "title": PRACTICE_TITLE,
+        "items": [
+            {"question": p.question, "answer": p.answer, "label": CONFIRMED, "date": ru_date(p.confirmed_at)}
+            for p in shown
+        ],
+        "more": len(pv.practice) - len(shown),
+    }
+
+
+def practice_html(panel: dict) -> str:
+    """The practice block as HTML. Every text, however it was written by an expert, is escaped."""
+    block = panel["practice"]
+    if not block["items"]:
+        return ""
+    esc = html.escape
+    items = "".join(
+        f"<li><p><strong>{esc(i['question'])}</strong></p><p>{esc(i['answer'])}</p>"
+        f"<p><small>{esc(i['label'])} · {esc(i['date'])}</small></p></li>"
+        for i in block["items"]
+    )
+    more = f"<p>и ещё {block['more']}</p>" if block["more"] else ""
+    return f'<section aria-label="{esc(block["title"])}"><h3>{esc(block["title"])}</h3><ul>{items}</ul>{more}</section>'
 
 
 def clarify_actions(answer: Answer) -> list[ActionSpec]:

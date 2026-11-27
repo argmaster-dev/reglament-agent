@@ -11,6 +11,7 @@ export default function SourcePoint() {
        : <p key={i} style={{marginBlock:8}}>{mark(entry.text,entry.selected)}</p>)}
     {props.neighbours.length>0 && <details><summary>Соседние пункты</summary>
       <ul>{props.neighbours.map(([number,text])=><li key={number}>{number}. {text}</li>)}</ul></details>}
+    {props.practice_html && <div dangerouslySetInnerHTML={{__html: props.practice_html}} />}
     <footer style={{marginTop:12}}>
       {props.column && <p>Столбец таблицы: {props.column}</p>}
       <p>{[props.department,...props.stages].filter(Boolean).join(" · ")}</p>
