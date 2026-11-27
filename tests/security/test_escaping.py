@@ -102,3 +102,38 @@ def test_expert_mail_is_plain_text_without_header_injection(env, payload):
     assert msg["Bcc"] is None and "evil@example.org" not in str(msg["To"]) + str(msg["Cc"])
     assert msg["Subject"].count("Subject") <= 1
     assert "evil@example.org" in row["body"]  # остаётся текстом тела, а не заголовком
+
+
+@pytest.mark.parametrize("payload", PAYLOADS)
+def test_analytics_pages_escape_question(env, web, payload):
+    """Журнал и карточка запроса в аналитике показывают вопрос экранированным, главная страница не ломается."""
+    import re
+
+    env.ask(payload, lambda s: {"outcome": "no_basis", "claims": []}, dialog="xss-an")
+    expert = web("expert@x.local", "expert")
+    main = expert.get("/admin/analytics?period=all")
+    assert main.status_code == 200
+    clean(main.text)
+    journal = expert.get("/admin/analytics/journal?period=all")
+    assert journal.status_code == 200
+    clean(journal.text)
+    assert "&lt;" in journal.text or "&#34;&gt;&lt;" in journal.text  # вопрос действительно показан
+    (request_id,) = set(re.findall(r"/admin/analytics/journal/([\w-]+)", journal.text))
+    detail = expert.get(f"/admin/analytics/journal/{request_id}")
+    assert detail.status_code == 200
+    clean(detail.text)
+    assert "&lt;" in detail.text or "&#34;&gt;&lt;" in detail.text
+
+
+@pytest.mark.parametrize("prefix", ["=", "+", "-", "@"])
+def test_requests_csv_neutralizes_formula_prefix(env, web, prefix):
+    """Вопрос, начинающийся с символа формулы, в CSV выгрузке получает апостроф (injection в Excel/Sheets)."""
+    import csv
+    import io
+
+    question = f"{prefix}HYPERLINK(\"http://evil.example\";\"x\") Кто подписывает договор?"
+    env.ask(question, lambda s: {"outcome": "no_basis", "claims": []})
+    text = web("expert@x.local", "expert").get("/admin/analytics/requests.csv?period=all").text
+    rows = list(csv.DictReader(io.StringIO(text.lstrip("﻿"))))
+    assert len(rows) == 1
+    assert rows[0]["question"] == "'" + question

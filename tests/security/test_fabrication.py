@@ -36,6 +36,25 @@ def test_ref_to_point_outside_candidates_is_dropped(env):
     assert not answer.statements and "10" not in visible_text(answer) and "9.9" not in visible_text(answer)
 
 
+def test_forged_or_unknown_ref_with_genuine_text_is_not_shown_nor_substituted(env):
+    """Текст утверждения дословно совпадает с источником, но ссылка подложная: неизвестный id не заменяется первым
+    источником, а известный id с чужим пунктом/документом не принимается."""
+
+    def plan(sources):
+        assert sources
+        claims = []
+        for real in sources:
+            claims.append(claim(real, ref={"id": "S99", "doc_id": "ТД", "point": "1.4", "sentence": 0}))
+            claims.append(claim(real, ref={**real["ref"], "point": "9.9"}))
+            claims.append(claim(real, ref={**real["ref"], "doc_id": "ДБРЦТ"}))
+            claims.append(claim(real, ref={"id": real["ref"]["id"]}))
+        return {"outcome": "answer", "claims": claims}
+
+    answer, _, _ = env.ask(Q_DEADLINE, plan)
+    assert answer.outcome == Outcome.NO_BASIS and answer.ticket
+    assert not answer.statements and SIGN not in visible_text(answer) and DEADLINE not in visible_text(answer)
+
+
 def test_invented_number_in_claim_text_is_dropped(env):
     """Ссылка верна, но модель пишет «10 рабочих дней» вместо «3» из процитированного предложения."""
 
