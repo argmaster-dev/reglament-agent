@@ -89,6 +89,49 @@ def terms(text):
     return {concept(w) for w in words(text) if w not in _STOP and len(w) > 1}
 
 
+# A reimbursement is a transfer to a beneficiary. An expense posted to a project
+# or paid from a budget establishes neither the beneficiary nor the reimbursed purchase.
+_REIMBURSE = re.compile(r'\b(?:возмещ|возмест|компенс)\w*')
+_REIMBURSE_VERB = re.compile(r'\b(?:возмеща(?:ет|ют|ется|ются)|возмест(?:ит|ят)|компенсиру(?:ет|ют|ется|ются))\b')
+_REIMBURSE_RULE = re.compile(r'\b(?:производится|производятся|выплачивается|выплачиваются|положен[аоы]?|'
+                             r'предусмотрен[аоы]?|подлеж\w*\s+(?:возмещению|компенсации))\b')
+_REIMBURSE_CLAUSES = re.compile(r'[;.!?]|,\s*(?:а|но|затем|после чего)\s+')
+_PAYEE = re.compile(r'\b(сотрудник|работник|подрядчик|заказчик|поставщик|клиент)(?:у|ам)\b')
+_COST_WORDS = re.compile(r'\b(?:как\w*|внутренн\w*|поряд\w*|правил\w*|регламент\w*|'
+                         r'стоимост\w*|расход\w*|затрат\w*|покупк\w*|закупк\w*|приобретени\w*)\b')
+
+
+def _payees(text):
+    return {'сотрудник' if role == 'работник' else role for role in _PAYEE.findall(text)}
+
+
+@dataclass(frozen=True)
+class Reimbursement:
+    objects: frozenset[str]
+    payees: frozenset[str]
+
+    def supported_by(self, sentence):
+        for clause in _REIMBURSE_CLAUSES.split(fold(sentence)):
+            if not _REIMBURSE.search(clause):
+                continue
+            if not (_REIMBURSE_VERB.search(clause) or _REIMBURSE_RULE.search(clause)):
+                continue
+            if self.objects and self.objects <= terms(clause) and self.payees <= _payees(clause):
+                return True
+        return False
+
+
+def reimbursement_request(question, departments):
+    q = fold(question)
+    if not _REIMBURSE.search(q):
+        return None
+    # Use distinguishing subject terms from the question, irrespective of word order.
+    # Department, question wording and generic cost/purchase terms cannot identify the expense.
+    subject = _COST_WORDS.sub(' ', _PAYEE.sub(' ', _REIMBURSE.sub(' ', q)))
+    objects = terms(subject) - terms(' '.join(departments)) - _COURTESY_WORDS
+    return Reimbursement(frozenset(objects), frozenset(_payees(q)))
+
+
 def _signing_work(text, action):
     """An ancillary role can govern a noun for signing, never a finite signing verb."""
     if action.lastgroup != "nominal":

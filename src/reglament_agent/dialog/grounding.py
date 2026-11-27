@@ -301,6 +301,22 @@ def assemble(question, data, items, departments, variants, trace, rows=(), inven
         statements = relevance.companion_sentences(
             relevance.expand_selected(question, statements, items, rows or items.values()), rows
         )
+    # Check the final displayed sentences, including neighbours and inferred external references.
+    # A model-selected accounting rule cannot turn into a reimbursement policy through expansion.
+    reimbursement = relevance.reimbursement_request(question, departments)
+    if reimbursement and not compound:
+        by_ref.update((a.ref, a) for a in rows)
+        applicable = []
+        for st in statements:
+            ref = st.sources[0]
+            if reimbursement.supported_by(by_ref[ref].text):
+                applicable.append(st)
+            else:
+                claim = claims_by_ref.get(ref) or Claim(st.text, SentenceRef(ref.doc_id, ref.point, ref.sentence))
+                dropped.append(Verdict(claim, False, ["reimbursement_scope_mismatch"]))
+        statements = applicable
+        if not statements:
+            out = Outcome.NO_BASIS
     if missing_parts and statements:
         # Adjacent referenced sentences or a complete list may cover what the first selected quote omitted.
         by_ref.update((a.ref, a) for a in rows)
