@@ -264,7 +264,7 @@ def answer_markdown(
 ) -> str:
     names = names if names is not None else assign_chip_names(answer)
     summary, _near = split_near(answer.summary)
-    if answer.outcome is Outcome.OFF_TOPIC and not summary.startswith(("Сообщение длиннее", "Вопрос должен содержать от ")):
+    if answer.outcome is Outcome.OFF_TOPIC and not summary.startswith(("Сообщение длиннее", "Вопрос должен содержать")):
         summary = OFF_TOPIC_HINT  # заменяет общий текст маршрута, без повтора
     parts: list[str] = []
     scope = scope_line(answer.scope)
