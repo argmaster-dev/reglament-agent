@@ -33,7 +33,7 @@ from chainlit.server import app as fastapi_app  # noqa: E402
 from reglament_agent.answer import Answer, Outcome, SourceRef, UserContext  # noqa: E402
 from reglament_agent.storage.sources import faq_confirmations, resolve_point  # noqa: E402
 from reglament_agent.chat import render as R  # noqa: E402
-from reglament_agent.chat.aspects import cached_catalog, select_advice  # noqa: E402
+from reglament_agent.chat.aspects import ADVICE_OUTCOMES, cached_catalog, select_advice  # noqa: E402
 from reglament_agent.chat import session as S  # noqa: E402
 from reglament_agent.chat import start_page  # noqa: E402
 from reglament_agent.admin import routes as admin_routes  # noqa: E402
@@ -224,7 +224,7 @@ async def _run_admitted(user: UserContext, text: str, message_id: str, *, choice
             await progress.update()
         else:
             await progress.remove()
-            await _show(answer, text, message_id)
+            await _show(answer, text, message_id, choice_by=user if choice else None)
     except asyncio.CancelledError:
         if clock:
             clock.cancel()
@@ -241,27 +241,38 @@ async def clear_clarification():
         cl.user_session.set("clarify_msg", None)
 
 
-def _lookup_answer_extras(answer: Answer) -> tuple[dict[int, str], dict[tuple, SourceRef]]:
-    """Read-only: confirmation dates of FAQ used in the answer and the points near a refusal."""
+def _lookup_answer_extras(
+    answer: Answer, choice_by: UserContext | None,
+) -> tuple[dict[int, str], dict[tuple, SourceRef], str | None]:
+    """Read extra references and, for a button choice, its resolved question from the same turn."""
     if not os.environ.get("DATABASE_URL"):
-        return {}, {}
+        return {}, {}, None
     try:
         with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
             dates = faq_confirmations(conn, R.faq_ids(answer)) if R.faq_ids(answer) else {}
             near = {}
             for n in R.near_points(answer):
                 near[(n.doc_title, n.department, n.point)] = resolve_point(conn, n.doc_title, n.department, n.point)
-            return dates, near
+            question = None
+            if choice_by and answer.answer_id and answer.outcome in ADVICE_OUTCOMES and not answer.redirect:
+                row = conn.execute(
+                    "SELECT restated FROM dialog_requests "
+                    "WHERE id=%s AND user_email=%s AND dialog_id=%s AND message_id=%s",
+                    (answer.answer_id, choice_by.email, choice_by.dialog_id, choice_by.message_id),
+                ).fetchone()
+                if row:
+                    question = row[0]
+            return dates, near, question
     except psycopg.Error:
         logging.getLogger(__name__).exception("answer extras unavailable")
-        return {}, {}
+        return {}, {}, None
 
 
-async def _show(answer: Answer, text: str, message_id: str) -> None:
+async def _show(answer: Answer, text: str, message_id: str, *, choice_by: UserContext | None = None) -> None:
     await clear_clarification()
     names = R.assign_chip_names(answer)
-    faq_dates, near_refs = await asyncio.to_thread(_lookup_answer_extras, answer)
-    advice = select_advice(cached_catalog(), answer, text)
+    faq_dates, near_refs, question = await asyncio.to_thread(_lookup_answer_extras, answer, choice_by)
+    advice = select_advice(cached_catalog(), answer, question or text)
     specs = R.clarify_actions(answer) + R.answer_actions(answer, text, message_id)
     if answer.outcome is Outcome.CLARIFY:
         specs = R.clarify_actions(answer)
