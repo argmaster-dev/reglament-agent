@@ -6,16 +6,42 @@ from datetime import datetime, timedelta, timezone
 from .lexicon import find_roles, fold, glossary, word_key, words
 
 
+def _aliases(dept):
+    parts = words(dept)
+    equivalent = [parts]
+    if len(parts) > 1:
+        equivalent.append(["".join(p[0] for p in parts)])
+        if len(parts[-1]) <= 3:
+            equivalent.append([parts[-1]])
+    keys = [word_key(w) for w in parts]
+    # An abbreviation from the glossary denotes the department when it expands to the same words.
+    for abbr, meaning in glossary().items():
+        if [word_key(w) for w in words(re.sub(r"\s*\(.*?\)", "", meaning))] == keys:
+            equivalent.append(words(abbr))
+    return equivalent
+
+
+def departments_in(text, departments):
+    """Every known department the text names, in order of appearance."""
+    tokens = words(text)
+    keyed = [word_key(w) for w in tokens]
+    found = []
+    for dept in departments:
+        for alias in _aliases(dept):
+            keys = [word_key(w) for w in alias]
+            at = next((i for i in range(len(keyed)) if keyed[i : i + len(keys)] == keys), None)
+            if at is not None:
+                found.append((at, dept))
+                break
+    # A longer name that contains a shorter one wins over it.
+    names = [d for _, d in found]
+    return [d for _, d in sorted(found) if not any(d != o and set(words(d)) < set(words(o)) for o in names)]
+
+
 def department_in(text, departments):
     tokens = words(text)
     for dept in sorted(departments, key=len, reverse=True):
-        parts = words(dept)
-        equivalent = [parts]
-        if len(parts) > 1:
-            equivalent.append(["".join(p[0] for p in parts)])
-            if len(parts[-1]) <= 3:
-                equivalent.append([parts[-1]])
-        for alias in equivalent:
+        for alias in _aliases(dept):
             keys = [word_key(w) for w in alias]
             if any([word_key(w) for w in tokens[i : i + len(keys)]] == keys for i in range(len(tokens))):
                 return dept

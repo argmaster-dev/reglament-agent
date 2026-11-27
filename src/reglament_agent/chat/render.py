@@ -142,7 +142,9 @@ def statements_md(statements: list[Statement], names: dict[SourceRef, str]) -> s
 
 
 def variant_md(v: Variant, names: dict[SourceRef, str]) -> str:
-    body = statements_md(v.statements, names) if v.statements else f"_{EMPTY_VARIANT}_"
+    body = statements_md(v.statements, names) if v.statements else f"_{v.note or EMPTY_VARIANT}_"
+    if v.statements and v.note:
+        body = f"_{v.note}_\n{body}"
     return f"**{v.department}**\n{body}"
 
 
@@ -253,7 +255,7 @@ def evidence_groups(answer: Answer, names: dict[SourceRef, str]) -> list[dict]:
 
     groups = [{"label": "", "items": items(answer.statements)}] if answer.statements else []
     groups.extend(
-        {"label": v.department, "items": items(v.statements), "empty": EMPTY_VARIANT} for v in answer.variants
+        {"label": v.department, "items": items(v.statements), "empty": v.note or EMPTY_VARIANT, "note": v.note if v.statements else None} for v in answer.variants
     )
     return groups
 
@@ -272,7 +274,7 @@ def answer_markdown(
         return f"**{OUTCOME_LABELS[Outcome.OFF_TOPIC]}**\n\n{OFF_TOPIC_HINT}"
     names = names if names is not None else assign_chip_names(answer)
     summary, _near = split_near(answer.summary)
-    if answer.outcome is Outcome.OFF_TOPIC and not summary.startswith("Сообщение длиннее"):
+    if answer.outcome is Outcome.OFF_TOPIC and not summary.startswith(("Сообщение длиннее", "Вопрос должен содержать")):
         summary = OFF_TOPIC_HINT  # заменяет общий текст маршрута, без повтора
     parts: list[str] = []
     scope = scope_line(answer.scope)

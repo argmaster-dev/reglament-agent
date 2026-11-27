@@ -3,6 +3,7 @@ export default function AnswerEvidence() {
   return <section aria-label="Утверждения и основания">
     {props.groups.map((group, index) => <div key={index}>
       {group.label && <h3 style={{fontWeight: 650}}>{group.label}</h3>}
+      {group.items.length > 0 && group.note && <p style={{marginBlock: ".5em", fontStyle: "italic"}}>{group.note}</p>}
       {!group.items.length && <p>{group.empty}</p>}
       {group.items.map((item, i) => <p key={i} style={{marginBlock: ".5em", overflowWrap: "anywhere"}}>
         {item.refs.length
