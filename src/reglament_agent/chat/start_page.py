@@ -21,24 +21,136 @@ from reglament_agent.chat.services import available_departments
 if TYPE_CHECKING:
     from chainlit.user import User
 
-PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Агент по регламентам</title>
-<link rel="stylesheet" href="/public/release-footer.css"><style>
-body{{font-family:system-ui,sans-serif;max-width:760px;margin:6vh auto;padding:0 16px;color:#1b1b1b}}
-.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}}
-.card{{border:1px solid #c9c9c9;border-radius:12px;padding:20px}} h2{{margin-top:0}}
-button,select,input{{font:inherit;padding:8px 12px;margin-top:8px;width:100%;box-sizing:border-box}}
-button{{cursor:pointer;background:#1f5fbf;color:#fff;border:0;border-radius:8px}} .err{{color:#b00020}}
-@media(max-width:560px){{.cards{{grid-template-columns:minmax(0,1fr)}} body{{margin:16px}}}} li{{margin:.45em 0}}
-</style></head><body><h1>Агент по регламентам</h1><p>Ответы по рабочим регламентам со ссылками на основания.</p><div class="cards">
-<form class="card" method="post" action="/start/employee"><h2>Сотрудник</h2>
-<p>Пароль не нужен. Диалог и профиль видны только вам.</p>
-<label>Подразделение (необязательно)<select name="department"><option value="">Без профиля</option>{options}</select></label>
-<button type="submit">Войти как сотрудник</button></form>
-<form class="card" method="post" action="/start/expert"><h2>Служба качества</h2>{availability}
-<p>Обращения сотрудников, ответы экспертов, FAQ и документы.</p>{error}
-<label>Пароль<input type="password" name="password" required maxlength="512" autocomplete="current-password" {disabled}></label>
-<button type="submit" {disabled}>Войти как служба качества</button></form></div><section><h2>Примеры вопросов</h2><ul>{examples}</ul></section><p>Для одновременной проверки роли сотрудника и эксперта откройте вторую роль в другом браузере или приватном окне.</p>{release_footer}</body></html>"""
+PAGE = """<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Вход в Регламент-агент</title>
+<link rel="stylesheet" href="/public/release-footer.css">
+<style>
+:root {{
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #f4f6f9;
+  color: #17212b;
+  font-size: 15px;
+  line-height: 1.5;
+}}
+*, *::before, *::after {{ box-sizing: border-box; }}
+body {{ margin: 0; padding: 40px 24px 28px; }}
+.shell {{ max-width: 1160px; min-height: calc(100vh - 68px); margin: auto; display: flex; flex-direction: column; gap: 48px; }}
+header, .page-footer {{ display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; }}
+.brand, .role-heading {{ display: flex; gap: 14px; align-items: flex-start; }}
+.brand {{ align-items: center; gap: 12px; }}
+.brand strong, h3 {{ font-size: 18px; }}
+.brand small {{ display: block; }}
+small, .note, .role-heading p, .example-context {{ color: #56616e; }}
+small, .note, .example-context, .page-footer {{ font-size: 13px; }}
+.icon {{ width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 10px; }}
+.brand .icon, .primary {{ background: #2a55a8; color: white; }}
+.employee-icon, .source {{ background: #e9effa; color: #1f3f80; }}
+.expert-icon {{ background: #eef1f5; color: #3e4955; }}
+svg {{ width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }}
+main {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 56px; align-items: start; }}
+.intro, .roles, .card, figure {{ display: grid; gap: 16px; min-width: 0; }}
+.intro {{ gap: 28px; padding-top: 8px; }}
+h1, h2, h3, p, figure {{ margin: 0; }}
+h1 {{ font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -.02em; text-wrap: balance; margin: 16px 0; }}
+h2 {{ font-size: 20px; }}
+.lead {{ max-width: 34em; font-size: 17px; color: #3e4955; }}
+.eyebrow, figcaption {{ font-size: 12px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }}
+.eyebrow, summary {{ color: #2a55a8; }}
+figcaption {{ color: #56616e; }}
+figure, .card {{ background: white; border: 1px solid #dde3ea; border-radius: 14px; }}
+figure {{ max-width: 520px; padding: 20px 22px; gap: 10px; }}
+.question {{ justify-self: end; background: #eef1f5; border-radius: 12px 12px 4px 12px; padding: 10px 14px; margin: 4px 0; }}
+.source {{ justify-self: start; border-radius: 6px; padding: 3px 8px; font-size: 13px; }}
+.card {{ padding: 24px; }}
+.role-heading p, label {{ font-size: 14px; }}
+label {{ font-weight: 600; }}
+label span {{ font-weight: 400; color: #56616e; }}
+.field {{ display: grid; gap: 6px; }}
+button, select, input {{ width: 100%; min-width: 0; font: inherit; border-radius: 10px; }}
+select, input {{ height: 44px; border: 1px solid #8894a2; background: white; color: #17212b; padding: 0 12px; }}
+button {{ min-height: 46px; padding: 8px 12px; cursor: pointer; border: 1px solid #2a55a8; font-weight: 600; }}
+.secondary {{ background: white; color: #2a55a8; }}
+.primary:hover {{ background: #1c3f82; }}
+.secondary:hover:enabled {{ background: #e9effa; }}
+button:disabled, input:disabled {{ cursor: not-allowed; color: #56616e; border-color: #8894a2; background: #eef1f5; }}
+:focus-visible {{ outline: 3px solid #2a55a8; outline-offset: 3px; }}
+.err {{ color: #a31d35; font-weight: 600; }}
+summary {{ cursor: pointer; font-weight: 600; }}
+ul {{ margin: 8px 0 0; padding-inline-start: 22px; }}
+.page-footer {{ margin-top: auto; border-top: 1px solid #dde3ea; padding-top: 16px; color: #56616e; }}
+.page-footer .release-footer {{ margin: 0; padding: 0; font-size: inherit; }}
+@media (max-width: 800px) {{
+  main {{ grid-template-columns: minmax(0, 1fr); gap: 28px; }}
+  .shell {{ gap: 28px; }}
+  body {{ padding: 24px 16px; }}
+  .card, figure {{ padding: 18px; }}
+}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="brand">
+      <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z M14 3v5h5 M10 14l2 2 4-4"/></svg></span>
+      <div><strong>Регламент-агент</strong><small>Ассистент по регламентам компании</small></div>
+    </div>
+    <p class="note">Модель работает локально, данные не покидают контур</p>
+  </header>
+  <main>
+    <section class="intro" aria-labelledby="intro-title">
+      <div>
+        <span class="eyebrow">Ответы со ссылками на пункты</span>
+        <h1 id="intro-title">Найдите ответ в регламентах компании</h1>
+        <p class="lead">Спросите своими словами. Ассистент ответит коротко и покажет пункт, на котором основан ответ. Если ответа в регламентах нет, вопрос уйдёт в службу качества, а её ответ вернётся в ваш диалог.</p>
+      </div>
+      <figure>
+        <figcaption>Пример ответа</figcaption>
+        <p class="question">За сколько подавать заявку на пресейл?</p>
+        <p class="example-context">Отвечаю для: Техническая дирекция</p>
+        <p>Заявку на пресейл подают не позднее чем за две недели до подачи конкурса.</p>
+        <span class="source">Техническая дирекция · п. 1.5</span>
+      </figure>
+    </section>
+    <section class="roles" aria-labelledby="role-title">
+      <h2 id="role-title">Выберите роль</h2>
+      <form class="card" method="post" action="/start/employee" aria-labelledby="employee-title">
+        <div class="role-heading">
+          <span class="icon employee-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg></span>
+          <div><h3 id="employee-title">Сотрудник</h3><p>Вопросы по регламентам. Пароль не нужен, диалог и профиль видны только вам.</p></div>
+        </div>
+        <div class="field">
+          <label for="department">Подразделение <span>(можно не указывать)</span></label>
+          <select id="department" name="department"><option value="">Без профиля</option>{options}</select>
+        </div>
+        <button class="primary" type="submit">Войти как сотрудник</button>
+      </form>
+      <form class="card" method="post" action="/start/expert" aria-labelledby="expert-title">
+        <div class="role-heading">
+          <span class="icon expert-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z M9 12l2 2 4-4"/></svg></span>
+          <div><h3 id="expert-title">Служба качества</h3><p>Обращения сотрудников, ответы экспертов, FAQ, регламенты и аналитика.</p></div>
+        </div>
+        {availability}{error}
+        <div class="field">
+          <label for="password">Пароль</label>
+          <input id="password" type="password" name="password" required maxlength="512" autocomplete="current-password" {disabled}>
+        </div>
+        <button class="secondary" type="submit" {disabled}>Войти как служба качества</button>
+      </form>
+      <p class="note">Чтобы проверить обе роли одновременно, откройте вторую в другом браузере или в приватном окне.</p>
+      <details><summary>Примеры вопросов</summary><ul>{examples}</ul></details>
+    </section>
+  </main>
+  <div class="page-footer">
+    <p>Отвечает только по загруженным регламентам и подтверждённым ответам службы качества.</p>
+    {release_footer}
+  </div>
+</div>
+</body>
+</html>"""
 
 
 def secret() -> str:
